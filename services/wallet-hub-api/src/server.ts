@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import sensible from "@fastify/sensible";
 import crypto from "node:crypto";
 import { getEnv } from "./config/env.js";
+import { registerDb } from "./plugins/db.js";
 import { registerOpenApi } from "./plugins/openapi.js";
 import { registerHealthRoutes } from "./routes/health.js";
 
@@ -40,6 +41,7 @@ export async function createServer() {
   server.decorate("config", config);
 
   await server.register(sensible);
+  await server.register(registerDb);
   await server.register(registerOpenApi, { basePath: "/v1" });
   await server.register(registerHealthRoutes, { prefix: "/v1" });
 
