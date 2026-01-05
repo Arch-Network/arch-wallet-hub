@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { getEnv } from "./config/env.js";
 import { registerDb } from "./plugins/db.js";
 import { registerOpenApi } from "./plugins/openapi.js";
+import { registerTurnkey } from "./plugins/turnkey.js";
 import { registerHealthRoutes } from "./routes/health.js";
 
 declare module "fastify" {
@@ -42,6 +43,7 @@ export async function createServer() {
 
   await server.register(sensible);
   await server.register(registerDb);
+  await server.register(registerTurnkey);
   await server.register(registerOpenApi, { basePath: "/v1" });
   await server.register(registerHealthRoutes, { prefix: "/v1" });
 
