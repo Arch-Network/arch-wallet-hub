@@ -1,0 +1,368 @@
+import type { FastifyPluginAsync } from "fastify";
+import { Type } from "@sinclair/typebox";
+import { withDbTransaction } from "../db/tx.js";
+import {
+  createUser,
+  getTurnkeyResourceById,
+  insertTurnkeyResource,
+  markIdempotencyFailed,
+  markIdempotencySucceeded
+} from "../db/queries.js";
+import {
+  computeRequestHash,
+  consumeIdempotencyKey,
+  sha256Hex
+} from "../idempotency/idempotency.js";
+import { auditEvent } from "../audit/audit.js";
+
+const CreateWalletBody = Type.Object({
+  walletName: Type.Optional(Type.String({ minLength: 1 })),
+  addressFormat: Type.Optional(Type.String({ minLength: 1 })),
+  derivationPath: Type.Optional(Type.String({ minLength: 1 }))
+});
+
+const CreateWalletResponse = Type.Object({
+  resourceId: Type.String(),
+  userId: Type.String(),
+  organizationId: Type.String(),
+  walletId: Type.String(),
+  addresses: Type.Array(Type.String()),
+  defaultAddress: Type.Union([Type.String(), Type.Null()]),
+  activityId: Type.String()
+});
+
+const GetWalletResponse = Type.Object({
+  id: Type.String(),
+  userId: Type.Union([Type.String(), Type.Null()]),
+  organizationId: Type.String(),
+  walletId: Type.Union([Type.String(), Type.Null()]),
+  defaultAddress: Type.Union([Type.String(), Type.Null()]),
+  defaultAddressFormat: Type.Union([Type.String(), Type.Null()]),
+  defaultDerivationPath: Type.Union([Type.String(), Type.Null()]),
+  createdAt: Type.String()
+});
+
+const SignMessageBody = Type.Object({
+  resourceId: Type.String({ minLength: 1 }),
+  message: Type.String({ minLength: 1 }),
+  encoding: Type.Optional(
+    Type.Union([
+      Type.Literal("PAYLOAD_ENCODING_TEXT_UTF8"),
+      Type.Literal("PAYLOAD_ENCODING_HEXADECIMAL")
+    ])
+  ),
+  hashFunction: Type.Optional(
+    Type.Union([Type.Literal("HASH_FUNCTION_NO_OP"), Type.Literal("HASH_FUNCTION_SHA256")])
+  )
+});
+
+const SignMessageResponse = Type.Object({
+  resourceId: Type.String(),
+  signedWith: Type.String(),
+  activityId: Type.String(),
+  signature: Type.Object({
+    r: Type.String(),
+    s: Type.String(),
+    v: Type.String()
+  })
+});
+
+export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
+  server.post(
+    "/turnkey/wallets",
+    {
+      schema: {
+        summary: "Create an embedded Turnkey-backed wallet (Phase 0)",
+        tags: ["turnkey"],
+        body: CreateWalletBody,
+        response: { 200: CreateWalletResponse }
+      }
+    },
+    async (request, reply) => {
+      const idempotencyKey = request.headers["idempotency-key"]?.toString();
+      if (!idempotencyKey) {
+        return reply.badRequest("Missing Idempotency-Key header");
+      }
+
+      const body = request.body ?? {};
+      const route = "POST /v1/turnkey/wallets";
+      const requestHash = computeRequestHash(body);
+
+      const consumed = await withDbTransaction(server.db, async (client) => {
+        const res = await consumeIdempotencyKey({
+          client,
+          key: idempotencyKey,
+          route,
+          requestHash
+        });
+
+        if (res.kind !== "created") return res;
+
+        const user = await createUser(client);
+        return { ...res, userId: user.id };
+      });
+
+      if (consumed.kind === "replayed") return consumed.response;
+      if (consumed.kind === "conflict") return reply.conflict(consumed.reason);
+      if (consumed.kind === "in_progress") return reply.conflict(consumed.reason);
+      if (consumed.kind === "failed")
+        return reply.code(409).send({ message: consumed.reason, error: consumed.error });
+
+      const userId = (consumed as { userId: string }).userId;
+      const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}`;
+      const addressFormat =
+        (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2WPKH";
+      const derivationPath = (body as any).derivationPath ?? "m/84'/1'/0'/0/0";
+
+      await withDbTransaction(server.db, async (client) => {
+        await auditEvent({
+          client,
+          requestId: request.id,
+          userId,
+          eventType: "turnkey.wallet.create",
+          entityType: "user",
+          entityId: userId,
+          turnkeyActivityId: null,
+          turnkeyRequestId: null,
+          payloadJson: { walletName, addressFormat, derivationPath },
+          outcome: "requested"
+        });
+      });
+
+      try {
+        const created = await server.turnkey.createBitcoinWallet({
+          walletName,
+          addressFormat,
+          path: derivationPath
+        });
+        request.log.info(
+          { activityId: created.activityId, walletId: created.walletId, userId },
+          "turnkey.create_wallet.completed"
+        );
+
+        const defaultAddress = created.addresses[0] ?? null;
+
+        const response = await withDbTransaction(server.db, async (client) => {
+          const resource = await insertTurnkeyResource(client, {
+            userId,
+            organizationId: server.config.TURNKEY_ORGANIZATION_ID,
+            walletId: created.walletId,
+            vaultId: null,
+            keyId: null,
+            policyId: null,
+            defaultAddress,
+            defaultAddressFormat: addressFormat,
+            defaultDerivationPath: derivationPath
+          });
+
+          await auditEvent({
+            client,
+            requestId: request.id,
+            userId,
+            eventType: "turnkey.wallet.create",
+            entityType: "turnkey_resource",
+            entityId: resource.id,
+            turnkeyActivityId: created.activityId,
+            turnkeyRequestId: null,
+            payloadJson: {
+              walletId: created.walletId,
+              addresses: created.addresses,
+              defaultAddress
+            },
+            outcome: "succeeded"
+          });
+
+          const responseBody = {
+            resourceId: resource.id,
+            userId,
+            organizationId: server.config.TURNKEY_ORGANIZATION_ID,
+            walletId: created.walletId,
+            addresses: created.addresses,
+            defaultAddress,
+            activityId: created.activityId
+          };
+
+          await markIdempotencySucceeded(client, consumed.row.id, responseBody);
+          return responseBody;
+        });
+
+        return response;
+      } catch (err: any) {
+        await withDbTransaction(server.db, async (client) => {
+          await auditEvent({
+            client,
+            requestId: request.id,
+            userId,
+            eventType: "turnkey.wallet.create",
+            entityType: "user",
+            entityId: userId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { error: String(err?.message ?? err) },
+            outcome: "failed"
+          });
+          await markIdempotencyFailed(client, consumed.row.id, {
+            message: String(err?.message ?? err)
+          });
+        });
+        throw err;
+      }
+    }
+  );
+
+  server.get(
+    "/turnkey/wallets/:resourceId",
+    {
+      schema: {
+        summary: "Get stored Turnkey wallet resource metadata",
+        tags: ["turnkey"],
+        params: Type.Object({ resourceId: Type.String() }),
+        response: { 200: GetWalletResponse }
+      }
+    },
+    async (request, reply) => {
+      const { resourceId } = request.params as any;
+      const row = await withDbTransaction(server.db, (client) =>
+        getTurnkeyResourceById(client, resourceId)
+      );
+      if (!row) return reply.notFound();
+
+      return {
+        id: row.id,
+        userId: row.user_id,
+        organizationId: row.organization_id,
+        walletId: row.wallet_id,
+        defaultAddress: row.default_address,
+        defaultAddressFormat: row.default_address_format,
+        defaultDerivationPath: row.default_derivation_path,
+        createdAt: row.created_at
+      };
+    }
+  );
+
+  server.post(
+    "/turnkey/sign-message",
+    {
+      schema: {
+        summary: "Sign a message via Turnkey (Phase 0)",
+        tags: ["turnkey"],
+        body: SignMessageBody,
+        response: { 200: SignMessageResponse }
+      }
+    },
+    async (request, reply) => {
+      const idempotencyKey = request.headers["idempotency-key"]?.toString();
+      if (!idempotencyKey) {
+        return reply.badRequest("Missing Idempotency-Key header");
+      }
+
+      const body = request.body as any;
+      const route = "POST /v1/turnkey/sign-message";
+      const requestHash = computeRequestHash(body);
+
+      const consumed = await withDbTransaction(server.db, async (client) => {
+        return await consumeIdempotencyKey({
+          client,
+          key: idempotencyKey,
+          route,
+          requestHash
+        });
+      });
+
+      if (consumed.kind === "replayed") return consumed.response;
+      if (consumed.kind === "conflict") return reply.conflict(consumed.reason);
+      if (consumed.kind === "in_progress") return reply.conflict(consumed.reason);
+      if (consumed.kind === "failed")
+        return reply.code(409).send({ message: consumed.reason, error: consumed.error });
+
+      const { resourceId, message } = body;
+      const encoding = body.encoding ?? "PAYLOAD_ENCODING_TEXT_UTF8";
+      const hashFunction = body.hashFunction ?? "HASH_FUNCTION_SHA256";
+
+      const resource = await withDbTransaction(server.db, (client) =>
+        getTurnkeyResourceById(client, resourceId)
+      );
+      if (!resource) return reply.notFound("Unknown resourceId");
+      if (!resource.default_address) {
+        return reply.badRequest("Resource has no default address to sign with");
+      }
+
+      const messageHash = sha256Hex(`${encoding}:${hashFunction}:${message}`);
+
+      await withDbTransaction(server.db, async (client) => {
+        await auditEvent({
+          client,
+          requestId: request.id,
+          userId: resource.user_id,
+          eventType: "turnkey.sign.message",
+          entityType: "turnkey_resource",
+          entityId: resourceId,
+          turnkeyActivityId: null,
+          turnkeyRequestId: null,
+          payloadJson: { encoding, hashFunction, messageHash },
+          outcome: "requested"
+        });
+      });
+
+      try {
+        const sig = await server.turnkey.signRawPayload({
+          signWith: resource.default_address,
+          payload: message,
+          encoding,
+          hashFunction
+        });
+        request.log.info(
+          { activityId: sig.activityId, resourceId, userId: resource.user_id },
+          "turnkey.sign_message.completed"
+        );
+
+        const responseBody = await withDbTransaction(server.db, async (client) => {
+          await auditEvent({
+            client,
+            requestId: request.id,
+            userId: resource.user_id,
+            eventType: "turnkey.sign.message",
+            entityType: "turnkey_resource",
+            entityId: resourceId,
+            turnkeyActivityId: sig.activityId,
+            turnkeyRequestId: null,
+            payloadJson: { signature: { r: sig.r, s: sig.s, v: sig.v } },
+            outcome: "succeeded"
+          });
+
+          const out = {
+            resourceId,
+            signedWith: resource.default_address,
+            activityId: sig.activityId,
+            signature: { r: sig.r, s: sig.s, v: sig.v }
+          };
+
+          await markIdempotencySucceeded(client, consumed.row.id, out);
+          return out;
+        });
+
+        return responseBody;
+      } catch (err: any) {
+        await withDbTransaction(server.db, async (client) => {
+          await auditEvent({
+            client,
+            requestId: request.id,
+            userId: resource.user_id,
+            eventType: "turnkey.sign.message",
+            entityType: "turnkey_resource",
+            entityId: resourceId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { error: String(err?.message ?? err), messageHash },
+            outcome: "failed"
+          });
+          await markIdempotencyFailed(client, consumed.row.id, {
+            message: String(err?.message ?? err)
+          });
+        });
+        throw err;
+      }
+    }
+  );
+};
+
