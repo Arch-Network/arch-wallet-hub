@@ -1,0 +1,36 @@
+{
+  "name": "@arch/wallet-hub-api",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Arch Wallet Hub API (Turnkey-orchestrated signing; Arch-owned Bitcoin semantics)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/sensible": "^5.6.0",
+    "@fastify/swagger": "^8.14.0",
+    "@fastify/swagger-ui": "^4.2.0",
+    "@sinclair/typebox": "^0.32.30",
+    "@turnkey/api-key-stamper": "^0.5.0",
+    "@turnkey/http": "^3.16.0",
+    "@turnkey/sdk-types": "^0.11.0",
+    "dotenv": "^16.4.5",
+    "fastify": "^4.28.1",
+    "pg": "^8.13.1",
+    "uuid": "^11.0.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
