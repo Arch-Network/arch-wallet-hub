@@ -22,6 +22,7 @@
     "@saturnbtcio/arch-sdk": "^0.0.24",
     "@saturnbtcio/bip322-js": "^3.0.1",
     "bitcoinjs-lib": "^6.1.6",
+    "bs58": "^6.0.0",
     "dotenv": "^16.4.5",
     "fastify": "^4.28.1",
     "pg": "^8.13.1",

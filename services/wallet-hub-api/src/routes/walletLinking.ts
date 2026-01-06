@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { auditEvent } from "../audit/audit.js";
 import { Verifier, Address as Bip322Address } from "@saturnbtcio/bip322-js";
+import { resolveArchAccountAddress } from "../arch/address.js";
 
 const CreateChallengeBody = Type.Object({
   userId: Type.String({ minLength: 1 }),
@@ -54,11 +55,13 @@ const AddressParams = Type.Object({
 
 const AccountSummaryResponse = Type.Object({
   address: Type.String(),
+  resolvedArchAccountAddress: Type.String(),
   account: Type.Unknown()
 });
 
 const AccountTransactionsResponse = Type.Object({
   address: Type.String(),
+  resolvedArchAccountAddress: Type.String(),
   transactions: Type.Unknown()
 });
 
@@ -290,8 +293,9 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
     async (request, reply) => {
       if (!server.indexer) return reply.notImplemented("Indexer not configured");
       const { address } = request.params as any;
-      const account = await server.indexer.getAccountSummary(address);
-      return { address, account };
+      const resolved = resolveArchAccountAddress(address);
+      const account = await server.indexer.getAccountSummary(resolved.archAccountAddress);
+      return { address, resolvedArchAccountAddress: resolved.archAccountAddress, account };
     }
   );
 
@@ -308,8 +312,9 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
     async (request, reply) => {
       if (!server.indexer) return reply.notImplemented("Indexer not configured");
       const { address } = request.params as any;
-      const transactions = await server.indexer.getAccountTransactions(address);
-      return { address, transactions };
+      const resolved = resolveArchAccountAddress(address);
+      const transactions = await server.indexer.getAccountTransactions(resolved.archAccountAddress);
+      return { address, resolvedArchAccountAddress: resolved.archAccountAddress, transactions };
     }
   );
 };
