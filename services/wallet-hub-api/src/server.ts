@@ -6,8 +6,10 @@ import { registerDb } from "./plugins/db.js";
 import { registerObservability } from "./plugins/observability.js";
 import { registerOpenApi } from "./plugins/openapi.js";
 import { registerTurnkey } from "./plugins/turnkey.js";
+import { registerIndexer } from "./plugins/indexer.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
+import { registerWalletLinkingRoutes } from "./routes/walletLinking.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -47,9 +49,11 @@ export async function createServer() {
   await server.register(registerObservability);
   await server.register(registerDb);
   await server.register(registerTurnkey);
+  await server.register(registerIndexer);
   await server.register(registerOpenApi, { basePath: "/v1" });
   await server.register(registerHealthRoutes, { prefix: "/v1" });
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });
+  await server.register(registerWalletLinkingRoutes, { prefix: "/v1" });
 
   return server;
 }
