@@ -43,6 +43,20 @@ type SignRawPayloadResult = {
   activityId: string;
 };
 
+type SignBitcoinTransactionParams = {
+  signWith: string;
+  /**
+   * Unsigned Bitcoin transaction representation expected by Turnkey.
+   * In practice this is commonly a PSBT (base64) for segwit/taproot signing.
+   */
+  unsignedTransaction: string;
+};
+
+type SignBitcoinTransactionResult = {
+  signedTransaction: string;
+  activityId: string;
+};
+
 function nowMs() {
   return Date.now().toString();
 }
@@ -167,5 +181,33 @@ export class TurnkeyService {
 
     return { ...sig, activityId };
   }
-}
 
+  async signBitcoinTransaction(
+    params: SignBitcoinTransactionParams
+  ): Promise<SignBitcoinTransactionResult> {
+    const res = await this.client.signTransaction({
+      type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
+      timestampMs: nowMs(),
+      organizationId: this.organizationId,
+      parameters: {
+        signWith: params.signWith,
+        unsignedTransaction: params.unsignedTransaction,
+        type: "TRANSACTION_TYPE_BITCOIN"
+      }
+    });
+
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId);
+
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey signTransaction did not complete: ${activityId}`);
+    }
+
+    const signedTransaction = activity.result.signTransactionResult?.signedTransaction;
+    if (!signedTransaction) {
+      throw new Error("Turnkey signTransaction did not return signedTransaction");
+    }
+
+    return { signedTransaction, activityId };
+  }
+}

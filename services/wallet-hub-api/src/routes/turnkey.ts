@@ -14,6 +14,10 @@ import {
   sha256Hex
 } from "../idempotency/idempotency.js";
 import { auditEvent } from "../audit/audit.js";
+import {
+  buildBip322ToSignPsbtBase64,
+  extractBip322TaprootSignature64
+} from "../bitcoin/bip322.js";
 
 const CreateWalletBody = Type.Object({
   walletName: Type.Optional(Type.String({ minLength: 1 })),
@@ -60,11 +64,7 @@ const SignMessageResponse = Type.Object({
   resourceId: Type.String(),
   signedWith: Type.String(),
   activityId: Type.String(),
-  signature: Type.Object({
-    r: Type.String(),
-    s: Type.String(),
-    v: Type.String()
-  })
+  signature64Hex: Type.String()
 });
 
 export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
@@ -111,8 +111,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       const userId = (consumed as { userId: string }).userId;
       const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}`;
       const addressFormat =
-        (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2WPKH";
-      const derivationPath = (body as any).derivationPath ?? "m/84'/1'/0'/0/0";
+        (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
+      const derivationPath = (body as any).derivationPath ?? "m/86'/1'/0'/0/0";
 
       await withDbTransaction(server.db, async (client) => {
         await auditEvent({
@@ -305,14 +305,22 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       });
 
       try {
-        const sig = await server.turnkey.signRawPayload({
-          signWith: resource.default_address,
-          payload: message,
-          encoding,
-          hashFunction
+        const toSignPsbtBase64 = buildBip322ToSignPsbtBase64({
+          signerAddress: resource.default_address,
+          message
         });
+
+        const signed = await server.turnkey.signBitcoinTransaction({
+          signWith: resource.default_address,
+          unsignedTransaction: toSignPsbtBase64
+        });
+
+        const signature64 = extractBip322TaprootSignature64({
+          signedTransaction: signed.signedTransaction
+        });
+        const signature64Hex = signature64.toString("hex");
         request.log.info(
-          { activityId: sig.activityId, resourceId, userId: resource.user_id },
+          { activityId: signed.activityId, resourceId, userId: resource.user_id },
           "turnkey.sign_message.completed"
         );
 
@@ -324,17 +332,17 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             eventType: "turnkey.sign.message",
             entityType: "turnkey_resource",
             entityId: resourceId,
-            turnkeyActivityId: sig.activityId,
+            turnkeyActivityId: signed.activityId,
             turnkeyRequestId: null,
-            payloadJson: { signature: { r: sig.r, s: sig.s, v: sig.v } },
+            payloadJson: { signature64Hex },
             outcome: "succeeded"
           });
 
           const out = {
             resourceId,
             signedWith: resource.default_address,
-            activityId: sig.activityId,
-            signature: { r: sig.r, s: sig.s, v: sig.v }
+            activityId: signed.activityId,
+            signature64Hex
           };
 
           await markIdempotencySucceeded(client, consumed.row.id, out);
@@ -365,4 +373,3 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 };
-
