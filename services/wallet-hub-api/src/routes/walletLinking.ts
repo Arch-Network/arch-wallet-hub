@@ -31,6 +31,7 @@ const VerifyChallengeBody = Type.Object({
 const VerifyChallengeResponse = Type.Object({
   linkedWalletId: Type.String(),
   address: Type.String(),
+  archAccountAddress: Type.String(),
   walletProvider: Type.String(),
   verificationScheme: Type.String()
 });
@@ -44,6 +45,7 @@ const ListLinkedWalletsResponse = Type.Array(
     id: Type.String(),
     walletProvider: Type.String(),
     address: Type.String(),
+    archAccountAddress: Type.String(),
     network: Type.String(),
     createdAt: Type.String()
   })
@@ -113,8 +115,12 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       if (!Bip322Address.isValidBitcoinAddress(address)) {
         return reply.badRequest("Invalid bitcoin address");
       }
+      if (!Bip322Address.isP2TR(address)) {
+        return reply.badRequest("Only Taproot (p2tr) addresses are supported");
+      }
 
       const network: Network = body.network ?? inferNetworkFromAddress(address);
+      const resolved = resolveArchAccountAddress(address);
       const nonce = crypto.randomBytes(16).toString("hex");
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 min
       const message = makeChallengeMessage({
@@ -142,7 +148,13 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
           entityId: res.rows[0]!.id,
           turnkeyActivityId: null,
           turnkeyRequestId: null,
-          payloadJson: { walletProvider, address, network, expiresAt: expiresAt.toISOString() },
+          payloadJson: {
+            walletProvider,
+            address,
+            network,
+            resolvedArchAccountAddress: resolved.archAccountAddress,
+            expiresAt: expiresAt.toISOString()
+          },
           outcome: "succeeded"
         });
         return res.rows[0]!;
@@ -204,6 +216,7 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       if (!ok) return reply.unauthorized("Signature verification failed");
 
       const network = inferNetworkFromAddress(record.address);
+      const resolved = resolveArchAccountAddress(record.address);
 
       const linked = await withDbTransaction(server.db, async (client) => {
         await client.query(`UPDATE wallet_link_challenges SET used_at = NOW() WHERE id = $1`, [
@@ -211,15 +224,25 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
         ]);
         const res = await client.query<{ id: string }>(
           `
-          INSERT INTO linked_wallets (user_id, wallet_provider, address, network, verification_scheme, signature, message)
-          VALUES ($1,$2,$3,$4,$5,$6,$7)
+          INSERT INTO linked_wallets (user_id, wallet_provider, address, arch_account_address, network, verification_scheme, signature, message)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
           ON CONFLICT (user_id, wallet_provider, address) DO UPDATE
             SET signature = EXCLUDED.signature,
                 message = EXCLUDED.message,
-                verification_scheme = EXCLUDED.verification_scheme
+                verification_scheme = EXCLUDED.verification_scheme,
+                arch_account_address = EXCLUDED.arch_account_address
           RETURNING id
           `,
-          [userId, record.wallet_provider, record.address, network, verificationScheme, signature, record.challenge]
+          [
+            userId,
+            record.wallet_provider,
+            record.address,
+            resolved.archAccountAddress,
+            network,
+            verificationScheme,
+            signature,
+            record.challenge
+          ]
         );
 
         await auditEvent({
@@ -231,7 +254,13 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
           entityId: res.rows[0]!.id,
           turnkeyActivityId: null,
           turnkeyRequestId: null,
-          payloadJson: { walletProvider: record.wallet_provider, address: record.address, network, verificationScheme },
+          payloadJson: {
+            walletProvider: record.wallet_provider,
+            address: record.address,
+            network,
+            verificationScheme,
+            archAccountAddress: resolved.archAccountAddress
+          },
           outcome: "succeeded"
         });
 
@@ -241,6 +270,7 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       return {
         linkedWalletId: linked.id,
         address: record.address,
+        archAccountAddress: resolved.archAccountAddress,
         walletProvider: record.wallet_provider,
         verificationScheme
       };
@@ -264,15 +294,21 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
           id: string;
           wallet_provider: string;
           address: string;
+          arch_account_address: string | null;
           network: string;
           created_at: string;
-        }>(`SELECT id, wallet_provider, address, network, created_at FROM linked_wallets WHERE user_id = $1 ORDER BY created_at DESC`, [userId]);
+        }>(
+          `SELECT id, wallet_provider, address, arch_account_address, network, created_at FROM linked_wallets WHERE user_id = $1 ORDER BY created_at DESC`,
+          [userId]
+        );
         return res.rows;
       });
       return rows.map((r) => ({
         id: r.id,
         walletProvider: r.wallet_provider,
         address: r.address,
+        archAccountAddress:
+          r.arch_account_address ?? resolveArchAccountAddress(r.address).archAccountAddress,
         network: r.network,
         createdAt: r.created_at
       }));
