@@ -52,14 +52,14 @@ const AddressParams = Type.Object({
   address: Type.String({ minLength: 1 })
 });
 
-const AddressSummaryResponse = Type.Object({
+const AccountSummaryResponse = Type.Object({
   address: Type.String(),
-  summary: Type.Unknown()
+  account: Type.Unknown()
 });
 
-const AddressUtxosResponse = Type.Object({
+const AccountTransactionsResponse = Type.Object({
   address: Type.String(),
-  utxos: Type.Unknown()
+  transactions: Type.Unknown()
 });
 
 type Network = "mainnet" | "testnet" | "signet" | "regtest";
@@ -278,39 +278,38 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
 
   // View-only indexer passthrough (Phase 1)
   server.get(
-    "/bitcoin/address/:address/summary",
+    "/arch/accounts/:address",
     {
       schema: {
-        summary: "Get BTC address summary from indexer (view-only)",
+        summary: "Get Arch account summary from indexer (view-only)",
         tags: ["indexer"],
         params: AddressParams,
-        response: { 200: AddressSummaryResponse }
+        response: { 200: AccountSummaryResponse }
       }
     },
     async (request, reply) => {
       if (!server.indexer) return reply.notImplemented("Indexer not configured");
       const { address } = request.params as any;
-      const summary = await server.indexer.getAddressSummary(address);
-      return { address, summary };
+      const account = await server.indexer.getAccountSummary(address);
+      return { address, account };
     }
   );
 
   server.get(
-    "/bitcoin/address/:address/utxos",
+    "/arch/accounts/:address/transactions",
     {
       schema: {
-        summary: "Get BTC address UTXOs from indexer (view-only)",
+        summary: "Get Arch account transactions from indexer (view-only)",
         tags: ["indexer"],
         params: AddressParams,
-        response: { 200: AddressUtxosResponse }
+        response: { 200: AccountTransactionsResponse }
       }
     },
     async (request, reply) => {
       if (!server.indexer) return reply.notImplemented("Indexer not configured");
       const { address } = request.params as any;
-      const utxos = await server.indexer.getUtxos(address);
-      return { address, utxos };
+      const transactions = await server.indexer.getAccountTransactions(address);
+      return { address, transactions };
     }
   );
 };
-

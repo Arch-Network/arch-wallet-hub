@@ -22,7 +22,8 @@ const EnvSchema = z.object({
   TURNKEY_API_PRIVATE_KEY: z.string().min(1),
 
   // Existing Arch indexer API (Phase 1 view-only reads)
-  INDEXER_BASE_URL: z.string().url().optional()
+  INDEXER_BASE_URL: z.string().url().optional(),
+  INDEXER_API_KEY: z.string().min(1).optional()
 });
 
 export type Env = z.infer<typeof EnvSchema>;
