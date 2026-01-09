@@ -26,7 +26,7 @@ export type BuildAndSignArchTxParams = {
 export async function buildAndSignArchRuntimeTx(params: {
   turnkey: TurnkeyForArch;
   build: BuildAndSignArchTxParams;
-}): Promise<RuntimeTransaction> {
+}): Promise<{ runtimeTransaction: RuntimeTransaction; turnkeyActivityId: string }> {
   const maybeMessage = SanitizedMessageUtil.createSanitizedMessage(
     params.build.instructions,
     params.build.payerPubkey,
@@ -59,9 +59,12 @@ export async function buildAndSignArchRuntimeTx(params: {
   const adjusted = SignatureUtil.adjustSignature(Uint8Array.from(sig64));
 
   return {
-    version: 1,
-    signatures: [adjusted],
-    message
+    runtimeTransaction: {
+      version: 1,
+      signatures: [adjusted],
+      message
+    },
+    turnkeyActivityId: signed.activityId
   };
 }
 

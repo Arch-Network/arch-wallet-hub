@@ -10,6 +10,7 @@ import { registerIndexer } from "./plugins/indexer.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
 import { registerWalletLinkingRoutes } from "./routes/walletLinking.js";
+import { registerArchTransactionRoutes } from "./routes/archTransactions.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -54,6 +55,7 @@ export async function createServer() {
   await server.register(registerHealthRoutes, { prefix: "/v1" });
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });
   await server.register(registerWalletLinkingRoutes, { prefix: "/v1" });
+  await server.register(registerArchTransactionRoutes, { prefix: "/v1" });
 
   return server;
 }

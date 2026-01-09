@@ -5,4 +5,3 @@ ALTER TABLE linked_wallets
   ADD COLUMN IF NOT EXISTS arch_account_address TEXT;
 
 -- No backfill in SQL because mapping requires bech32m decode; this is handled in application code.
-
