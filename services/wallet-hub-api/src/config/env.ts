@@ -23,7 +23,7 @@ const EnvSchema = z.object({
 
   // Existing Arch indexer API (Phase 1 view-only reads)
   INDEXER_BASE_URL: z.string().url().optional(),
-  INDEXER_API_KEY: z.string().min(1).optional(),
+  INDEXER_API_KEY: z.string().optional(),
 
   // Arch Network RPC node (for transaction submission)
   ARCH_RPC_NODE_URL: z.string().url().optional()
