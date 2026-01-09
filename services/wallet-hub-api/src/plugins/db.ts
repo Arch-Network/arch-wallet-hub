@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
 import { runMigrations } from "../db/migrations.js";
+import { setDbPool } from "../db/pool.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -16,6 +17,9 @@ const __dirname = path.dirname(__filename);
 export const registerDb: FastifyPluginAsync = async (server) => {
   const pool = new Pool({ connectionString: server.config.DATABASE_URL });
   server.decorate("db", pool);
+  
+  // Also store globally for routes that can't access server.db in scoped plugins
+  setDbPool(pool);
 
   server.addHook("onClose", async () => {
     await pool.end();

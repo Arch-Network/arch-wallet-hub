@@ -82,4 +82,3 @@ export async function submitArchTransaction(params: {
   const arch = createArchRpcClient(params.nodeUrl);
   return await arch.sendTransaction(params.tx);
 }
-

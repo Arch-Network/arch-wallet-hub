@@ -7,6 +7,7 @@ import {
   type BuildAndSignArchTxParams
 } from "../arch/arch.js";
 import { withDbTransaction } from "../db/tx.js";
+import { getDbPool } from "../db/pool.js";
 import { auditEvent } from "../audit/audit.js";
 import { consumeIdempotencyKey, computeRequestHash } from "../idempotency/idempotency.js";
 import { getTurnkeyResourceById, markIdempotencySucceeded, markIdempotencyFailed } from "../db/queries.js";
@@ -16,6 +17,7 @@ import bs58 from "bs58";
 
 declare module "fastify" {
   interface FastifyInstance {
+    db: import("pg").Pool;
     turnkey: import("../turnkey/client.js").TurnkeyService;
     config: import("../config/env.js").Env;
   }
@@ -109,7 +111,12 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const route = "POST /v1/arch/transfer";
       const requestHash = computeRequestHash(body);
 
-      const consumed = await withDbTransaction(server.db, async (client) => {
+      // Get db pool from global store (works in scoped plugins)
+      const db = getDbPool();
+      const config = request.server.config || server.config;
+      const turnkey = request.server.turnkey || server.turnkey;
+
+      const consumed = await withDbTransaction(db, async (client) => {
         return await consumeIdempotencyKey({
           client,
           key: idempotencyKey,
@@ -127,7 +134,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const { userId, resourceId, toAddress, lamports: lamportsStr } = body;
 
       // Get Turnkey resource
-      const resource = await withDbTransaction(server.db, (client) =>
+      const resource = await withDbTransaction(db, (client) =>
         getTurnkeyResourceById(client, resourceId)
       );
       if (!resource) return reply.notFound("Unknown resourceId");
@@ -161,7 +168,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
 
       // Audit: transaction requested
-      await withDbTransaction(server.db, async (client) => {
+      await withDbTransaction(db, async (client) => {
         await auditEvent({
           client,
           requestId: request.id,
@@ -183,7 +190,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       try {
         // Build and sign transaction
         const { runtimeTransaction, turnkeyActivityId } = await buildAndSignArchRuntimeTx({
-          turnkey: server.turnkey,
+          turnkey,
           build: {
             instructions: [transferInstruction],
             payerPubkey: fromPubkey,
@@ -206,7 +213,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
           lamports: lamportsStr
         };
 
-        await withDbTransaction(server.db, async (client) => {
+        await withDbTransaction(db, async (client) => {
           await auditEvent({
             client,
             requestId: request.id,
@@ -224,7 +231,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
 
         return responseBody;
       } catch (err: any) {
-        await withDbTransaction(server.db, async (client) => {
+        await withDbTransaction(db, async (client) => {
           await auditEvent({
             client,
             requestId: request.id,
@@ -267,7 +274,12 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const route = "POST /v1/arch/instructions/build";
       const requestHash = computeRequestHash(body);
 
-      const consumed = await withDbTransaction(server.db, async (client) => {
+      // Get db pool from global store (works in scoped plugins)
+      const db = getDbPool();
+      const config = request.server.config || server.config;
+      const turnkey = request.server.turnkey || server.turnkey;
+
+      const consumed = await withDbTransaction(db, async (client) => {
         return await consumeIdempotencyKey({
           client,
           key: idempotencyKey,
@@ -285,7 +297,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const { userId, resourceId, instructions: rawInstructions } = body;
 
       // Get Turnkey resource
-      const resource = await withDbTransaction(server.db, (client) =>
+      const resource = await withDbTransaction(db, (client) =>
         getTurnkeyResourceById(client, resourceId)
       );
       if (!resource) return reply.notFound("Unknown resourceId");
@@ -295,7 +307,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       }
 
       // Check RPC node URL
-      if (!server.config.ARCH_RPC_NODE_URL) {
+      if (!config.ARCH_RPC_NODE_URL) {
         return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       }
 
@@ -315,12 +327,12 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const payerPubkey = parsePubkey(fromResolved.archAccountAddress);
 
       // Get recent blockhash
-      const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
+      const archRpc = createArchRpcClient(config.ARCH_RPC_NODE_URL);
       const recentBlockhashHex = await archRpc.getBestBlockHash();
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
 
       // Audit: transaction requested
-      await withDbTransaction(server.db, async (client) => {
+      await withDbTransaction(db, async (client) => {
         await auditEvent({
           client,
           requestId: request.id,
@@ -341,7 +353,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       try {
         // Build and sign transaction
         const { runtimeTransaction, turnkeyActivityId } = await buildAndSignArchRuntimeTx({
-          turnkey: server.turnkey,
+          turnkey,
           build: {
             instructions,
             payerPubkey,
@@ -352,7 +364,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
 
         // Submit transaction
         const txid = await submitArchTransaction({
-          nodeUrl: server.config.ARCH_RPC_NODE_URL,
+          nodeUrl: config.ARCH_RPC_NODE_URL,
           tx: runtimeTransaction
         });
 
@@ -366,7 +378,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
           }
         };
 
-        await withDbTransaction(server.db, async (client) => {
+        await withDbTransaction(db, async (client) => {
           await auditEvent({
             client,
             requestId: request.id,
@@ -384,7 +396,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
 
         return responseBody;
       } catch (err: any) {
-        await withDbTransaction(server.db, async (client) => {
+        await withDbTransaction(db, async (client) => {
           await auditEvent({
             client,
             requestId: request.id,
