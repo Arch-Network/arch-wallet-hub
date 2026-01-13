@@ -129,7 +129,9 @@ export type GetSigningRequestResponse = {
 
 export type SubmitSigningRequest = {
   externalUserId: string;
-  signedTransaction: string;
+  signature64Hex?: string;
+  signedTransaction?: string;
+  turnkeyActivityId?: string;
 };
 
 export type SubmitSigningResponse = {

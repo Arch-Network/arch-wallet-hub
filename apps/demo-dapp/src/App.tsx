@@ -47,6 +47,12 @@ export default function App() {
   const [createErr, setCreateErr] = useState<string | null>(null);
   const [createLoading, setCreateLoading] = useState(false);
 
+  const [submitSig64Hex, setSubmitSig64Hex] = useState("");
+  const [submitActivityId, setSubmitActivityId] = useState("");
+  const [submitRes, setSubmitRes] = useState<unknown | null>(null);
+  const [submitErr, setSubmitErr] = useState<string | null>(null);
+  const [submitLoading, setSubmitLoading] = useState(false);
+
   const [signingRequestId, setSigningRequestId] = useState("");
   const [getRes, setGetRes] = useState<unknown | null>(null);
   const [getErr, setGetErr] = useState<string | null>(null);
@@ -121,6 +127,24 @@ export default function App() {
       setCreateErr(String(e?.message ?? e));
     } finally {
       setCreateLoading(false);
+    }
+  }
+
+  async function onSubmitSignature() {
+    setSubmitLoading(true);
+    setSubmitErr(null);
+    setSubmitRes(null);
+    try {
+      const res = await client.submitSigningRequest(signingRequestId, {
+        externalUserId,
+        signature64Hex: submitSig64Hex || undefined,
+        turnkeyActivityId: submitActivityId || undefined
+      });
+      setSubmitRes(res);
+    } catch (e: any) {
+      setSubmitErr(String(e?.message ?? e));
+    } finally {
+      setSubmitLoading(false);
     }
   }
 
@@ -342,6 +366,45 @@ export default function App() {
           {createRes ? (
             <div className="json">
               <pre>{safeJson(createRes)}</pre>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="card">
+          <h2>Submit user signature (non-custodial)</h2>
+          <div className="subtitle" style={{ lineHeight: 1.5 }}>
+            Wallet Hub no longer signs server-side. Use Turnkey (passkey) in the client to sign the
+            <code>payloadToSign.payloadHex</code> with <code>signWith</code> (the Taproot address), then paste the
+            64-byte signature hex (r||s) here.
+          </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <label>signature64Hex</label>
+            <input
+              value={submitSig64Hex}
+              onChange={(e) => setSubmitSig64Hex(e.target.value)}
+              placeholder="128 hex chars (r||s)"
+            />
+          </div>
+          <div className="row">
+            <label>turnkeyActivityId (optional)</label>
+            <input value={submitActivityId} onChange={(e) => setSubmitActivityId(e.target.value)} />
+          </div>
+          <div className="actions">
+            <button
+              onClick={onSubmitSignature}
+              disabled={submitLoading || !apiKey || !signingRequestId || !externalUserId || submitSig64Hex.length !== 128}
+            >
+              {submitLoading ? "Submitting..." : "Submit signature"}
+            </button>
+          </div>
+          {submitErr ? (
+            <div className="json">
+              <pre className="bad">{submitErr}</pre>
+            </div>
+          ) : null}
+          {submitRes ? (
+            <div className="json">
+              <pre>{safeJson(submitRes)}</pre>
             </div>
           ) : null}
         </div>
