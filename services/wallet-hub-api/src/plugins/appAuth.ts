@@ -41,6 +41,8 @@ function isPublicPath(url: string): boolean {
 
 const appAuthPlugin: FastifyPluginAsync = async (server) => {
   server.addHook("onRequest", async (request, reply) => {
+    // Allow CORS preflights through without auth.
+    if (request.method === "OPTIONS") return;
     if (isPublicPath(request.url)) return;
 
     const apiKey = extractApiKey({ headers: request.headers as any });

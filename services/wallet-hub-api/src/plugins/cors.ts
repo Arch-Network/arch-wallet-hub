@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import fp from "fastify-plugin";
 
 function parseAllowedOrigins(raw: string | undefined): string[] | "*" {
   if (!raw) return [];
@@ -16,7 +17,7 @@ function isOriginAllowed(origin: string, allowed: string[] | "*"): boolean {
   return allowed.includes(origin);
 }
 
-export const registerCors: FastifyPluginAsync = async (server) => {
+const corsPlugin: FastifyPluginAsync = async (server) => {
   const envAllowed = parseAllowedOrigins((server.config as any).CORS_ALLOW_ORIGINS);
   const defaults =
     server.config.NODE_ENV === "development"
@@ -49,8 +50,13 @@ export const registerCors: FastifyPluginAsync = async (server) => {
 
     // Always short-circuit preflight BEFORE auth hooks.
     if (request.method === "OPTIONS") {
-      return reply.code(204).send();
+      reply.code(204).send();
+      // Ensure Fastify stops processing additional hooks (like auth).
+      reply.hijack();
+      return;
     }
   });
 };
 
+// Disable encapsulation so the onRequest hook applies to all routes registered after this plugin.
+export const registerCors = fp(corsPlugin, { name: "cors" });
