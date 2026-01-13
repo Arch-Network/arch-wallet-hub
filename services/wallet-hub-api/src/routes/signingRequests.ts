@@ -5,15 +5,16 @@ import { withDbTransaction } from "../db/tx.js";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
 import { insertSigningRequest, getSigningRequestForApp, markSigningRequestSubmitted, markSigningRequestSucceeded, markSigningRequestFailed } from "../db/signingRequests.js";
 import { auditEvent } from "../audit/audit.js";
-import { buildBip322ToSignPsbtBase64, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
+import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
 import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey } from "../arch/arch.js";
 import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, type Instruction } from "@saturnbtcio/arch-sdk";
 import { Buffer } from "node:buffer";
 import bs58 from "bs58";
-import { secp256k1 } from "@noble/curves/secp256k1";
+import { secp256k1, schnorr } from "@noble/curves/secp256k1";
 import { getBtcPlatformClient } from "../btcPlatform/store.js";
+import { resolveArchAccountAddress } from "../arch/address.js";
 
 const CreateSigningRequestBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
@@ -53,7 +54,12 @@ const CreateSigningRequestResponse = Type.Object({
 
 const SubmitSignatureBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
-  signedTransaction: Type.String({ minLength: 1 }) // PSBT base64 or tx hex
+  // One of:
+  // - signature64Hex: 64-byte schnorr signature over BIP-322 toSign taproot sighash (r||s hex)
+  // - signedTransaction: signed PSBT base64 or tx hex containing the taproot witness signature
+  signature64Hex: Type.Optional(Type.String({ minLength: 128, maxLength: 128 })),
+  signedTransaction: Type.Optional(Type.String({ minLength: 1 })),
+  turnkeyActivityId: Type.Optional(Type.String({ minLength: 1 }))
 });
 
 const SubmitSignatureResponse = Type.Object({
@@ -261,11 +267,12 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       let signerArchAccountAddress: string;
       let turnkeyResourceId: string | null = null;
       if (body.signer.kind === "external") {
-        // External taproot address does not let us recover the internal x-only pubkey (the Arch account key).
-        // For now, require an Arch account address for transaction submission.
-        return reply.badRequest(
-          "External signer cannot submit arch.transfer without providing an Arch account address (base58 pubkey)."
-        );
+        signerTaprootAddress = body.signer.taprootAddress as string;
+        const resolved = resolveArchAccountAddress(signerTaprootAddress);
+        if (resolved.kind !== "taproot") {
+          return reply.badRequest("External signer must provide a Taproot (p2tr) address");
+        }
+        signerArchAccountAddress = resolved.archAccountAddress;
       } else {
         turnkeyResourceId = body.signer.resourceId as string;
         const resource = await withDbTransaction(db, (client) =>
@@ -275,15 +282,11 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
         if (!resource.default_address) return reply.badRequest("Resource has no default address");
         signerTaprootAddress = resource.default_address;
-
-        // Fetch wallet account details from Turnkey to get the internal public key (x-only) used as the Arch account key.
-        const turnkey = getTurnkeyClient();
-        const walletId = resource.wallet_id;
-        if (!walletId) return reply.badRequest("Resource has no wallet_id");
-        const accountsRes = await turnkey.getWalletAccounts({ walletId });
-        const acct = accountsRes.accounts.find((a) => a.address === signerTaprootAddress);
-        if (!acct?.publicKey) return reply.badRequest("Turnkey wallet account publicKey unavailable");
-        signerArchAccountAddress = turnkeyPublicKeyToArchAccountBase58(acct.publicKey);
+        const resolved = resolveArchAccountAddress(signerTaprootAddress);
+        if (resolved.kind !== "taproot") {
+          return reply.badRequest("Turnkey resource defaultAddress must be Taproot (p2tr)");
+        }
+        signerArchAccountAddress = resolved.archAccountAddress;
       }
 
       if (!signerArchAccountAddress) {
@@ -389,9 +392,24 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         message: Buffer.from(messageHash)
       });
 
-      const payloadToSign = { kind: "bip322_psbt_base64", psbtBase64, recentBlockhashHex };
+      // For non-custodial Turnkey: clients sign the Taproot sighash directly via Turnkey SIGN_RAW_PAYLOAD
+      // using a user-held credential (passkey/email/OAuth). We provide the digest to sign as hex.
+      const sighash = computeBip322ToSignTaprootSighash({
+        signerAddress: signerTaprootAddress,
+        message: Buffer.from(messageHash)
+      });
+      const payloadToSign = {
+        kind: "taproot_sighash_hex",
+        signWith: signerTaprootAddress,
+        payloadHex: Buffer.from(sighash).toString("hex"),
+        encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+        hashFunction: "HASH_FUNCTION_NO_OP",
+        // Optional debug/interop fields:
+        psbtBase64,
+        recentBlockhashHex
+      };
 
-      // Persist request row now (pending). For Turnkey flow we'll immediately submit and mark succeeded.
+      // Persist request row now (pending). Non-custodial: client must submit signature.
       const row = await withDbTransaction(db, async (client) => {
         const created = await insertSigningRequest(client, {
           appId,
@@ -423,70 +441,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         return created;
       });
 
-      // Turnkey signer: sign and submit immediately.
-      if (body.signer.kind === "turnkey") {
-        try {
-          const turnkey = getTurnkeyClient();
-          const { runtimeTransaction, turnkeyActivityId } = await buildAndSignArchRuntimeTx({
-            turnkey,
-            build: {
-              instructions,
-              payerPubkey,
-              recentBlockhash,
-              signerBtcTaprootAddress: signerTaprootAddress
-            }
-          });
-
-          const txid = await submitArchTransaction({
-            nodeUrl: server.config.ARCH_RPC_NODE_URL,
-            tx: runtimeTransaction
-          });
-
-          const result = {
-            txid,
-            turnkeyActivityId,
-            runtimeTransaction: {
-              version: runtimeTransaction.version,
-              signatures: runtimeTransaction.signatures.map((s) => Buffer.from(s).toString("hex")),
-              message: runtimeTransaction.message
-            }
-          };
-
-          await withDbTransaction(db, async (client) => {
-            await markSigningRequestSucceeded(client, { id: row.id, resultJson: result });
-            await auditEvent({
-              client,
-              appId,
-              requestId: request.id,
-              userId: user.id,
-              eventType: "signing_request.succeeded",
-              entityType: "signing_request",
-              entityId: row.id,
-              turnkeyActivityId,
-              turnkeyRequestId: null,
-              payloadJson: { txid },
-              outcome: "succeeded"
-            });
-          });
-
-          return {
-            signingRequestId: row.id,
-            status: "succeeded",
-            actionType,
-            payloadToSign,
-            display,
-            expiresAt,
-            result
-          };
-        } catch (err: any) {
-          await withDbTransaction(db, async (client) => {
-            await markSigningRequestFailed(client, { id: row.id, errorJson: { message: String(err?.message ?? err) } });
-          });
-          throw err;
-        }
-      }
-
-      // External signer: return payloadToSign + display for client UX.
+      // Always return payloadToSign + display for client UX. Client submits signature via /submit.
       return {
         signingRequestId: row.id,
         status: row.status,
@@ -498,7 +453,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
     }
   );
 
-  // Submit an external wallet signature (signed tx/psbt), then Hub submits to Arch.
+  // Submit a user-produced signature, then Hub submits to Arch.
   server.post(
     "/signing-requests/:id/submit",
     {
@@ -513,10 +468,139 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
     async (request, reply) => {
       const appId = request.app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
-      // We currently require Turnkey-managed wallets for transaction submission, because
-      // a Taproot address alone does not allow deriving the internal x-only pubkey that
-      // Arch uses as the account identity.
-      return reply.badRequest("External signer submission is not supported yet. Use a Turnkey signer.");
+      const db = getDbPool();
+      const { id } = request.params as any;
+      const body = request.body as any;
+
+      const externalUserId: string = body.externalUserId;
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
+
+      const row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
+      if (!row) return reply.notFound("Unknown signingRequestId");
+      if (row.user_id !== user.id) return reply.forbidden("Signing request does not belong to user");
+      if (row.status !== "pending") return reply.conflict(`Signing request status is ${row.status}`);
+      if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return reply.gone("Signing request expired");
+
+      const display: any = row.display_json ?? {};
+      const fromTaproot = String(display?.from?.taprootAddress ?? display?.account?.taprootAddress ?? "");
+      if (!fromTaproot) return reply.badRequest("Signing request missing from.taprootAddress");
+
+      const resolved = resolveArchAccountAddress(fromTaproot);
+      if (resolved.kind !== "taproot") return reply.badRequest("from.taprootAddress must be Taproot (p2tr)");
+
+      const payerPubkey = parsePubkey(resolved.archAccountAddress);
+      const recentBlockhashHex = String((row.payload_to_sign as any)?.recentBlockhashHex ?? "");
+      if (!recentBlockhashHex) return reply.badRequest("Signing request missing recentBlockhashHex");
+      const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
+
+      // Enforce readiness on submit for arch.transfer.
+      if (row.action_type === "arch.transfer") {
+        if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
+        const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
+        const readiness = await computeBtcUtxoReadiness({
+          archRpc,
+          payerPubkey,
+          requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
+          btc: getBtcPlatformClient()
+        });
+        if (readiness.status === "not_ready") {
+          return reply.code(409).send({
+            statusCode: 409,
+            error: readiness.reason ?? "NotReady",
+            message:
+              readiness.reason === "BtcUtxoNotConfirmed"
+                ? `Anchored BTC UTXO confirmations ${readiness.confirmations ?? 0} < required ${readiness.requiredConfirmations ?? server.config.BTC_MIN_CONFIRMATIONS ?? 20}`
+                : readiness.reason === "NotAnchored"
+                  ? "Account is not anchored to a BTC UTXO. Fund the BTC account address and submit arch.anchor first."
+                  : "Request is not ready",
+            ...readiness
+          });
+        }
+      }
+
+      // Rebuild the instructions from stored display (authoritative intent).
+      let instructions: Instruction[];
+      if (row.action_type === "arch.transfer") {
+        const toAddr = String(display?.to?.archAccountAddress ?? "");
+        const lamportsStr = String(display?.lamports ?? "");
+        if (!toAddr || !lamportsStr) return reply.badRequest("Signing request display missing transfer fields");
+        const toPubkey = parsePubkey(toAddr);
+        const lamports = parseLamports(lamportsStr);
+        instructions = [SystemInstructionUtil.transfer(payerPubkey, toPubkey, lamports)];
+      } else if (row.action_type === "arch.anchor") {
+        const txid = String(display?.utxo?.txid ?? "");
+        const vout = Number(display?.utxo?.vout);
+        if (!txid || Number.isNaN(vout)) return reply.badRequest("Signing request display missing anchor fields");
+        instructions = [SystemInstructionUtil.anchor(payerPubkey, txid, vout)];
+      } else {
+        return reply.badRequest("Unsupported action type");
+      }
+
+      // Determine signature input.
+      let sig64: Buffer | null = null;
+      let submittedSigJson: any = null;
+      if (typeof body.signature64Hex === "string" && body.signature64Hex.length === 128) {
+        sig64 = Buffer.from(body.signature64Hex, "hex");
+        submittedSigJson = { kind: "signature64Hex", signature64Hex: body.signature64Hex, turnkeyActivityId: body.turnkeyActivityId ?? null };
+      } else if (typeof body.signedTransaction === "string" && body.signedTransaction.length > 0) {
+        sig64 = extractBip322TaprootSignature64({ signedTransaction: body.signedTransaction });
+        submittedSigJson = { kind: "signedTransaction", signedTransaction: body.signedTransaction, turnkeyActivityId: body.turnkeyActivityId ?? null };
+      } else {
+        return reply.badRequest("Must provide signature64Hex or signedTransaction");
+      }
+
+      // Verify the signature against the expected Taproot output key and sighash (best-effort safety).
+      const payloadHex = String((row.payload_to_sign as any)?.payloadHex ?? "");
+      if (!payloadHex || payloadHex.length !== 64) {
+        return reply.badRequest("Signing request missing taproot sighash payloadHex");
+      }
+      const ok = schnorr.verify(
+        sig64,
+        Buffer.from(payloadHex, "hex"),
+        Buffer.from(resolved.xOnlyPubkeyHex, "hex")
+      );
+      if (!ok) return reply.unauthorized("Invalid signature for payload");
+
+      // Build the runtime tx and submit.
+      const maybeMessage = SanitizedMessageUtil.createSanitizedMessage(instructions, payerPubkey, recentBlockhash);
+      if (typeof maybeMessage === "string") throw new Error(`Arch message compilation failed: ${maybeMessage}`);
+      const adjusted = SignatureUtil.adjustSignature(Uint8Array.from(sig64));
+      const runtimeTransaction = { version: 0, signatures: [adjusted], message: maybeMessage } as any;
+
+      if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
+      const txid = await submitArchTransaction({ nodeUrl: server.config.ARCH_RPC_NODE_URL, tx: runtimeTransaction });
+
+      const result = {
+        txid,
+        turnkeyActivityId: body.turnkeyActivityId ?? null,
+        runtimeTransaction: {
+          version: runtimeTransaction.version,
+          signatures: runtimeTransaction.signatures.map((s: Uint8Array) => Buffer.from(s).toString("hex")),
+          message: runtimeTransaction.message
+        }
+      };
+
+      await withDbTransaction(db, async (client) => {
+        await markSigningRequestSubmitted(client, { id: row.id, submittedSignatureJson: submittedSigJson });
+        await markSigningRequestSucceeded(client, { id: row.id, resultJson: result });
+        await auditEvent({
+          client,
+          appId,
+          requestId: request.id,
+          userId: user.id,
+          eventType: "signing_request.succeeded",
+          entityType: "signing_request",
+          entityId: row.id,
+          turnkeyActivityId: body.turnkeyActivityId ?? null,
+          turnkeyRequestId: null,
+          payloadJson: { txid },
+          outcome: "succeeded"
+        });
+      });
+
+      return { signingRequestId: row.id, status: "succeeded", result };
     }
   );
 };
