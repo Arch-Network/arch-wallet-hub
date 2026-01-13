@@ -10,10 +10,12 @@ import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { auditEvent } from "../audit/audit.js";
 import { consumeIdempotencyKey, computeRequestHash } from "../idempotency/idempotency.js";
-import { getTurnkeyResourceById, markIdempotencySucceeded, markIdempotencyFailed } from "../db/queries.js";
+import { getTurnkeyResourceByIdForApp, markIdempotencySucceeded, markIdempotencyFailed } from "../db/queries.js";
 import { resolveArchAccountAddress } from "../arch/address.js";
 import { SystemInstruction as SystemInstructionUtil, type Instruction, type Pubkey } from "@saturnbtcio/arch-sdk";
+import { getTurnkeyClient } from "../turnkey/store.js";
 import bs58 from "bs58";
+import { getOrCreateUserByExternalId } from "../db/apps.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -25,7 +27,7 @@ declare module "fastify" {
 
 // System transfer (ARCH native token)
 const SystemTransferBody = Type.Object({
-  userId: Type.String({ minLength: 1 }),
+  externalUserId: Type.String({ minLength: 1 }),
   resourceId: Type.String({ minLength: 1 }), // Turnkey resource ID
   toAddress: Type.String({ minLength: 1 }), // Arch account address or Taproot address
   lamports: Type.String({ minLength: 1 }) // Amount as string (to handle large numbers)
@@ -41,7 +43,7 @@ const SystemTransferResponse = Type.Object({
 
 // Generic instruction builder
 const BuildInstructionBody = Type.Object({
-  userId: Type.String({ minLength: 1 }),
+  externalUserId: Type.String({ minLength: 1 }),
   resourceId: Type.String({ minLength: 1 }),
   instructions: Type.Array(
     Type.Object({
@@ -102,6 +104,9 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       }
     },
     async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
       const idempotencyKey = request.headers["idempotency-key"]?.toString();
       if (!idempotencyKey) {
         return reply.badRequest("Missing Idempotency-Key header");
@@ -114,11 +119,12 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       // Get db pool from global store (works in scoped plugins)
       const db = getDbPool();
       const config = request.server.config || server.config;
-      const turnkey = request.server.turnkey || server.turnkey;
+      const turnkey = getTurnkeyClient();
 
       const consumed = await withDbTransaction(db, async (client) => {
         return await consumeIdempotencyKey({
           client,
+          appId,
           key: idempotencyKey,
           route,
           requestHash
@@ -131,14 +137,17 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       if (consumed.kind === "failed")
         return reply.code(409).send({ message: consumed.reason, error: consumed.error });
 
-      const { userId, resourceId, toAddress, lamports: lamportsStr } = body;
+      const { externalUserId, resourceId, toAddress, lamports: lamportsStr } = body;
 
       // Get Turnkey resource
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
       const resource = await withDbTransaction(db, (client) =>
-        getTurnkeyResourceById(client, resourceId)
+        getTurnkeyResourceByIdForApp(client, { id: resourceId, appId })
       );
       if (!resource) return reply.notFound("Unknown resourceId");
-      if (resource.user_id !== userId) return reply.forbidden("Resource does not belong to user");
+      if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
       if (!resource.default_address) {
         return reply.badRequest("Resource has no default address to sign with");
       }
@@ -172,7 +181,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
         await auditEvent({
           client,
           requestId: request.id,
-          userId,
+          appId,
+          userId: resource.user_id,
           eventType: "arch.transfer.requested",
           entityType: "turnkey_resource",
           entityId: resourceId,
@@ -217,7 +227,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
           await auditEvent({
             client,
             requestId: request.id,
-            userId,
+            appId,
+            userId: resource.user_id,
             eventType: "arch.transfer.succeeded",
             entityType: "turnkey_resource",
             entityId: resourceId,
@@ -235,7 +246,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
           await auditEvent({
             client,
             requestId: request.id,
-            userId,
+            appId,
+            userId: resource.user_id,
             eventType: "arch.transfer.failed",
             entityType: "turnkey_resource",
             entityId: resourceId,
@@ -265,6 +277,9 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       }
     },
     async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
       const idempotencyKey = request.headers["idempotency-key"]?.toString();
       if (!idempotencyKey) {
         return reply.badRequest("Missing Idempotency-Key header");
@@ -277,11 +292,12 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       // Get db pool from global store (works in scoped plugins)
       const db = getDbPool();
       const config = request.server.config || server.config;
-      const turnkey = request.server.turnkey || server.turnkey;
+      const turnkey = getTurnkeyClient();
 
       const consumed = await withDbTransaction(db, async (client) => {
         return await consumeIdempotencyKey({
           client,
+          appId,
           key: idempotencyKey,
           route,
           requestHash
@@ -294,14 +310,17 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       if (consumed.kind === "failed")
         return reply.code(409).send({ message: consumed.reason, error: consumed.error });
 
-      const { userId, resourceId, instructions: rawInstructions } = body;
+      const { externalUserId, resourceId, instructions: rawInstructions } = body;
 
       // Get Turnkey resource
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
       const resource = await withDbTransaction(db, (client) =>
-        getTurnkeyResourceById(client, resourceId)
+        getTurnkeyResourceByIdForApp(client, { id: resourceId, appId })
       );
       if (!resource) return reply.notFound("Unknown resourceId");
-      if (resource.user_id !== userId) return reply.forbidden("Resource does not belong to user");
+      if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
       if (!resource.default_address) {
         return reply.badRequest("Resource has no default address to sign with");
       }
@@ -336,7 +355,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
         await auditEvent({
           client,
           requestId: request.id,
-          userId,
+          appId,
+          userId: resource.user_id,
           eventType: "arch.instructions.build.requested",
           entityType: "turnkey_resource",
           entityId: resourceId,
@@ -382,7 +402,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
           await auditEvent({
             client,
             requestId: request.id,
-            userId,
+            appId,
+            userId: resource.user_id,
             eventType: "arch.instructions.build.succeeded",
             entityType: "turnkey_resource",
             entityId: resourceId,
@@ -400,7 +421,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
           await auditEvent({
             client,
             requestId: request.id,
-            userId,
+            appId,
+            userId: resource.user_id,
             eventType: "arch.instructions.build.failed",
             entityType: "turnkey_resource",
             entityId: resourceId,

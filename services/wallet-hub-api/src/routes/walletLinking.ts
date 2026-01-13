@@ -2,12 +2,15 @@ import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
 import crypto from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
+import { getDbPool } from "../db/pool.js";
 import { auditEvent } from "../audit/audit.js";
 import { Verifier, Address as Bip322Address } from "@saturnbtcio/bip322-js";
 import { resolveArchAccountAddress } from "../arch/address.js";
+import { getIndexerClient } from "../indexer/store.js";
+import { getOrCreateUserByExternalId } from "../db/apps.js";
 
 const CreateChallengeBody = Type.Object({
-  userId: Type.String({ minLength: 1 }),
+  externalUserId: Type.String({ minLength: 1 }),
   walletProvider: Type.String({ minLength: 1 }),
   address: Type.String({ minLength: 1 }),
   network: Type.Optional(Type.String({ minLength: 1 }))
@@ -20,7 +23,7 @@ const CreateChallengeResponse = Type.Object({
 });
 
 const VerifyChallengeBody = Type.Object({
-  userId: Type.String({ minLength: 1 }),
+  externalUserId: Type.String({ minLength: 1 }),
   challengeId: Type.String({ minLength: 1 }),
   signature: Type.String({ minLength: 1 }),
   schemeHint: Type.Optional(
@@ -37,7 +40,7 @@ const VerifyChallengeResponse = Type.Object({
 });
 
 const ListLinkedWalletsQuery = Type.Object({
-  userId: Type.String({ minLength: 1 })
+  externalUserId: Type.String({ minLength: 1 })
 });
 
 const ListLinkedWalletsResponse = Type.Array(
@@ -107,8 +110,12 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       }
     },
     async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const db = getDbPool();
       const body = request.body as any;
-      const userId: string = body.userId;
+      const externalUserId: string = body.externalUserId;
       const walletProvider: string = body.walletProvider;
       const address: string = body.address;
 
@@ -130,19 +137,21 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
         expiresAtIso: expiresAt.toISOString()
       });
 
-      const row = await withDbTransaction(server.db, async (client) => {
+      const row = await withDbTransaction(db, async (client) => {
+        const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
         const res = await client.query<{ id: string; expires_at: string }>(
           `
-          INSERT INTO wallet_link_challenges (user_id, wallet_provider, address, challenge, expires_at)
-          VALUES ($1,$2,$3,$4,$5)
+          INSERT INTO wallet_link_challenges (app_id, user_id, wallet_provider, address, challenge, expires_at)
+          VALUES ($1,$2,$3,$4,$5,$6)
           RETURNING id, expires_at
           `,
-          [userId, walletProvider, address, message, expiresAt.toISOString()]
+          [appId, user.id, walletProvider, address, message, expiresAt.toISOString()]
         );
         await auditEvent({
           client,
           requestId: request.id,
-          userId,
+          appId,
+          userId: user.id,
           eventType: "wallet_link.challenge.created",
           entityType: "wallet_link_challenge",
           entityId: res.rows[0]!.id,
@@ -175,14 +184,23 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       }
     },
     async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const db = getDbPool();
       const body = request.body as any;
-      const userId: string = body.userId;
+      const externalUserId: string = body.externalUserId;
       const challengeId: string = body.challengeId;
       const signature: string = body.signature;
 
-      const record = await withDbTransaction(server.db, async (client) => {
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
+
+      const record = await withDbTransaction(db, async (client) => {
         const res = await client.query<{
           id: string;
+          app_id: string;
           user_id: string;
           wallet_provider: string;
           address: string;
@@ -190,14 +208,14 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
           expires_at: string;
           used_at: string | null;
         }>(
-          `SELECT * FROM wallet_link_challenges WHERE id = $1`,
-          [challengeId]
+          `SELECT * FROM wallet_link_challenges WHERE id = $1 AND app_id = $2`,
+          [challengeId, appId]
         );
         return res.rows[0] ?? null;
       });
 
       if (!record) return reply.notFound("Unknown challengeId");
-      if (record.user_id !== userId) return reply.forbidden("Challenge does not belong to user");
+      if (record.user_id !== user.id) return reply.forbidden("Challenge does not belong to user");
       if (record.used_at) return reply.conflict("Challenge already used");
       if (new Date(record.expires_at).getTime() < Date.now()) return reply.gone("Challenge expired");
 
@@ -218,14 +236,14 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       const network = inferNetworkFromAddress(record.address);
       const resolved = resolveArchAccountAddress(record.address);
 
-      const linked = await withDbTransaction(server.db, async (client) => {
+      const linked = await withDbTransaction(db, async (client) => {
         await client.query(`UPDATE wallet_link_challenges SET used_at = NOW() WHERE id = $1`, [
           challengeId
         ]);
         const res = await client.query<{ id: string }>(
           `
-          INSERT INTO linked_wallets (user_id, wallet_provider, address, arch_account_address, network, verification_scheme, signature, message)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+          INSERT INTO linked_wallets (app_id, user_id, wallet_provider, address, arch_account_address, network, verification_scheme, signature, message)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
           ON CONFLICT (user_id, wallet_provider, address) DO UPDATE
             SET signature = EXCLUDED.signature,
                 message = EXCLUDED.message,
@@ -234,7 +252,8 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
           RETURNING id
           `,
           [
-            userId,
+            appId,
+            user.id,
             record.wallet_provider,
             record.address,
             resolved.archAccountAddress,
@@ -248,7 +267,8 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
         await auditEvent({
           client,
           requestId: request.id,
-          userId,
+          appId,
+          userId: user.id,
           eventType: "wallet_link.verified",
           entityType: "linked_wallet",
           entityId: res.rows[0]!.id,
@@ -288,8 +308,15 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       }
     },
     async (request) => {
-      const { userId } = request.query as any;
-      const rows = await withDbTransaction(server.db, async (client) => {
+      const appId = (request as any).app?.appId;
+      if (!appId) throw new Error("Missing app context");
+
+      const db = getDbPool();
+      const { externalUserId } = request.query as any;
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
+      const rows = await withDbTransaction(db, async (client) => {
         const res = await client.query<{
           id: string;
           wallet_provider: string;
@@ -298,8 +325,8 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
           network: string;
           created_at: string;
         }>(
-          `SELECT id, wallet_provider, address, arch_account_address, network, created_at FROM linked_wallets WHERE user_id = $1 ORDER BY created_at DESC`,
-          [userId]
+          `SELECT id, wallet_provider, address, arch_account_address, network, created_at FROM linked_wallets WHERE app_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+          [appId, user.id]
         );
         return res.rows;
       });
@@ -327,10 +354,11 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       }
     },
     async (request, reply) => {
-      if (!server.indexer) return reply.notImplemented("Indexer not configured");
+      const indexer = getIndexerClient();
+      if (!indexer) return reply.notImplemented("Indexer not configured");
       const { address } = request.params as any;
       const resolved = resolveArchAccountAddress(address);
-      const account = await server.indexer.getAccountSummary(resolved.archAccountAddress);
+      const account = await indexer.getAccountSummary(resolved.archAccountAddress);
       return { address, resolvedArchAccountAddress: resolved.archAccountAddress, account };
     }
   );
@@ -346,10 +374,11 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
       }
     },
     async (request, reply) => {
-      if (!server.indexer) return reply.notImplemented("Indexer not configured");
+      const indexer = getIndexerClient();
+      if (!indexer) return reply.notImplemented("Indexer not configured");
       const { address } = request.params as any;
       const resolved = resolveArchAccountAddress(address);
-      const transactions = await server.indexer.getAccountTransactions(resolved.archAccountAddress);
+      const transactions = await indexer.getAccountTransactions(resolved.archAccountAddress);
       return { address, resolvedArchAccountAddress: resolved.archAccountAddress, transactions };
     }
   );

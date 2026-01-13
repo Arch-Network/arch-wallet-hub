@@ -1,0 +1,14 @@
+services:
+  bootnode:
+    environment:
+      # Required when Arch network_mode is TESTNET/MAINNET.
+      # We set it to the default dev password so existing LOCALNET-generated keys remain decryptable.
+      - ARCH_PASSWORD=arch_dev_default_password
+
+  leader:
+    environment:
+      - ARCH_PASSWORD=arch_dev_default_password
+
+  validator:
+    environment:
+      - ARCH_PASSWORD=arch_dev_default_password

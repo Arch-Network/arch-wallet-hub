@@ -10,6 +10,7 @@ export async function createUser(client: PoolClient): Promise<CreateUserRow> {
 }
 
 export type InsertTurnkeyResourceParams = {
+  appId: string;
   userId: string | null;
   organizationId: string;
   walletId: string | null;
@@ -23,6 +24,7 @@ export type InsertTurnkeyResourceParams = {
 
 export type TurnkeyResourceRow = {
   id: string;
+  app_id: string;
   user_id: string | null;
   organization_id: string;
   wallet_id: string | null;
@@ -43,6 +45,7 @@ export async function insertTurnkeyResource(
   const res = await client.query<TurnkeyResourceRow>(
     `
       INSERT INTO turnkey_resources (
+        app_id,
         user_id,
         organization_id,
         wallet_id,
@@ -53,10 +56,11 @@ export async function insertTurnkeyResource(
         default_address_format,
         default_derivation_path
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
       RETURNING *
     `,
     [
+      params.appId,
       params.userId,
       params.organizationId,
       params.walletId,
@@ -82,7 +86,19 @@ export async function getTurnkeyResourceById(
   return res.rows[0] ?? null;
 }
 
+export async function getTurnkeyResourceByIdForApp(
+  client: PoolClient,
+  params: { id: string; appId: string }
+): Promise<TurnkeyResourceRow | null> {
+  const res = await client.query<TurnkeyResourceRow>(
+    `SELECT * FROM turnkey_resources WHERE id = $1 AND app_id = $2`,
+    [params.id, params.appId]
+  );
+  return res.rows[0] ?? null;
+}
+
 export type InsertAuditLogParams = {
+  appId: string;
   requestId: string | null;
   userId: string | null;
   eventType: string;
@@ -101,6 +117,7 @@ export async function insertAuditLog(
   await client.query(
     `
       INSERT INTO audit_logs (
+        app_id,
         request_id,
         user_id,
         event_type,
@@ -111,9 +128,10 @@ export async function insertAuditLog(
         payload_json,
         outcome
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
     `,
     [
+      params.appId,
       params.requestId,
       params.userId,
       params.eventType,
@@ -131,6 +149,7 @@ export type IdempotencyStatus = "pending" | "succeeded" | "failed";
 
 export type IdempotencyRow = {
   id: string;
+  app_id: string;
   idempotency_key: string;
   route: string;
   request_hash: string;
@@ -141,27 +160,26 @@ export type IdempotencyRow = {
 
 export async function getIdempotencyRow(
   client: PoolClient,
-  key: string,
-  route: string
+  params: { appId: string; key: string; route: string }
 ): Promise<IdempotencyRow | null> {
   const res = await client.query<IdempotencyRow>(
-    `SELECT id, idempotency_key, route, request_hash, status, response_json, error_json FROM idempotency_keys WHERE idempotency_key = $1 AND route = $2`,
-    [key, route]
+    `SELECT id, app_id, idempotency_key, route, request_hash, status, response_json, error_json FROM idempotency_keys WHERE app_id = $1 AND idempotency_key = $2 AND route = $3`,
+    [params.appId, params.key, params.route]
   );
   return res.rows[0] ?? null;
 }
 
 export async function insertIdempotencyRow(
   client: PoolClient,
-  params: { key: string; route: string; requestHash: string }
+  params: { appId: string; key: string; route: string; requestHash: string }
 ): Promise<IdempotencyRow> {
   const res = await client.query<IdempotencyRow>(
     `
-      INSERT INTO idempotency_keys (idempotency_key, route, request_hash, status)
-      VALUES ($1,$2,$3,'pending')
-      RETURNING id, idempotency_key, route, request_hash, status, response_json, error_json
+      INSERT INTO idempotency_keys (app_id, idempotency_key, route, request_hash, status)
+      VALUES ($1,$2,$3,$4,'pending')
+      RETURNING id, app_id, idempotency_key, route, request_hash, status, response_json, error_json
     `,
-    [params.key, params.route, params.requestHash]
+    [params.appId, params.key, params.route, params.requestHash]
   );
   return res.rows[0]!;
 }
@@ -195,4 +213,3 @@ export async function markIdempotencyFailed(
     [id, JSON.stringify(errorJson)]
   );
 }
-

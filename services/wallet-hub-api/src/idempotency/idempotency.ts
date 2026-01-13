@@ -32,14 +32,20 @@ export type ConsumeIdempotencyKeyResult =
 
 export async function consumeIdempotencyKey(params: {
   client: PoolClient;
+  appId: string;
   key: string;
   route: string;
   requestHash: string;
 }): Promise<ConsumeIdempotencyKeyResult> {
-  const existing = await getIdempotencyRow(params.client, params.key, params.route);
+  const existing = await getIdempotencyRow(params.client, {
+    appId: params.appId,
+    key: params.key,
+    route: params.route
+  });
 
   if (!existing) {
     const row = await insertIdempotencyRow(params.client, {
+      appId: params.appId,
       key: params.key,
       route: params.route,
       requestHash: params.requestHash
@@ -64,4 +70,3 @@ export async function consumeIdempotencyKey(params: {
 
   return { kind: "failed", reason: "Previous attempt failed", error: existing.error_json };
 }
-

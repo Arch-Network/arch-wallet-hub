@@ -1,13 +1,15 @@
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { withDbTransaction } from "../db/tx.js";
+import { getDbPool } from "../db/pool.js";
+import { getTurnkeyClient } from "../turnkey/store.js";
 import {
-  createUser,
-  getTurnkeyResourceById,
+  getTurnkeyResourceByIdForApp,
   insertTurnkeyResource,
   markIdempotencyFailed,
   markIdempotencySucceeded
 } from "../db/queries.js";
+import { getOrCreateUserByExternalId } from "../db/apps.js";
 import {
   computeRequestHash,
   consumeIdempotencyKey,
@@ -15,11 +17,11 @@ import {
 } from "../idempotency/idempotency.js";
 import { auditEvent } from "../audit/audit.js";
 import {
-  buildBip322ToSignPsbtBase64,
-  extractBip322TaprootSignature64
+  computeBip322ToSignTaprootSighash
 } from "../bitcoin/bip322.js";
 
 const CreateWalletBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
   walletName: Type.Optional(Type.String({ minLength: 1 })),
   addressFormat: Type.Optional(Type.String({ minLength: 1 })),
   derivationPath: Type.Optional(Type.String({ minLength: 1 }))
@@ -28,6 +30,7 @@ const CreateWalletBody = Type.Object({
 const CreateWalletResponse = Type.Object({
   resourceId: Type.String(),
   userId: Type.String(),
+  externalUserId: Type.String(),
   organizationId: Type.String(),
   walletId: Type.String(),
   addresses: Type.Array(Type.String()),
@@ -38,6 +41,7 @@ const CreateWalletResponse = Type.Object({
 const GetWalletResponse = Type.Object({
   id: Type.String(),
   userId: Type.Union([Type.String(), Type.Null()]),
+  externalUserId: Type.Union([Type.String(), Type.Null()]),
   organizationId: Type.String(),
   walletId: Type.Union([Type.String(), Type.Null()]),
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
@@ -47,6 +51,7 @@ const GetWalletResponse = Type.Object({
 });
 
 const SignMessageBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
   resourceId: Type.String({ minLength: 1 }),
   message: Type.String({ minLength: 1 }),
   encoding: Type.Optional(
@@ -79,18 +84,23 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
       const idempotencyKey = request.headers["idempotency-key"]?.toString();
       if (!idempotencyKey) {
         return reply.badRequest("Missing Idempotency-Key header");
       }
 
-      const body = request.body ?? {};
+      const body = request.body as any;
       const route = "POST /v1/turnkey/wallets";
       const requestHash = computeRequestHash(body);
 
-      const consumed = await withDbTransaction(server.db, async (client) => {
+      const db = getDbPool();
+      const consumed = await withDbTransaction(db, async (client) => {
         const res = await consumeIdempotencyKey({
           client,
+          appId,
           key: idempotencyKey,
           route,
           requestHash
@@ -98,7 +108,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
         if (res.kind !== "created") return res;
 
-        const user = await createUser(client);
+        const externalUserId = (body as any).externalUserId;
+        const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
         return { ...res, userId: user.id };
       });
 
@@ -109,14 +120,16 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         return reply.code(409).send({ message: consumed.reason, error: consumed.error });
 
       const userId = (consumed as { userId: string }).userId;
+      const externalUserId = (body as any).externalUserId;
       const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}`;
       const addressFormat =
         (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
       const derivationPath = (body as any).derivationPath ?? "m/86'/1'/0'/0/0";
 
-      await withDbTransaction(server.db, async (client) => {
+      await withDbTransaction(db, async (client) => {
         await auditEvent({
           client,
+          appId,
           requestId: request.id,
           userId,
           eventType: "turnkey.wallet.create",
@@ -130,7 +143,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       });
 
       try {
-        const created = await server.turnkey.createBitcoinWallet({
+        const turnkey = getTurnkeyClient();
+        const created = await turnkey.createBitcoinWallet({
           walletName,
           addressFormat,
           path: derivationPath
@@ -142,8 +156,9 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
         const defaultAddress = created.addresses[0] ?? null;
 
-        const response = await withDbTransaction(server.db, async (client) => {
+        const response = await withDbTransaction(db, async (client) => {
           const resource = await insertTurnkeyResource(client, {
+            appId,
             userId,
             organizationId: server.config.TURNKEY_ORGANIZATION_ID,
             walletId: created.walletId,
@@ -157,6 +172,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
           await auditEvent({
             client,
+            appId,
             requestId: request.id,
             userId,
             eventType: "turnkey.wallet.create",
@@ -175,6 +191,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           const responseBody = {
             resourceId: resource.id,
             userId,
+            externalUserId,
             organizationId: server.config.TURNKEY_ORGANIZATION_ID,
             walletId: created.walletId,
             addresses: created.addresses,
@@ -188,9 +205,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
         return response;
       } catch (err: any) {
-        await withDbTransaction(server.db, async (client) => {
+        await withDbTransaction(db, async (client) => {
           await auditEvent({
             client,
+            appId,
             requestId: request.id,
             userId,
             eventType: "turnkey.wallet.create",
@@ -217,19 +235,30 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         summary: "Get stored Turnkey wallet resource metadata",
         tags: ["turnkey"],
         params: Type.Object({ resourceId: Type.String() }),
+        querystring: Type.Object({ externalUserId: Type.String({ minLength: 1 }) }),
         response: { 200: GetWalletResponse }
       }
     },
     async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
       const { resourceId } = request.params as any;
-      const row = await withDbTransaction(server.db, (client) =>
-        getTurnkeyResourceById(client, resourceId)
+      const { externalUserId } = request.query as any;
+      const db = getDbPool();
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
+      const row = await withDbTransaction(db, (client) =>
+        getTurnkeyResourceByIdForApp(client, { id: resourceId, appId })
       );
       if (!row) return reply.notFound();
+      if (row.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
 
       return {
         id: row.id,
         userId: row.user_id,
+        externalUserId,
         organizationId: row.organization_id,
         walletId: row.wallet_id,
         defaultAddress: row.default_address,
@@ -251,18 +280,23 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
       const idempotencyKey = request.headers["idempotency-key"]?.toString();
       if (!idempotencyKey) {
         return reply.badRequest("Missing Idempotency-Key header");
       }
 
+      const db = getDbPool();
       const body = request.body as any;
       const route = "POST /v1/turnkey/sign-message";
       const requestHash = computeRequestHash(body);
 
-      const consumed = await withDbTransaction(server.db, async (client) => {
+      const consumed = await withDbTransaction(db, async (client) => {
         return await consumeIdempotencyKey({
           client,
+          appId,
           key: idempotencyKey,
           route,
           requestHash
@@ -275,23 +309,28 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       if (consumed.kind === "failed")
         return reply.code(409).send({ message: consumed.reason, error: consumed.error });
 
-      const { resourceId, message } = body;
+      const { externalUserId, resourceId, message } = body;
       const encoding = body.encoding ?? "PAYLOAD_ENCODING_TEXT_UTF8";
       const hashFunction = body.hashFunction ?? "HASH_FUNCTION_SHA256";
 
-      const resource = await withDbTransaction(server.db, (client) =>
-        getTurnkeyResourceById(client, resourceId)
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
+      const resource = await withDbTransaction(db, (client) =>
+        getTurnkeyResourceByIdForApp(client, { id: resourceId, appId })
       );
       if (!resource) return reply.notFound("Unknown resourceId");
+      if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
       if (!resource.default_address) {
         return reply.badRequest("Resource has no default address to sign with");
       }
 
       const messageHash = sha256Hex(`${encoding}:${hashFunction}:${message}`);
 
-      await withDbTransaction(server.db, async (client) => {
+      await withDbTransaction(db, async (client) => {
         await auditEvent({
           client,
+          appId,
           requestId: request.id,
           userId: resource.user_id,
           eventType: "turnkey.sign.message",
@@ -305,28 +344,29 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       });
 
       try {
-        const toSignPsbtBase64 = buildBip322ToSignPsbtBase64({
+        const turnkey = getTurnkeyClient();
+        const sighash = computeBip322ToSignTaprootSighash({
           signerAddress: resource.default_address,
           message
         });
 
-        const signed = await server.turnkey.signBitcoinTransaction({
+        const signed = await turnkey.signRawPayload({
           signWith: resource.default_address,
-          unsignedTransaction: toSignPsbtBase64
+          payload: Buffer.from(sighash).toString("hex"),
+          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+          hashFunction: "HASH_FUNCTION_NO_OP"
         });
 
-        const signature64 = extractBip322TaprootSignature64({
-          signedTransaction: signed.signedTransaction
-        });
-        const signature64Hex = signature64.toString("hex");
+        const signature64Hex = `${signed.r}${signed.s}`;
         request.log.info(
           { activityId: signed.activityId, resourceId, userId: resource.user_id },
           "turnkey.sign_message.completed"
         );
 
-        const responseBody = await withDbTransaction(server.db, async (client) => {
+        const responseBody = await withDbTransaction(db, async (client) => {
           await auditEvent({
             client,
+            appId,
             requestId: request.id,
             userId: resource.user_id,
             eventType: "turnkey.sign.message",
@@ -351,9 +391,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
         return responseBody;
       } catch (err: any) {
-        await withDbTransaction(server.db, async (client) => {
+        await withDbTransaction(db, async (client) => {
           await auditEvent({
             client,
+            appId,
             requestId: request.id,
             userId: resource.user_id,
             eventType: "turnkey.sign.message",

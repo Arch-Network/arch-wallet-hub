@@ -1,5 +1,6 @@
 import { Address, BIP322 } from "@saturnbtcio/bip322-js";
 import { Psbt, Transaction } from "bitcoinjs-lib";
+import { Buffer } from "node:buffer";
 
 function looksLikeBase64(s: string) {
   // Heuristic: base64 strings are typically padded and only use base64 charset.
@@ -15,6 +16,36 @@ export function buildBip322ToSignPsbtBase64(params: {
   const toSpend = BIP322.buildToSpendTx(params.message, scriptPubKey);
   const toSign = BIP322.buildToSignTx(toSpend.getId(), scriptPubKey);
   return toSign.toBase64();
+}
+
+/**
+ * Compute the Taproot key-path sighash for a BIP-322 toSign PSBT (SIGHASH_DEFAULT).
+ *
+ * This lets us ask Turnkey to sign the digest directly via SIGN_RAW_PAYLOAD, avoiding
+ * Turnkey's PSBT parser limitations for non-standard BIP-322 PSBT outputs (e.g. OP_RETURN).
+ */
+export function computeBip322ToSignTaprootSighash(params: {
+  signerAddress: string;
+  message: string | Buffer;
+}): Buffer {
+  const psbtBase64 = buildBip322ToSignPsbtBase64(params);
+  const psbt = Psbt.fromBase64(psbtBase64);
+
+  // `__CACHE` is private in bitcoinjs-lib types; it exists at runtime.
+  const tx = (psbt as any).__CACHE.__TX as Transaction;
+  const input = psbt.data.inputs[0];
+  if (!input?.witnessUtxo) {
+    throw new Error("BIP-322 toSign PSBT missing witnessUtxo (required for Taproot sighash)");
+  }
+
+  const prevoutScript = Buffer.from(input.witnessUtxo.script);
+  const prevoutValue = input.witnessUtxo.value;
+
+  // Arch's BIP-322 implementation uses TapSighashType::All for Taproot key-path signing.
+  // See arch-network `sdk/src/helper/bip322.rs`.
+  const SIGHASH_ALL = 0x01;
+  const digest = tx.hashForWitnessV1(0, [prevoutScript], [prevoutValue], SIGHASH_ALL);
+  return Buffer.from(digest);
 }
 
 export function extractBip322TaprootSignature64(params: {
@@ -48,4 +79,3 @@ export function extractBip322TaprootSignature64(params: {
   // Arch network expects exactly 64 bytes; it will optionally append/try SIGHASH_ALL during verification.
   return Buffer.from(sigWithOptionalSighash.subarray(0, 64));
 }
-

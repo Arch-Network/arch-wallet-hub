@@ -21,9 +21,27 @@ const EnvSchema = z.object({
   TURNKEY_API_PUBLIC_KEY: z.string().min(1),
   TURNKEY_API_PRIVATE_KEY: z.string().min(1),
 
+  // Platform admin (bootstrap apps + API keys)
+  PLATFORM_ADMIN_API_KEY: z.string().optional(),
+
   // Existing Arch indexer API (Phase 1 view-only reads)
   INDEXER_BASE_URL: z.string().url().optional(),
   INDEXER_API_KEY: z.string().optional(),
+
+  // BTC API platform (our own BTC data API)
+  BTC_PLATFORM_BASE_URL: z.string().url().optional(),
+  BTC_PLATFORM_API_KEY: z.string().optional(),
+
+  // For Arch flows that depend on anchored BTC UTXOs (e.g., arch.transfer),
+  // the validator may require a minimum BTC confirmation count before it can
+  // generate the underlying "transaction to sign".
+  //
+  // Default aligns with current Arch validator behavior on testnet.
+  BTC_MIN_CONFIRMATIONS: z.coerce.number().int().min(0).default(20),
+
+  // Backwards-compat env vars (deprecated)
+  TITAN_BASE_URL: z.string().url().optional(),
+  TITAN_API_KEY: z.string().optional(),
 
   // Arch Network RPC node (for transaction submission)
   ARCH_RPC_NODE_URL: z.string().url().optional()
@@ -40,5 +58,13 @@ export function getEnv(rawEnv: NodeJS.ProcessEnv): Env {
       .join("; ");
     throw new Error(`Invalid environment: ${message}`);
   }
-  return parsed.data;
+  const env = parsed.data;
+  // Backwards-compatible fallback: if new BTC_PLATFORM_* vars aren't set, use TITAN_*.
+  if (!env.BTC_PLATFORM_BASE_URL && env.TITAN_BASE_URL) {
+    (env as any).BTC_PLATFORM_BASE_URL = env.TITAN_BASE_URL;
+  }
+  if (!env.BTC_PLATFORM_API_KEY && env.TITAN_API_KEY) {
+    (env as any).BTC_PLATFORM_API_KEY = env.TITAN_API_KEY;
+  }
+  return env;
 }

@@ -3,6 +3,7 @@ import { insertAuditLog } from "../db/queries.js";
 
 export async function auditEvent(params: {
   client: PoolClient;
+  appId: string;
   requestId: string | null;
   userId: string | null;
   eventType: string;
@@ -14,6 +15,7 @@ export async function auditEvent(params: {
   outcome: "requested" | "succeeded" | "failed";
 }) {
   await insertAuditLog(params.client, {
+    appId: params.appId,
     requestId: params.requestId,
     userId: params.userId,
     eventType: params.eventType,
@@ -25,4 +27,3 @@ export async function auditEvent(params: {
     outcome: params.outcome
   });
 }
-

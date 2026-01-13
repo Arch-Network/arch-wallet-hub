@@ -57,8 +57,23 @@ type SignBitcoinTransactionResult = {
   activityId: string;
 };
 
+export type GetWalletAccountsParams = {
+  walletId: string;
+};
+
+export type WalletAccount = {
+  walletAccountId: string;
+  walletId: string;
+  address: string;
+  publicKey?: string;
+};
+
 function nowMs() {
   return Date.now().toString();
+}
+
+function looksLikeBase64(s: string) {
+  return /^[A-Za-z0-9+/=]+$/.test(s) && s.length % 4 === 0;
 }
 
 async function sleep(ms: number) {
@@ -185,13 +200,21 @@ export class TurnkeyService {
   async signBitcoinTransaction(
     params: SignBitcoinTransactionParams
   ): Promise<SignBitcoinTransactionResult> {
+    // Turnkey expects `unsignedTransaction` as hex for Bitcoin tx signing.
+    // For our flows we commonly pass PSBT base64; normalize it to hex and then
+    // re-encode the signed artifact back to base64 so downstream code can parse it.
+    const inputWasBase64 = looksLikeBase64(params.unsignedTransaction);
+    const unsignedHex = inputWasBase64
+      ? Buffer.from(params.unsignedTransaction, "base64").toString("hex")
+      : params.unsignedTransaction;
+
     const res = await this.client.signTransaction({
       type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
       timestampMs: nowMs(),
       organizationId: this.organizationId,
       parameters: {
         signWith: params.signWith,
-        unsignedTransaction: params.unsignedTransaction,
+        unsignedTransaction: unsignedHex,
         type: "TRANSACTION_TYPE_BITCOIN"
       }
     });
@@ -208,6 +231,20 @@ export class TurnkeyService {
       throw new Error("Turnkey signTransaction did not return signedTransaction");
     }
 
-    return { signedTransaction, activityId };
+    const out = inputWasBase64
+      ? Buffer.from(signedTransaction, "hex").toString("base64")
+      : signedTransaction;
+
+    return { signedTransaction: out, activityId };
+  }
+
+  async getWalletAccounts(params: GetWalletAccountsParams): Promise<{ accounts: WalletAccount[] }> {
+    const res = await this.client.getWalletAccounts({
+      organizationId: this.organizationId,
+      walletId: params.walletId,
+      includeWalletDetails: false
+    } as any);
+
+    return { accounts: (res as any).accounts ?? [] };
   }
 }

@@ -6,8 +6,9 @@ import {
   type Instruction,
   type RuntimeTransaction
 } from "@saturnbtcio/arch-sdk";
-import { buildBip322ToSignPsbtBase64, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
+import { computeBip322ToSignTaprootSighash } from "../bitcoin/bip322.js";
 import type { TurnkeyService } from "../turnkey/client.js";
+import bs58 from "bs58";
 
 export type BuildAndSignArchTxParams = {
   instructions: Instruction[];
@@ -41,26 +42,30 @@ export async function buildAndSignArchRuntimeTx(params: {
   const messageHash = SanitizedMessageUtil.hash(message); // Uint8Array
 
   // BIP-322 signs "message bytes". Arch verifies BIP-322 over message.hash() bytes.
-  const toSignPsbtBase64 = buildBip322ToSignPsbtBase64({
+  // We compute the Taproot sighash for the BIP-322 toSign transaction and ask Turnkey
+  // to sign that digest directly via SIGN_RAW_PAYLOAD. This avoids Turnkey's PSBT parser
+  // limitations for BIP-322 PSBTs (the toSign tx uses OP_RETURN output).
+  const sighash = computeBip322ToSignTaprootSighash({
     signerAddress: params.build.signerBtcTaprootAddress,
     message: Buffer.from(messageHash)
   });
 
-  const signed = await params.turnkey.signBitcoinTransaction({
+  const signed = await params.turnkey.signRawPayload({
     signWith: params.build.signerBtcTaprootAddress,
-    unsignedTransaction: toSignPsbtBase64
+    payload: Buffer.from(sighash).toString("hex"),
+    encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+    hashFunction: "HASH_FUNCTION_NO_OP"
   });
 
-  const sig64 = extractBip322TaprootSignature64({
-    signedTransaction: signed.signedTransaction
-  });
+  const sig64 = Buffer.from(`${signed.r}${signed.s}`, "hex");
 
   // Some client libs normalize the schnorr signature bytes; keep it explicit for Arch.
   const adjusted = SignatureUtil.adjustSignature(Uint8Array.from(sig64));
 
   return {
     runtimeTransaction: {
-      version: 1,
+      // Arch RPC expects version 0 (see arch-network RPC docs).
+      version: 0,
       signatures: [adjusted],
       message
     },
@@ -68,7 +73,7 @@ export async function buildAndSignArchRuntimeTx(params: {
   };
 }
 
-export type TurnkeyForArch = Pick<TurnkeyService, "signBitcoinTransaction">;
+export type TurnkeyForArch = Pick<TurnkeyService, "signRawPayload">;
 
 export function createArchRpcClient(nodeUrl: string) {
   const provider = new RpcConnection(nodeUrl);
@@ -81,4 +86,11 @@ export async function submitArchTransaction(params: {
 }) {
   const arch = createArchRpcClient(params.nodeUrl);
   return await arch.sendTransaction(params.tx);
+}
+
+/**
+ * Parse an Arch account address (base58) into the 32-byte pubkey type expected by arch-sdk.
+ */
+export function parsePubkey(pubkeyBase58: string): Uint8Array {
+  return new Uint8Array(bs58.decode(pubkeyBase58));
 }
