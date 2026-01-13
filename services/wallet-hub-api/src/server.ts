@@ -9,6 +9,7 @@ import { registerTurnkey } from "./plugins/turnkey.js";
 import { registerIndexer } from "./plugins/indexer.js";
 import { registerBtcPlatform } from "./plugins/btcPlatform.js";
 import { registerAppAuth } from "./plugins/appAuth.js";
+import { registerCors } from "./plugins/cors.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
@@ -53,6 +54,8 @@ export async function createServer() {
   server.decorate("config", config);
 
   await server.register(sensible);
+  // CORS must run before auth so OPTIONS preflights don't get rejected.
+  await server.register(registerCors);
   await server.register(registerObservability);
   await server.register(registerDb);
   await server.register(registerTurnkey);

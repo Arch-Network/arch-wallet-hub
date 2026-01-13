@@ -24,6 +24,12 @@ const EnvSchema = z.object({
   // Platform admin (bootstrap apps + API keys)
   PLATFORM_ADMIN_API_KEY: z.string().optional(),
 
+  // CORS
+  // Comma-separated list of allowed origins (e.g. "https://dapp.example.com,https://app.example.com")
+  // Use "*" only if you explicitly want to allow all origins.
+  // In development, we also allow http://localhost:5173 and http://127.0.0.1:5173 by default.
+  CORS_ALLOW_ORIGINS: z.string().optional(),
+
   // Existing Arch indexer API (Phase 1 view-only reads)
   INDEXER_BASE_URL: z.string().url().optional(),
   INDEXER_API_KEY: z.string().optional(),
