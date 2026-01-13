@@ -5,6 +5,9 @@ import type {
   VerifyChallengeRequest,
   VerifyChallengeResponse,
   PortfolioResponse,
+  CreateTurnkeyWalletRequest,
+  CreateTurnkeyWalletResponse,
+  GetTurnkeyWalletResponse,
   CreateSigningRequest,
   CreateSigningResponse,
   GetSigningRequestResponse,
@@ -52,6 +55,27 @@ export class WalletHubClient {
 
   async getPortfolio(address: string): Promise<PortfolioResponse> {
     return await this.requestJson(`/portfolio/${encodeURIComponent(address)}`);
+  }
+
+  async createTurnkeyWallet(params: {
+    idempotencyKey: string;
+    body: CreateTurnkeyWalletRequest;
+  }): Promise<CreateTurnkeyWalletResponse> {
+    return await this.requestJson(`/turnkey/wallets`, {
+      method: "POST",
+      headers: { "idempotency-key": params.idempotencyKey },
+      body: JSON.stringify(params.body)
+    });
+  }
+
+  async getTurnkeyWallet(params: {
+    resourceId: string;
+    externalUserId: string;
+  }): Promise<GetTurnkeyWalletResponse> {
+    const q = new URLSearchParams({ externalUserId: params.externalUserId });
+    return await this.requestJson(
+      `/turnkey/wallets/${encodeURIComponent(params.resourceId)}?${q.toString()}`
+    );
   }
 
   async createSigningRequest(body: CreateSigningRequest): Promise<CreateSigningResponse> {

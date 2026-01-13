@@ -5,6 +5,18 @@ function safeJson(obj: unknown) {
   return JSON.stringify(obj, null, 2);
 }
 
+function makeIdempotencyKey() {
+  // Wallet Hub requires Idempotency-Key for Turnkey wallet creation.
+  // Use crypto.randomUUID when available; fallback to a simple random token.
+  const c = (globalThis as any).crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c?.getRandomValues) c.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 function defaultEnv(key: string, fallback = ""): string {
   return (import.meta as any).env?.[key] ?? fallback;
 }
@@ -40,6 +52,14 @@ export default function App() {
   const [getErr, setGetErr] = useState<string | null>(null);
   const [getLoading, setGetLoading] = useState(false);
 
+  const [turnkeyCreateRes, setTurnkeyCreateRes] = useState<unknown | null>(null);
+  const [turnkeyCreateErr, setTurnkeyCreateErr] = useState<string | null>(null);
+  const [turnkeyCreateLoading, setTurnkeyCreateLoading] = useState(false);
+  const [walletName, setWalletName] = useState("");
+
+  const [polling, setPolling] = useState(false);
+  const [pollEveryMs, setPollEveryMs] = useState(2000);
+
   async function onFetchPortfolio() {
     setPortfolioLoading(true);
     setPortfolioErr(null);
@@ -51,6 +71,30 @@ export default function App() {
       setPortfolioErr(String(e?.message ?? e));
     } finally {
       setPortfolioLoading(false);
+    }
+  }
+
+  async function onCreateTurnkeyWallet() {
+    setTurnkeyCreateLoading(true);
+    setTurnkeyCreateErr(null);
+    setTurnkeyCreateRes(null);
+    try {
+      const idempotencyKey = makeIdempotencyKey();
+      const res = await client.createTurnkeyWallet({
+        idempotencyKey,
+        body: {
+          externalUserId,
+          walletName: walletName || undefined
+        }
+      });
+      setTurnkeyCreateRes(res);
+      if (typeof (res as any)?.resourceId === "string") setTurnkeyResourceId((res as any).resourceId);
+      const defaultAddr = (res as any)?.defaultAddress as string | null | undefined;
+      if (defaultAddr && !portfolioAddress) setPortfolioAddress(defaultAddr);
+    } catch (e: any) {
+      setTurnkeyCreateErr(String(e?.message ?? e));
+    } finally {
+      setTurnkeyCreateLoading(false);
     }
   }
 
@@ -94,6 +138,32 @@ export default function App() {
     }
   }
 
+  async function onStartPolling() {
+    if (!signingRequestId) return;
+    setPolling(true);
+    setGetErr(null);
+    try {
+      while (true) {
+        const res = await client.getSigningRequest(signingRequestId);
+        setGetRes(res);
+        const status = String((res as any)?.readiness?.status ?? "");
+        if (status === "ready") break;
+        await new Promise((r) => setTimeout(r, Math.max(250, pollEveryMs)));
+        if (!(globalThis as any).__walletHubPoll) break;
+      }
+    } catch (e: any) {
+      setGetErr(String(e?.message ?? e));
+    } finally {
+      setPolling(false);
+      (globalThis as any).__walletHubPoll = false;
+    }
+  }
+
+  function onStopPolling() {
+    (globalThis as any).__walletHubPoll = false;
+    setPolling(false);
+  }
+
   const readiness = (getRes as any)?.readiness as any;
   const readinessStatus = String(readiness?.status ?? "");
   const readinessClass =
@@ -124,6 +194,38 @@ export default function App() {
       </div>
 
       <div className="grid">
+        <div className="card">
+          <h2>Embedded wallet (Turnkey)</h2>
+          <div className="row">
+            <label>externalUserId</label>
+            <input value={externalUserId} onChange={(e) => setExternalUserId(e.target.value)} />
+          </div>
+          <div className="row">
+            <label>walletName (optional)</label>
+            <input value={walletName} onChange={(e) => setWalletName(e.target.value)} placeholder="demo-wallet" />
+          </div>
+          <div className="actions">
+            <button onClick={onCreateTurnkeyWallet} disabled={turnkeyCreateLoading || !apiKey || !externalUserId}>
+              {turnkeyCreateLoading ? "Creating..." : "Create Turnkey wallet"}
+            </button>
+            {turnkeyResourceId ? (
+              <div className="pill">
+                resourceId: <code>{turnkeyResourceId}</code>
+              </div>
+            ) : null}
+          </div>
+          {turnkeyCreateErr ? (
+            <div className="json">
+              <pre className="bad">{turnkeyCreateErr}</pre>
+            </div>
+          ) : null}
+          {turnkeyCreateRes ? (
+            <div className="json">
+              <pre>{safeJson(turnkeyCreateRes)}</pre>
+            </div>
+          ) : null}
+        </div>
+
         <div className="card">
           <h2>Portfolio</h2>
           <div className="row">
@@ -254,6 +356,28 @@ export default function App() {
             <button onClick={onGetSigningRequest} disabled={getLoading || !apiKey || !signingRequestId}>
               {getLoading ? "Loading..." : "Fetch status"}
             </button>
+            <button
+              onClick={() => {
+                (globalThis as any).__walletHubPoll = true;
+                void onStartPolling();
+              }}
+              disabled={polling || !apiKey || !signingRequestId}
+            >
+              {polling ? "Polling..." : "Auto-poll until ready"}
+            </button>
+            <button onClick={onStopPolling} disabled={!polling}>
+              Stop
+            </button>
+            <span className="pill">
+              poll ms:{" "}
+              <input
+                style={{ width: 100, padding: "6px 8px" }}
+                type="number"
+                min={250}
+                value={pollEveryMs}
+                onChange={(e) => setPollEveryMs(Number(e.target.value))}
+              />
+            </span>
             {readinessStatus ? (
               <div className={`pill ${readinessClass}`}>
                 readiness: <strong>{readinessStatus}</strong>

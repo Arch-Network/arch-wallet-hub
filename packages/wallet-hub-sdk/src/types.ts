@@ -39,6 +39,36 @@ export type PortfolioResponse = {
   arch: { accountAddress: string; summary: unknown | null; transactions: unknown | null };
 };
 
+export type CreateTurnkeyWalletRequest = {
+  externalUserId: string;
+  walletName?: string;
+  addressFormat?: string;
+  derivationPath?: string;
+};
+
+export type CreateTurnkeyWalletResponse = {
+  resourceId: string;
+  userId: string;
+  externalUserId: string;
+  organizationId: string;
+  walletId: string;
+  addresses: string[];
+  defaultAddress: string | null;
+  activityId: string;
+};
+
+export type GetTurnkeyWalletResponse = {
+  id: string;
+  userId: string | null;
+  externalUserId: string | null;
+  organizationId: string;
+  walletId: string | null;
+  defaultAddress: string | null;
+  defaultAddressFormat: string | null;
+  defaultDerivationPath: string | null;
+  createdAt: string;
+};
+
 export type CreateSigningRequest = {
   externalUserId: string;
   signer:
