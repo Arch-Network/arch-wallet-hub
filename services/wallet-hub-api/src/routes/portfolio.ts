@@ -46,10 +46,22 @@ export const registerPortfolioRoutes: FastifyPluginAsync = async (server) => {
 
       const [archSummary, archTxs, btcSummary, btcUtxos] = await Promise.all([
         indexer
-          ? indexer.getAccountSummary(resolved.archAccountAddress).catch(() => null)
+          ? indexer.getAccountSummary(resolved.archAccountAddress).catch((err) => {
+              request.log.warn(
+                { err, archAccountAddress: resolved.archAccountAddress },
+                "indexer.getAccountSummary failed"
+              );
+              return null;
+            })
           : Promise.resolve(null),
         indexer
-          ? indexer.getAccountTransactions(resolved.archAccountAddress).catch(() => null)
+          ? indexer.getAccountTransactions(resolved.archAccountAddress).catch((err) => {
+              request.log.warn(
+                { err, archAccountAddress: resolved.archAccountAddress },
+                "indexer.getAccountTransactions failed"
+              );
+              return null;
+            })
           : Promise.resolve(null),
         btc ? btc.getAddressSummary(btcAddress).catch(() => null) : Promise.resolve(null),
         btc
