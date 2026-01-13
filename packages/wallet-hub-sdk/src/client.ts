@@ -7,6 +7,7 @@ import type {
   PortfolioResponse,
   CreateSigningRequest,
   CreateSigningResponse,
+  GetSigningRequestResponse,
   SubmitSigningRequest,
   SubmitSigningResponse
 } from "./types.js";
@@ -58,6 +59,10 @@ export class WalletHubClient {
       method: "POST",
       body: JSON.stringify(body)
     });
+  }
+
+  async getSigningRequest(id: string): Promise<GetSigningRequestResponse> {
+    return await this.requestJson(`/signing-requests/${encodeURIComponent(id)}`);
   }
 
   async submitSigningRequest(id: string, body: SubmitSigningRequest): Promise<SubmitSigningResponse> {

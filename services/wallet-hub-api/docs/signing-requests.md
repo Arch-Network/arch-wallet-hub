@@ -79,4 +79,3 @@ Wallet Hub uses:
 
 - `BTC_PLATFORM_BASE_URL`: base URL for the BTC platform API (e.g. `http://localhost:3101`)
 - `BTC_MIN_CONFIRMATIONS`: required confirmations for readiness checks (default `20`)
-

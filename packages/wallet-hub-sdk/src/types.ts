@@ -45,7 +45,8 @@ export type CreateSigningRequest = {
     | { kind: "external"; taprootAddress: string }
     | { kind: "turnkey"; resourceId: string };
   action:
-    | { type: "arch.transfer"; toAddress: string; lamports: string };
+    | { type: "arch.transfer"; toAddress: string; lamports: string }
+    | { type: "arch.anchor"; btcTxid: string; vout: number };
 };
 
 export type CreateSigningResponse = {
@@ -55,6 +56,45 @@ export type CreateSigningResponse = {
   payloadToSign: unknown;
   display: unknown;
   expiresAt: string | null;
+};
+
+export type SigningRequestReadiness =
+  | {
+      status: "ready";
+      reason?: string;
+      anchoredUtxo?: { txid: string; vout: number };
+      btcAccountAddress?: string;
+      confirmations?: number;
+      requiredConfirmations?: number;
+    }
+  | {
+      status: "not_ready";
+      reason?: string;
+      anchoredUtxo?: { txid: string; vout: number };
+      btcAccountAddress?: string;
+      confirmations?: number;
+      requiredConfirmations?: number;
+    }
+  | {
+      status: "unknown";
+      reason?: string;
+      anchoredUtxo?: { txid: string; vout: number };
+      btcAccountAddress?: string;
+      confirmations?: number;
+      requiredConfirmations?: number;
+    };
+
+export type GetSigningRequestResponse = {
+  signingRequestId: string;
+  status: string;
+  actionType: string;
+  display: unknown;
+  result: unknown | null;
+  error: unknown | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  readiness: SigningRequestReadiness;
 };
 
 export type SubmitSigningRequest = {
