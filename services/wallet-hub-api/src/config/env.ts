@@ -33,6 +33,8 @@ const EnvSchema = z.object({
   // Existing Arch indexer API (Phase 1 view-only reads)
   INDEXER_BASE_URL: z.string().url().optional(),
   INDEXER_API_KEY: z.string().optional(),
+  // Timeout for upstream indexer calls. Keeps portfolio endpoints snappy even if upstream is slow.
+  INDEXER_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 
   // BTC API platform (our own BTC data API)
   BTC_PLATFORM_BASE_URL: z.string().url().optional(),

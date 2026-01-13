@@ -11,6 +11,7 @@ export function createIndexerClient(server: FastifyInstance): IndexerClient | nu
   if (!baseUrl) return null;
   const baseUrlValue = baseUrl;
   const apiKey = server.config.INDEXER_API_KEY;
+  const timeoutMs = (server.config as any).INDEXER_TIMEOUT_MS ?? 10_000;
 
   function joinUrl(path: string) {
     const left = baseUrlValue.endsWith("/") ? baseUrlValue.slice(0, -1) : baseUrlValue;
@@ -19,6 +20,7 @@ export function createIndexerClient(server: FastifyInstance): IndexerClient | nu
   }
 
   async function getJson(path: string) {
+    const url = joinUrl(path);
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (apiKey) {
       // Matches your OpenAPI security scheme.
@@ -26,10 +28,25 @@ export function createIndexerClient(server: FastifyInstance): IndexerClient | nu
       headers["x-api-key"] = apiKey;
     }
 
-    const res = await fetch(joinUrl(path), { headers });
+    // Prevent requests from hanging for a full reverse-proxy timeout.
+    const signal =
+      typeof (AbortSignal as any)?.timeout === "function"
+        ? (AbortSignal as any).timeout(timeoutMs)
+        : undefined;
+
+    let res: Response;
+    try {
+      res = await fetch(url, { headers, signal });
+    } catch (err: any) {
+      const isAbort =
+        err?.name === "AbortError" ||
+        String(err?.message ?? "").toLowerCase().includes("abort");
+      if (isAbort) throw new Error(`Indexer request timeout after ${timeoutMs}ms: ${url}`);
+      throw err;
+    }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Indexer error ${res.status} ${res.statusText}: ${text}`);
+      throw new Error(`Indexer error ${res.status} ${res.statusText} (${url}): ${text}`);
     }
     return await res.json();
   }
