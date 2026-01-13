@@ -23,7 +23,12 @@ export class WalletHubClient {
   constructor(opts: WalletHubClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.apiKey = opts.apiKey;
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    // In some environments, calling a captured `window.fetch` with a different `this`
+    // (e.g. as `this.fetchImpl(...)`) can throw "Illegal invocation".
+    // Binding to globalThis keeps the native implementation happy while still allowing
+    // callers to override fetchImpl for testing.
+    const f = (opts.fetchImpl ?? fetch) as any;
+    this.fetchImpl = typeof f?.bind === "function" ? f.bind(globalThis) : f;
   }
 
   private async requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
