@@ -333,7 +333,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         // confirmation count before submitting the Arch tx. Otherwise the validator will
         // deterministically fail execution with "Transaction to sign empty".
         //
-        // We only do this best-effort (won't block if BTC platform isn't configured).
+        // Non-custodial UX: we do NOT block request creation. Instead we attach a warning
+        // and let clients poll GET /v1/signing-requests/:id for live readiness.
         try {
           const readiness = await computeBtcUtxoReadiness({
             archRpc,
@@ -343,17 +344,14 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           });
 
           if (readiness.status === "not_ready") {
-            return reply.code(409).send({
-              statusCode: 409,
-              error: readiness.reason ?? "NotReady",
-              message:
-                readiness.reason === "BtcUtxoNotConfirmed"
-                  ? `Anchored BTC UTXO confirmations ${readiness.confirmations ?? 0} < required ${readiness.requiredConfirmations ?? server.config.BTC_MIN_CONFIRMATIONS ?? 20}`
-                  : readiness.reason === "NotAnchored"
-                    ? "Account is not anchored to a BTC UTXO. Fund the BTC account address and submit arch.anchor first."
-                    : "Request is not ready",
-              ...readiness
-            });
+            const msg =
+              readiness.reason === "BtcUtxoNotConfirmed"
+                ? `Not ready: anchored BTC UTXO confirmations ${readiness.confirmations ?? 0} < required ${readiness.requiredConfirmations ?? server.config.BTC_MIN_CONFIRMATIONS ?? 20}`
+                : readiness.reason === "NotAnchored"
+                  ? "Not ready: account is not anchored to a BTC UTXO (submit arch.anchor first)"
+                  : "Not ready";
+            display.warnings = Array.isArray(display.warnings) ? display.warnings : [];
+            display.warnings.push(msg);
           }
         } catch {
           // ignore preflight errors (best-effort)
