@@ -46,6 +46,13 @@ export type CreateTurnkeyWalletRequest = {
   derivationPath?: string;
 };
 
+export type CreateTurnkeyPasskeyWalletRequest = CreateTurnkeyWalletRequest & {
+  passkey: {
+    challenge: string; // base64url
+    attestation: unknown;
+  };
+};
+
 export type CreateTurnkeyWalletResponse = {
   resourceId: string;
   userId: string;

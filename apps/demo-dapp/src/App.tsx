@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { Turnkey, SessionType } from "@turnkey/sdk-browser";
 
 function safeJson(obj: unknown) {
   return JSON.stringify(obj, null, 2);
@@ -62,6 +63,18 @@ export default function App() {
   const [turnkeyCreateErr, setTurnkeyCreateErr] = useState<string | null>(null);
   const [turnkeyCreateLoading, setTurnkeyCreateLoading] = useState(false);
   const [walletName, setWalletName] = useState("");
+  const [turnkeyPasskeyReady, setTurnkeyPasskeyReady] = useState(false);
+  const [turnkeyPasskeyErr, setTurnkeyPasskeyErr] = useState<string | null>(null);
+  const [turnkeySignLoading, setTurnkeySignLoading] = useState(false);
+  const [turnkeySignRes, setTurnkeySignRes] = useState<unknown | null>(null);
+
+  const [turnkeyApiBaseUrl, setTurnkeyApiBaseUrl] = useState(
+    defaultEnv("VITE_TURNKEY_API_BASE_URL", "https://api.turnkey.com")
+  );
+  const [turnkeyParentOrgId, setTurnkeyParentOrgId] = useState(
+    defaultEnv("VITE_TURNKEY_PARENT_ORGANIZATION_ID", "")
+  );
+  const [turnkeyRpId, setTurnkeyRpId] = useState(defaultEnv("VITE_TURNKEY_RP_ID", window.location.hostname));
 
   const [polling, setPolling] = useState(false);
   const [pollEveryMs, setPollEveryMs] = useState(2000);
@@ -101,6 +114,133 @@ export default function App() {
       setTurnkeyCreateErr(String(e?.message ?? e));
     } finally {
       setTurnkeyCreateLoading(false);
+    }
+  }
+
+  const turnkey = useMemo(() => {
+    if (!turnkeyParentOrgId) return null;
+    return new Turnkey({
+      apiBaseUrl: turnkeyApiBaseUrl,
+      defaultOrganizationId: turnkeyParentOrgId,
+      rpId: turnkeyRpId
+    });
+  }, [turnkeyApiBaseUrl, turnkeyParentOrgId, turnkeyRpId]);
+
+  async function onCreatePasskeyWallet() {
+    setTurnkeyCreateLoading(true);
+    setTurnkeyCreateErr(null);
+    setTurnkeyCreateRes(null);
+    setTurnkeyPasskeyErr(null);
+    setTurnkeyPasskeyReady(false);
+    try {
+      if (!turnkey) throw new Error("Missing Turnkey config (set VITE_TURNKEY_PARENT_ORGANIZATION_ID)");
+
+      const passkeyClient = turnkey.passkeyClient();
+      const { encodedChallenge, attestation } =
+        (await passkeyClient.createUserPasskey({
+          publicKey: {
+            rp: { id: turnkeyRpId, name: "Wallet Hub Demo" },
+            user: { name: externalUserId, displayName: externalUserId }
+          }
+        })) || ({} as any);
+
+      if (!encodedChallenge || !attestation) throw new Error("Failed to create passkey attestation");
+
+      const idempotencyKey = makeIdempotencyKey();
+      const res = await client.createTurnkeyPasskeyWallet({
+        idempotencyKey,
+        body: {
+          externalUserId,
+          walletName: walletName || undefined,
+          passkey: { challenge: encodedChallenge, attestation }
+        }
+      });
+
+      setTurnkeyCreateRes(res);
+      if (typeof (res as any)?.resourceId === "string") setTurnkeyResourceId((res as any).resourceId);
+      const defaultAddr = (res as any)?.defaultAddress as string | null | undefined;
+      if (defaultAddr && !portfolioAddress) setPortfolioAddress(defaultAddr);
+      setTurnkeyPasskeyReady(true);
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      if (msg.includes("NotAllowedError")) {
+        // User canceled passkey prompt; avoid stuck state.
+        window.location.reload();
+        return;
+      }
+      setTurnkeyCreateErr(msg);
+    } finally {
+      setTurnkeyCreateLoading(false);
+    }
+  }
+
+  async function onPasskeyLogin() {
+    setTurnkeyPasskeyErr(null);
+    setTurnkeyPasskeyReady(false);
+    try {
+      if (!turnkey) throw new Error("Missing Turnkey config (set VITE_TURNKEY_PARENT_ORGANIZATION_ID)");
+      const indexedDbClient = turnkey.indexedDbClient();
+      const passkeyClient = turnkey.passkeyClient();
+
+      await indexedDbClient.resetKeyPair();
+      const publicKey = await indexedDbClient.getPublicKey();
+      await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
+      setTurnkeyPasskeyReady(true);
+    } catch (e: any) {
+      setTurnkeyPasskeyErr(String(e?.message ?? e));
+    }
+  }
+
+  async function onTurnkeySignPayloadAndSubmit() {
+    setTurnkeySignLoading(true);
+    setTurnkeySignRes(null);
+    setSubmitErr(null);
+    try {
+      if (!turnkey) throw new Error("Missing Turnkey config");
+      if (!signingRequestId) throw new Error("Missing signingRequestId");
+      if (!turnkeyResourceId) throw new Error("Missing Turnkey resourceId");
+
+      // Fetch org id for this wallet resource (sub-org)
+      const walletMeta = await client.getTurnkeyWallet({ resourceId: turnkeyResourceId, externalUserId });
+      const organizationId = walletMeta.organizationId;
+
+      // Get signing request payload
+      const sr = await client.getSigningRequest(signingRequestId);
+      const p: any = (sr as any).payloadToSign;
+      if (p?.kind !== "taproot_sighash_hex") throw new Error(`Unexpected payloadToSign.kind: ${String(p?.kind)}`);
+
+      const indexedDbClient = turnkey.indexedDbClient();
+      const reqBody = {
+        type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
+        timestampMs: String(Date.now()),
+        organizationId,
+        parameters: {
+          signWith: String(p.signWith),
+          payload: String(p.payloadHex),
+          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+          hashFunction: "HASH_FUNCTION_NO_OP"
+        }
+      };
+
+      const resp: any = await indexedDbClient.signRawPayload(reqBody);
+      const r = resp?.activity?.result?.signRawPayloadResult?.r;
+      const s = resp?.activity?.result?.signRawPayloadResult?.s;
+      const activityId = resp?.activity?.id ?? null;
+      if (!r || !s) throw new Error("Turnkey signRawPayload did not return r/s");
+
+      const signature64Hex = `${r}${s}`;
+      setTurnkeySignRes({ activityId, signature64Hex });
+
+      const submit = await client.submitSigningRequest(signingRequestId, {
+        externalUserId,
+        signature64Hex,
+        turnkeyActivityId: activityId ?? undefined
+      });
+      setSubmitRes(submit);
+    } catch (e: any) {
+      setSubmitErr(String(e?.message ?? e));
+    } finally {
+      setTurnkeySignLoading(false);
     }
   }
 
@@ -230,7 +370,13 @@ export default function App() {
           </div>
           <div className="actions">
             <button onClick={onCreateTurnkeyWallet} disabled={turnkeyCreateLoading || !apiKey || !externalUserId}>
-              {turnkeyCreateLoading ? "Creating..." : "Create Turnkey wallet"}
+              {turnkeyCreateLoading ? "Creating..." : "Create Turnkey wallet (custodial demo)"}
+            </button>
+            <button
+              onClick={onCreatePasskeyWallet}
+              disabled={turnkeyCreateLoading || !apiKey || !externalUserId || !turnkeyParentOrgId}
+            >
+              {turnkeyCreateLoading ? "Creating..." : "Create passkey wallet (non-custodial)"}
             </button>
             {turnkeyResourceId ? (
               <div className="pill">
@@ -238,6 +384,29 @@ export default function App() {
               </div>
             ) : null}
           </div>
+          <div className="row" style={{ marginTop: 10 }}>
+            <label>Turnkey API baseUrl</label>
+            <input value={turnkeyApiBaseUrl} onChange={(e) => setTurnkeyApiBaseUrl(e.target.value)} />
+          </div>
+          <div className="row">
+            <label>Turnkey parent orgId</label>
+            <input value={turnkeyParentOrgId} onChange={(e) => setTurnkeyParentOrgId(e.target.value)} />
+          </div>
+          <div className="row">
+            <label>Passkey RP ID</label>
+            <input value={turnkeyRpId} onChange={(e) => setTurnkeyRpId(e.target.value)} />
+          </div>
+          <div className="actions">
+            <button onClick={onPasskeyLogin} disabled={!turnkeyParentOrgId}>
+              Passkey login
+            </button>
+            {turnkeyPasskeyReady ? <div className="pill ok">passkey session: ready</div> : <div className="pill">passkey session: not logged in</div>}
+          </div>
+          {turnkeyPasskeyErr ? (
+            <div className="json">
+              <pre className="bad">{turnkeyPasskeyErr}</pre>
+            </div>
+          ) : null}
           {turnkeyCreateErr ? (
             <div className="json">
               <pre className="bad">{turnkeyCreateErr}</pre>
@@ -396,7 +565,24 @@ export default function App() {
             >
               {submitLoading ? "Submitting..." : "Submit signature"}
             </button>
+            <button
+              onClick={onTurnkeySignPayloadAndSubmit}
+              disabled={
+                turnkeySignLoading ||
+                !turnkeyPasskeyReady ||
+                !turnkeyResourceId ||
+                !signingRequestId ||
+                !apiKey
+              }
+            >
+              {turnkeySignLoading ? "Signing..." : "Sign with passkey (Turnkey) + submit"}
+            </button>
           </div>
+          {turnkeySignRes ? (
+            <div className="json">
+              <pre>{safeJson(turnkeySignRes)}</pre>
+            </div>
+          ) : null}
           {submitErr ? (
             <div className="json">
               <pre className="bad">{submitErr}</pre>
@@ -476,4 +662,3 @@ export default function App() {
     </div>
   );
 }
-

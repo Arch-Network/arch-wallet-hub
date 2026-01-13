@@ -27,6 +27,17 @@ const CreateWalletBody = Type.Object({
   derivationPath: Type.Optional(Type.String({ minLength: 1 }))
 });
 
+const CreatePasskeyWalletBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
+  walletName: Type.Optional(Type.String({ minLength: 1 })),
+  addressFormat: Type.Optional(Type.String({ minLength: 1 })),
+  derivationPath: Type.Optional(Type.String({ minLength: 1 })),
+  passkey: Type.Object({
+    challenge: Type.String({ minLength: 1 }), // base64url
+    attestation: Type.Unknown()
+  })
+});
+
 const CreateWalletResponse = Type.Object({
   resourceId: Type.String(),
   userId: Type.String(),
@@ -73,6 +84,170 @@ const SignMessageResponse = Type.Object({
 });
 
 export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
+  server.post(
+    "/turnkey/passkey-wallets",
+    {
+      schema: {
+        summary: "Create a non-custodial embedded wallet (sub-org + passkey root user + wallet)",
+        tags: ["turnkey"],
+        body: CreatePasskeyWalletBody,
+        response: { 200: CreateWalletResponse }
+      }
+    },
+    async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const idempotencyKey = request.headers["idempotency-key"]?.toString();
+      if (!idempotencyKey) return reply.badRequest("Missing Idempotency-Key header");
+
+      const body = request.body as any;
+      const route = "POST /v1/turnkey/passkey-wallets";
+      const requestHash = computeRequestHash(body);
+
+      const db = getDbPool();
+      const consumed = await withDbTransaction(db, async (client) => {
+        const res = await consumeIdempotencyKey({
+          client,
+          appId,
+          key: idempotencyKey,
+          route,
+          requestHash
+        });
+
+        if (res.kind !== "created") return res;
+        const externalUserId = (body as any).externalUserId;
+        const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
+        return { ...res, userId: user.id };
+      });
+
+      if (consumed.kind === "replayed") return consumed.response;
+      if (consumed.kind === "conflict") return reply.conflict(consumed.reason);
+      if (consumed.kind === "in_progress") return reply.conflict(consumed.reason);
+      if (consumed.kind === "failed") return reply.code(409).send({ message: consumed.reason, error: consumed.error });
+
+      const userId = (consumed as { userId: string }).userId;
+      const externalUserId = (body as any).externalUserId;
+      const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}`;
+      const addressFormat = (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
+      const derivationPath = (body as any).derivationPath ?? "m/86'/1'/0'/0/0";
+
+      await withDbTransaction(db, async (client) => {
+        await auditEvent({
+          client,
+          appId,
+          requestId: request.id,
+          userId,
+          eventType: "turnkey.wallet.create",
+          entityType: "user",
+          entityId: userId,
+          turnkeyActivityId: null,
+          turnkeyRequestId: null,
+          payloadJson: {
+            mode: "passkey_suborg",
+            walletName,
+            addressFormat,
+            derivationPath
+          },
+          outcome: "requested"
+        });
+      });
+
+      try {
+        const turnkey = getTurnkeyClient();
+        const subOrganizationName = `arch-${appId}-${externalUserId}`;
+        const created = await (turnkey as any).createSubOrganizationWithWallet({
+          subOrganizationName,
+          rootUser: {
+            userName: String(externalUserId),
+            userEmail: undefined,
+            passkey: {
+              challenge: String((body as any).passkey.challenge),
+              attestation: (body as any).passkey.attestation
+            }
+          },
+          wallet: {
+            walletName,
+            addressFormat,
+            path: derivationPath
+          }
+        });
+
+        const defaultAddress = created.addresses[0] ?? null;
+
+        const response = await withDbTransaction(db, async (client) => {
+          const resource = await insertTurnkeyResource(client, {
+            appId,
+            userId,
+            organizationId: created.subOrganizationId,
+            walletId: created.walletId,
+            vaultId: null,
+            keyId: null,
+            policyId: null,
+            defaultAddress,
+            defaultAddressFormat: addressFormat,
+            defaultDerivationPath: derivationPath
+          });
+
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId,
+            eventType: "turnkey.wallet.create",
+            entityType: "turnkey_resource",
+            entityId: resource.id,
+            turnkeyActivityId: created.activityId,
+            turnkeyRequestId: null,
+            payloadJson: {
+              mode: "passkey_suborg",
+              subOrganizationId: created.subOrganizationId,
+              rootUserId: created.rootUserId,
+              walletId: created.walletId,
+              addresses: created.addresses,
+              defaultAddress
+            },
+            outcome: "succeeded"
+          });
+
+          const responseBody = {
+            resourceId: resource.id,
+            userId,
+            externalUserId,
+            organizationId: created.subOrganizationId,
+            walletId: created.walletId,
+            addresses: created.addresses,
+            defaultAddress,
+            activityId: created.activityId
+          };
+
+          await markIdempotencySucceeded(client, consumed.row.id, responseBody);
+          return responseBody;
+        });
+
+        return response;
+      } catch (err: any) {
+        await withDbTransaction(db, async (client) => {
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId,
+            eventType: "turnkey.wallet.create",
+            entityType: "user",
+            entityId: userId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { error: String(err?.message ?? err) },
+            outcome: "failed"
+          });
+          await markIdempotencyFailed(client, consumed.row.id, { message: String(err?.message ?? err) });
+        });
+        throw err;
+      }
+    }
+  );
+
   server.post(
     "/turnkey/wallets",
     {

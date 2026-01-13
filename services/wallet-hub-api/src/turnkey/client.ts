@@ -29,6 +29,31 @@ type CreateBitcoinWalletResult = {
   activityId: string;
 };
 
+type CreateSubOrganizationWithWalletParams = {
+  subOrganizationName: string;
+  rootUser: {
+    userName: string;
+    userEmail?: string;
+    passkey: {
+      challenge: string; // base64url
+      attestation: unknown;
+    };
+  };
+  wallet: {
+    walletName: string;
+    addressFormat: CreateBitcoinWalletParams["addressFormat"];
+    path: string;
+  };
+};
+
+type CreateSubOrganizationWithWalletResult = {
+  subOrganizationId: string;
+  rootUserId: string | null;
+  walletId: string;
+  addresses: string[];
+  activityId: string;
+};
+
 type SignRawPayloadParams = {
   signWith: string; // wallet account address, private key address, or privateKeyId
   payload: string;
@@ -165,6 +190,79 @@ export class TurnkeyService {
     }
 
     return { walletId, addresses, activityId };
+  }
+
+  /**
+   * Create a sub-organization with a root passkey user and an initial wallet.
+   * This aligns with Turnkey's "sub-org as wallet" embedded wallet model.
+   */
+  async createSubOrganizationWithWallet(
+    params: CreateSubOrganizationWithWalletParams
+  ): Promise<CreateSubOrganizationWithWalletResult> {
+    const res = await (this.client as any).createSubOrganization({
+      type: "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V4",
+      timestampMs: nowMs(),
+      organizationId: this.organizationId,
+      parameters: {
+        subOrganizationName: params.subOrganizationName,
+        rootUsers: [
+          {
+            userName: params.rootUser.userName,
+            userEmail: params.rootUser.userEmail,
+            apiKeys: [],
+            authenticators: [
+              {
+                authenticatorName: "Passkey",
+                challenge: params.rootUser.passkey.challenge,
+                attestation: params.rootUser.passkey.attestation
+              }
+            ]
+          }
+        ],
+        rootQuorumThreshold: 1,
+        wallet: {
+          walletName: params.wallet.walletName,
+          accounts: [
+            {
+              curve: "CURVE_SECP256K1",
+              pathFormat: "PATH_FORMAT_BIP32",
+              path: params.wallet.path,
+              addressFormat: params.wallet.addressFormat
+            }
+          ]
+        }
+      }
+    });
+
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey createSubOrganization did not complete: ${activityId}`);
+    }
+
+    const result =
+      (activity.result as any).createSubOrganizationResultV4 ??
+      (activity.result as any).createSubOrganizationResultV5 ??
+      (activity.result as any).createSubOrganizationResultV6 ??
+      (activity.result as any).createSubOrganizationResultV7 ??
+      null;
+
+    if (!result?.subOrganizationId) {
+      throw new Error("Turnkey createSubOrganization did not return subOrganizationId");
+    }
+    const walletId = result.wallet?.walletId;
+    const addresses = result.wallet?.addresses ?? [];
+    if (!walletId) throw new Error("Turnkey createSubOrganization did not return walletId");
+
+    const rootUserId = Array.isArray(result.rootUserIds) ? (result.rootUserIds[0] ?? null) : null;
+
+    return {
+      subOrganizationId: result.subOrganizationId,
+      rootUserId,
+      walletId,
+      addresses,
+      activityId
+    };
   }
 
   async signRawPayload(
