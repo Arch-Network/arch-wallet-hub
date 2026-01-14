@@ -149,6 +149,13 @@ async function computeBtcUtxoReadiness(params: {
     }
     return { status: "unknown", reason: `ArchRpcError: ${msg}` } as const;
   }
+
+  // Some Arch deployments allow arch transfers without anchoring to a BTC UTXO.
+  // In that configuration, skip *all* BTC readiness checks (including confirmations).
+  if (!params.requireAnchoredUtxo) {
+    return { status: "ready", reason: "AnchorNotRequired" } as const;
+  }
+
   const anchored = parseAnchoredUtxo(String(accInfo?.utxo ?? ""));
   if (!anchored) {
     return params.requireAnchoredUtxo
