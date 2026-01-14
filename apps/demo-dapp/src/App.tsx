@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
 import { Turnkey, SessionType } from "@turnkey/sdk-browser";
 
@@ -53,6 +53,12 @@ export default function App() {
   const [submitRes, setSubmitRes] = useState<unknown | null>(null);
   const [submitErr, setSubmitErr] = useState<string | null>(null);
   const [submitLoading, setSubmitLoading] = useState(false);
+
+  const [approveOpen, setApproveOpen] = useState(false);
+  const [approveSigningRequestId, setApproveSigningRequestId] = useState<string>("");
+  const [approveReq, setApproveReq] = useState<any | null>(null);
+  const [approveErr, setApproveErr] = useState<string | null>(null);
+  const [approveLoading, setApproveLoading] = useState(false);
 
   const [signingRequestId, setSigningRequestId] = useState("");
   const [getRes, setGetRes] = useState<unknown | null>(null);
@@ -214,13 +220,14 @@ export default function App() {
     }
   }
 
-  async function onTurnkeySignPayloadAndSubmit() {
+  async function onTurnkeySignPayloadAndSubmit(signingRequestIdOverride?: string) {
     setTurnkeySignLoading(true);
     setTurnkeySignRes(null);
     setSubmitErr(null);
     try {
       if (!turnkey) throw new Error("Missing Turnkey config");
-      if (!signingRequestId) throw new Error("Missing signingRequestId");
+      const srId = signingRequestIdOverride ?? signingRequestId;
+      if (!srId) throw new Error("Missing signingRequestId");
       if (!turnkeyResourceId) throw new Error("Missing Turnkey resourceId");
 
       // Fetch org id for this wallet resource (sub-org)
@@ -228,7 +235,7 @@ export default function App() {
       const organizationId = walletMeta.organizationId;
 
       // Get signing request payload
-      const sr = await client.getSigningRequest(signingRequestId);
+      const sr = await client.getSigningRequest(srId);
       const p: any = (sr as any).payloadToSign;
       if (p?.kind !== "taproot_sighash_hex") throw new Error(`Unexpected payloadToSign.kind: ${String(p?.kind)}`);
 
@@ -254,7 +261,7 @@ export default function App() {
       const signature64Hex = `${r}${s}`;
       setTurnkeySignRes({ activityId, signature64Hex });
 
-      const submit = await client.submitSigningRequest(signingRequestId, {
+      const submit = await client.submitSigningRequest(srId, {
         externalUserId,
         signature64Hex,
         turnkeyActivityId: activityId ?? undefined
@@ -285,12 +292,51 @@ export default function App() {
       const res = await client.createSigningRequest({ externalUserId, signer, action });
       setCreateRes(res);
       const id = (res as any)?.signingRequestId;
-      if (typeof id === "string") setSigningRequestId(id);
+      if (typeof id === "string") {
+        setSigningRequestId(id);
+        setApproveSigningRequestId(id);
+        setApproveOpen(true);
+      }
     } catch (e: any) {
       setCreateErr(String(e?.message ?? e));
     } finally {
       setCreateLoading(false);
     }
+  }
+
+  async function refreshApprove() {
+    if (!approveSigningRequestId) return;
+    setApproveLoading(true);
+    setApproveErr(null);
+    try {
+      const sr = await client.getSigningRequest(approveSigningRequestId);
+      setApproveReq(sr as any);
+    } catch (e: any) {
+      setApproveErr(String(e?.message ?? e));
+    } finally {
+      setApproveLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!approveOpen || !approveSigningRequestId) return;
+    void refreshApprove();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [approveOpen, approveSigningRequestId]);
+
+  useEffect(() => {
+    if (!approveOpen || !approveSigningRequestId) return;
+    const interval = window.setInterval(() => void refreshApprove(), 2000);
+    return () => window.clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [approveOpen, approveSigningRequestId]);
+
+  async function onApproveWithPasskey() {
+    if (!approveSigningRequestId) return;
+    setSubmitErr(null);
+    setSubmitRes(null);
+    await onTurnkeySignPayloadAndSubmit(approveSigningRequestId);
+    await refreshApprove();
   }
 
   async function onSubmitSignature() {
@@ -356,8 +402,97 @@ export default function App() {
   const readinessClass =
     readinessStatus === "ready" ? "ok" : readinessStatus === "not_ready" ? "warn" : readinessStatus ? "bad" : "";
 
+  const approveReadiness = (approveReq as any)?.readiness as any;
+  const approveReadinessStatus = String(approveReadiness?.status ?? "");
+  const approveReadinessClass =
+    approveReadinessStatus === "ready"
+      ? "ok"
+      : approveReadinessStatus === "not_ready"
+        ? "warn"
+        : approveReadinessStatus
+          ? "bad"
+          : "";
+
   return (
     <div className="container">
+      {approveOpen ? (
+        <div
+          className="modalOverlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setApproveOpen(false);
+          }}
+        >
+          <div className="modal">
+            <div className="modalHeader">
+              <div className="modalTitle">Approve transaction</div>
+              <button className="closeBtn" onClick={() => setApproveOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <div className="subtitle" style={{ lineHeight: 1.5 }}>
+              Review the intent and click Approve to trigger a Turnkey passkey prompt. Wallet Hub will only accept the
+              signature produced by the user.
+            </div>
+
+            <div className="actions" style={{ marginTop: 10 }}>
+              <div className={`pill ${approveReadinessClass}`}>
+                readiness: <strong>{approveReadinessStatus || "unknown"}</strong>
+                {approveReadiness?.reason ? <span>({String(approveReadiness.reason)})</span> : null}
+              </div>
+              <button onClick={() => void refreshApprove()} disabled={!approveSigningRequestId || approveLoading}>
+                {approveLoading ? "Refreshing..." : "Refresh"}
+              </button>
+              <button
+                onClick={() => void onApproveWithPasskey()}
+                disabled={
+                  !turnkeyPasskeyReady ||
+                  !turnkeyResourceId ||
+                  !approveSigningRequestId ||
+                  !apiKey ||
+                  turnkeySignLoading ||
+                  approveLoading
+                }
+              >
+                {turnkeySignLoading ? "Approving..." : "Approve with passkey"}
+              </button>
+            </div>
+
+            {approveErr ? (
+              <div className="json">
+                <pre className="bad">{approveErr}</pre>
+              </div>
+            ) : null}
+
+            {submitErr ? (
+              <div className="json">
+                <pre className="bad">{submitErr}</pre>
+              </div>
+            ) : null}
+            {submitRes ? (
+              <div className="json">
+                <pre>{safeJson(submitRes)}</pre>
+              </div>
+            ) : null}
+
+            <div className="split" style={{ marginTop: 12 }}>
+              <div className="card">
+                <h2>Preview (`display`)</h2>
+                <div className="json">
+                  <pre>{safeJson((approveReq as any)?.display ?? null)}</pre>
+                </div>
+              </div>
+              <div className="card">
+                <h2>Payload (`payloadToSign`)</h2>
+                <div className="json">
+                  <pre>{safeJson((approveReq as any)?.payloadToSign ?? null)}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="header">
         <div className="title">Wallet Hub Demo Dapp</div>
         <div className="subtitle">
@@ -547,6 +682,16 @@ export default function App() {
               }
             >
               {createLoading ? "Creating..." : "Create signing request"}
+            </button>
+            <button
+              onClick={() => {
+                if (!signingRequestId) return;
+                setApproveSigningRequestId(signingRequestId);
+                setApproveOpen(true);
+              }}
+              disabled={!signingRequestId}
+            >
+              Preview & approve
             </button>
           </div>
 
