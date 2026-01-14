@@ -53,6 +53,10 @@ export async function createServer() {
   });
 
   server.decorate("config", config);
+  server.log.info(
+    { ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: (config as any).ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO },
+    "arch.transfer policy"
+  );
 
   await server.register(sensible);
   // CORS must run before auth so OPTIONS preflights don't get rejected.
