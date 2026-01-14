@@ -10,7 +10,12 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "strict": true
+    "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@arch/wallet-hub-sdk": ["../../packages/wallet-hub-sdk/src/index.ts"],
+      "@arch/wallet-hub-ui": ["../../packages/wallet-hub-ui/src/index.ts"]
+    }
   },
   "include": ["src"]
 }

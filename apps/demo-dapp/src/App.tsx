@@ -278,19 +278,13 @@ export default function App() {
       const indexedDbClient = await turnkey.indexedDbClient();
       // Ensure key material is loaded/initialized for this tab before signing.
       await indexedDbClient.init();
-      const reqBody = {
-        type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
-        timestampMs: String(Date.now()),
+      const resp: any = await indexedDbClient.signRawPayload({
         organizationId,
-        parameters: {
-          signWith: String(p.signWith),
-          payload: String(p.payloadHex),
-          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-          hashFunction: "HASH_FUNCTION_NO_OP"
-        }
-      };
-
-      const resp: any = await indexedDbClient.signRawPayload(reqBody);
+        signWith: String(p.signWith),
+        payload: String(p.payloadHex),
+        encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+        hashFunction: "HASH_FUNCTION_NO_OP"
+      } as any);
       const r = resp?.activity?.result?.signRawPayloadResult?.r;
       const s = resp?.activity?.result?.signRawPayloadResult?.s;
       const activityId = resp?.activity?.id ?? null;
@@ -595,7 +589,7 @@ export default function App() {
             </button>
             <button
               onClick={onCreatePasskeyWallet}
-              disabled={turnkeyCreateLoading || !apiKey || !externalUserId || !turnkeyParentOrgId}
+              disabled={turnkeyCreateLoading || !apiKey || !externalUserId}
             >
               {turnkeyCreateLoading ? "Creating..." : "Create passkey wallet (non-custodial)"}
             </button>
@@ -610,15 +604,11 @@ export default function App() {
             <input value={turnkeyApiBaseUrl} onChange={(e) => setTurnkeyApiBaseUrl(e.target.value)} />
           </div>
           <div className="row">
-            <label>Turnkey parent orgId</label>
-            <input value={turnkeyParentOrgId} onChange={(e) => setTurnkeyParentOrgId(e.target.value)} />
-          </div>
-          <div className="row">
             <label>Passkey RP ID</label>
             <input value={turnkeyRpId} onChange={(e) => setTurnkeyRpId(e.target.value)} />
           </div>
           <div className="actions">
-            <button onClick={onPasskeyLogin} disabled={!turnkeyParentOrgId || turnkeyPasskeyLoginLoading}>
+            <button onClick={onPasskeyLogin} disabled={turnkeyPasskeyLoginLoading || !turnkeyResourceId}>
               {turnkeyPasskeyLoginLoading ? "Passkey login..." : "Passkey login"}
             </button>
             {turnkeyPasskeyReady ? <div className="pill ok">passkey session: ready</div> : <div className="pill">passkey session: not logged in</div>}
@@ -825,7 +815,7 @@ export default function App() {
               {submitLoading ? "Submitting..." : "Submit signature"}
             </button>
             <button
-              onClick={onTurnkeySignPayloadAndSubmit}
+              onClick={() => void onTurnkeySignPayloadAndSubmit()}
               disabled={
                 turnkeySignLoading ||
                 !turnkeyPasskeyReady ||
