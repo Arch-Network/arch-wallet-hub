@@ -74,7 +74,12 @@ export default function App() {
   const [turnkeyParentOrgId, setTurnkeyParentOrgId] = useState(
     defaultEnv("VITE_TURNKEY_PARENT_ORGANIZATION_ID", "")
   );
-  const [turnkeyRpId, setTurnkeyRpId] = useState(defaultEnv("VITE_TURNKEY_RP_ID", window.location.hostname));
+  const [turnkeyRpId, setTurnkeyRpId] = useState(
+    defaultEnv(
+      "VITE_TURNKEY_RP_ID",
+      window.location.hostname === "127.0.0.1" ? "localhost" : window.location.hostname
+    )
+  );
 
   const [polling, setPolling] = useState(false);
   const [pollEveryMs, setPollEveryMs] = useState(2000);
