@@ -14,7 +14,8 @@ async function callJsonRpc(nodeUrl: string, body: any): Promise<any> {
   }
   if (json?.error) {
     const msg = json?.error?.message ?? JSON.stringify(json?.error);
-    throw new Error(`Arch RPC error: ${msg}`);
+    const data = json?.error?.data ? ` (${String(json.error.data)})` : "";
+    throw new Error(`Arch RPC error: ${msg}${data}`);
   }
   return json?.result;
 }
@@ -48,28 +49,47 @@ export const registerArchAccountRoutes: FastifyPluginAsync = async (server) => {
 
       const body = request.body as any;
       const archAccountAddress = String(body.archAccountAddress);
-      const pubkeyBytes = Array.from(parsePubkey(archAccountAddress));
+      const decoded = parsePubkey(archAccountAddress);
+      if (decoded.length !== 32) return reply.badRequest("archAccountAddress must decode to 32 bytes");
+      const pubkeyBytes = Array.from(decoded);
       const lamportsRaw = body?.lamports ? String(body.lamports) : null;
 
       // Arch RPC in some environments expects params: [u8[]]
       // Others may accept params: [u8[], lamports]. We'll try both.
       const base = { jsonrpc: "2.0", id: "wallet-hub-airdrop", method: "request_airdrop" };
       try {
+        // Observed in localnet: params is the flat u8 array (not nested).
         const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
           ...base,
-          params: [pubkeyBytes]
+          params: pubkeyBytes
         });
         return { archAccountAddress, result };
       } catch (e1: any) {
         if (!lamportsRaw) throw e1;
         const lamports = Number(lamportsRaw);
-        const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
-          ...base,
-          params: [pubkeyBytes, lamports]
-        });
-        return { archAccountAddress, result };
+        // Fallbacks in case another RPC build expects a different param shape.
+        try {
+          const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
+            ...base,
+            params: { pubkey: pubkeyBytes, lamports }
+          });
+          return { archAccountAddress, result };
+        } catch {
+          try {
+            const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
+              ...base,
+              params: [pubkeyBytes, lamports]
+            });
+            return { archAccountAddress, result };
+          } catch {
+            const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
+              ...base,
+              params: [...pubkeyBytes, lamports]
+            });
+            return { archAccountAddress, result };
+          }
+        }
       }
     }
   );
 };
-
