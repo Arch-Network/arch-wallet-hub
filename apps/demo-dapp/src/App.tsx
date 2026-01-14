@@ -229,14 +229,10 @@ export default function App() {
     try {
       const organizationId = await getSelectedWalletOrgId();
       const turnkey = getTurnkeyForOrg(organizationId);
-      const indexedDbClient = await turnkey.indexedDbClient();
       const passkeyClient = turnkey.passkeyClient();
 
-      // Ensure the IndexedDB keypair exists/loaded before trying to use it.
-      await indexedDbClient.init();
-      await indexedDbClient.resetKeyPair();
-      const publicKey = await indexedDbClient.getPublicKey();
-      await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
+      // Create a passkey-backed session. This should not require a pre-registered API-key public key.
+      await (passkeyClient as any).loginWithPasskey({ sessionType: SessionType.READ_WRITE });
       setTurnkeyPasskeyReady(true);
     } catch (e: any) {
       const msg = String(e?.message ?? e);
@@ -275,16 +271,24 @@ export default function App() {
       const p: any = (sr as any).payloadToSign;
       if (p?.kind !== "taproot_sighash_hex") throw new Error(`Unexpected payloadToSign.kind: ${String(p?.kind)}`);
 
-      const indexedDbClient = await turnkey.indexedDbClient();
-      // Ensure key material is loaded/initialized for this tab before signing.
-      await indexedDbClient.init();
-      const resp: any = await indexedDbClient.signRawPayload({
+      // Ensure we have a passkey-backed session before signing.
+      if (!turnkeyPasskeyReady) {
+        await onPasskeyLogin();
+      }
+
+      // Sign via the passkey client (prompts the user), avoiding API-key/publicKey registration issues.
+      const passkeyClient = turnkey.passkeyClient();
+      const resp: any = await (passkeyClient as any).signRawPayload({
+        type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
+        timestampMs: String(Date.now()),
         organizationId,
-        signWith: String(p.signWith),
-        payload: String(p.payloadHex),
-        encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-        hashFunction: "HASH_FUNCTION_NO_OP"
-      } as any);
+        parameters: {
+          signWith: String(p.signWith),
+          payload: String(p.payloadHex),
+          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+          hashFunction: "HASH_FUNCTION_NO_OP"
+        }
+      });
       const r = resp?.activity?.result?.signRawPayloadResult?.r;
       const s = resp?.activity?.result?.signRawPayloadResult?.s;
       const activityId = resp?.activity?.id ?? null;
