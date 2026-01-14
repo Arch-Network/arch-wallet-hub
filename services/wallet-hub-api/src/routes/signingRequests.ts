@@ -133,6 +133,7 @@ async function computeBtcUtxoReadiness(params: {
   payerPubkey: Uint8Array;
   requiredConfirmations: number;
   btc: ReturnType<typeof getBtcPlatformClient>;
+  requireAnchoredUtxo: boolean;
 }) {
   if (!params.archRpc) {
     return { status: "unknown", reason: "ArchRpcNotConfigured" } as const;
@@ -150,7 +151,9 @@ async function computeBtcUtxoReadiness(params: {
   }
   const anchored = parseAnchoredUtxo(String(accInfo?.utxo ?? ""));
   if (!anchored) {
-    return { status: "not_ready", reason: "NotAnchored" } as const;
+    return params.requireAnchoredUtxo
+      ? ({ status: "not_ready", reason: "NotAnchored" } as const)
+      : ({ status: "ready", reason: "AnchorNotRequired" } as const);
   }
 
   if (!params.btc) {
@@ -244,7 +247,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
               archRpc,
               payerPubkey,
               requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
-              btc
+              btc,
+              requireAnchoredUtxo: Boolean(server.config.ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO)
             });
           } else {
             readiness = { status: "unknown", reason: "MissingPayerAddress" };
@@ -371,7 +375,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             archRpc,
             payerPubkey,
             requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
-            btc: getBtcPlatformClient()
+            btc: getBtcPlatformClient(),
+            requireAnchoredUtxo: Boolean(server.config.ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO)
           });
 
           if (readiness.status === "not_ready") {
@@ -532,7 +537,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           archRpc,
           payerPubkey,
           requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
-          btc: getBtcPlatformClient()
+          btc: getBtcPlatformClient(),
+          requireAnchoredUtxo: Boolean(server.config.ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO)
         });
         if (readiness.status === "not_ready") {
           return reply.code(409).send({

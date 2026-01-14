@@ -47,6 +47,13 @@ const EnvSchema = z.object({
   // Default aligns with current Arch validator behavior on testnet.
   BTC_MIN_CONFIRMATIONS: z.coerce.number().int().min(0).default(20),
 
+  // Some Arch deployments may allow arch transfers without requiring an anchored BTC UTXO.
+  // When false, Wallet Hub will skip BTC UTXO readiness checks for arch.transfer.
+  ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+
   // Backwards-compat env vars (deprecated)
   TITAN_BASE_URL: z.string().url().optional(),
   TITAN_API_KEY: z.string().optional(),
