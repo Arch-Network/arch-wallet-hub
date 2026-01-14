@@ -420,7 +420,7 @@ export default function App() {
             <input value={turnkeyRpId} onChange={(e) => setTurnkeyRpId(e.target.value)} />
           </div>
           <div className="actions">
-            <button onClick={onPasskeyLogin} disabled={!turnkyParentOrgId || turnkeyPasskeyLoginLoading}>
+            <button onClick={onPasskeyLogin} disabled={!turnkeyParentOrgId || turnkeyPasskeyLoginLoading}>
               {turnkeyPasskeyLoginLoading ? "Passkey login..." : "Passkey login"}
             </button>
             {turnkeyPasskeyReady ? <div className="pill ok">passkey session: ready</div> : <div className="pill">passkey session: not logged in</div>}
