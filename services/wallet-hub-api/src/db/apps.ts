@@ -57,6 +57,17 @@ export async function touchAppApiKeyLastUsed(client: PoolClient, params: { id: s
 
 export type UserRow = { id: string };
 
+export async function getUserByExternalId(client: PoolClient, params: {
+  appId: string;
+  externalUserId: string;
+}): Promise<UserRow | null> {
+  const res = await client.query<UserRow>(
+    `SELECT id FROM users WHERE app_id = $1 AND external_user_id = $2 AND external_user_id IS NOT NULL`,
+    [params.appId, params.externalUserId]
+  );
+  return res.rows[0] ?? null;
+}
+
 export async function getOrCreateUserByExternalId(client: PoolClient, params: {
   appId: string;
   externalUserId: string;

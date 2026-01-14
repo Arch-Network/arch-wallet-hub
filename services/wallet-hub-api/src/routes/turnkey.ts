@@ -6,10 +6,11 @@ import { getTurnkeyClient } from "../turnkey/store.js";
 import {
   getTurnkeyResourceByIdForApp,
   insertTurnkeyResource,
+  listTurnkeyResourcesForUserForApp,
   markIdempotencyFailed,
   markIdempotencySucceeded
 } from "../db/queries.js";
-import { getOrCreateUserByExternalId } from "../db/apps.js";
+import { getOrCreateUserByExternalId, getUserByExternalId } from "../db/apps.js";
 import {
   computeRequestHash,
   consumeIdempotencyKey,
@@ -59,6 +60,12 @@ const GetWalletResponse = Type.Object({
   defaultAddressFormat: Type.Union([Type.String(), Type.Null()]),
   defaultDerivationPath: Type.Union([Type.String(), Type.Null()]),
   createdAt: Type.String()
+});
+
+const ListWalletsResponse = Type.Object({
+  externalUserId: Type.String(),
+  userId: Type.Union([Type.String(), Type.Null()]),
+  wallets: Type.Array(GetWalletResponse)
 });
 
 const SignMessageBody = Type.Object({
@@ -404,6 +411,49 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   );
 
   server.get(
+    "/turnkey/wallets",
+    {
+      schema: {
+        summary: "List stored Turnkey wallet resources for a user",
+        tags: ["turnkey"],
+        querystring: Type.Object({ externalUserId: Type.String({ minLength: 1 }) }),
+        response: { 200: ListWalletsResponse }
+      }
+    },
+    async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const { externalUserId } = request.query as any;
+      const db = getDbPool();
+      const user = await withDbTransaction(db, (client) =>
+        getUserByExternalId(client, { appId, externalUserId })
+      );
+      if (!user) return { externalUserId, userId: null, wallets: [] };
+
+      const rows = await withDbTransaction(db, (client) =>
+        listTurnkeyResourcesForUserForApp(client, { appId, userId: user.id })
+      );
+
+      return {
+        externalUserId,
+        userId: user.id,
+        wallets: rows.map((row) => ({
+          id: row.id,
+          userId: row.user_id,
+          externalUserId,
+          organizationId: row.organization_id,
+          walletId: row.wallet_id,
+          defaultAddress: row.default_address,
+          defaultAddressFormat: row.default_address_format,
+          defaultDerivationPath: row.default_derivation_path,
+          createdAt: row.created_at
+        }))
+      };
+    }
+  );
+
+  server.get(
     "/turnkey/wallets/:resourceId",
     {
       schema: {
@@ -422,8 +472,9 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       const { externalUserId } = request.query as any;
       const db = getDbPool();
       const user = await withDbTransaction(db, (client) =>
-        getOrCreateUserByExternalId(client, { appId, externalUserId })
+        getUserByExternalId(client, { appId, externalUserId })
       );
+      if (!user) return reply.notFound("Unknown externalUserId");
       const row = await withDbTransaction(db, (client) =>
         getTurnkeyResourceByIdForApp(client, { id: resourceId, appId })
       );

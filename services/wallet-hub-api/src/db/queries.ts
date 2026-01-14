@@ -97,6 +97,17 @@ export async function getTurnkeyResourceByIdForApp(
   return res.rows[0] ?? null;
 }
 
+export async function listTurnkeyResourcesForUserForApp(
+  client: PoolClient,
+  params: { appId: string; userId: string }
+): Promise<TurnkeyResourceRow[]> {
+  const res = await client.query<TurnkeyResourceRow>(
+    `SELECT * FROM turnkey_resources WHERE app_id = $1 AND user_id = $2 ORDER BY created_at DESC`,
+    [params.appId, params.userId]
+  );
+  return res.rows;
+}
+
 export type InsertAuditLogParams = {
   appId: string;
   requestId: string | null;

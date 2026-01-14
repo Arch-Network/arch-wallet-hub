@@ -76,6 +76,12 @@ export type GetTurnkeyWalletResponse = {
   createdAt: string;
 };
 
+export type ListTurnkeyWalletsResponse = {
+  externalUserId: string;
+  userId: string | null;
+  wallets: GetTurnkeyWalletResponse[];
+};
+
 export type CreateSigningRequest = {
   externalUserId: string;
   signer:

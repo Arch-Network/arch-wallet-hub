@@ -9,6 +9,7 @@ import type {
   CreateTurnkeyWalletResponse,
   CreateTurnkeyPasskeyWalletRequest,
   GetTurnkeyWalletResponse,
+  ListTurnkeyWalletsResponse,
   CreateSigningRequest,
   CreateSigningResponse,
   GetSigningRequestResponse,
@@ -72,6 +73,11 @@ export class WalletHubClient {
       headers: { "idempotency-key": params.idempotencyKey },
       body: JSON.stringify(params.body)
     });
+  }
+
+  async listTurnkeyWallets(externalUserId: string): Promise<ListTurnkeyWalletsResponse> {
+    const q = new URLSearchParams({ externalUserId });
+    return await this.requestJson(`/turnkey/wallets?${q.toString()}`);
   }
 
   async createTurnkeyPasskeyWallet(params: {

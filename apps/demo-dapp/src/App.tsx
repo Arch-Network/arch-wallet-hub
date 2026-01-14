@@ -68,6 +68,9 @@ export default function App() {
   const [turnkeyCreateRes, setTurnkeyCreateRes] = useState<unknown | null>(null);
   const [turnkeyCreateErr, setTurnkeyCreateErr] = useState<string | null>(null);
   const [turnkeyCreateLoading, setTurnkeyCreateLoading] = useState(false);
+  const [turnkeyWallets, setTurnkeyWallets] = useState<any[]>([]);
+  const [turnkeyWalletsErr, setTurnkeyWalletsErr] = useState<string | null>(null);
+  const [turnkeyWalletsLoading, setTurnkeyWalletsLoading] = useState(false);
   const [walletName, setWalletName] = useState("");
   const [turnkeyPasskeyReady, setTurnkeyPasskeyReady] = useState(false);
   const [turnkeyPasskeyErr, setTurnkeyPasskeyErr] = useState<string | null>(null);
@@ -122,6 +125,12 @@ export default function App() {
       if (typeof (res as any)?.resourceId === "string") setTurnkeyResourceId((res as any).resourceId);
       const defaultAddr = (res as any)?.defaultAddress as string | null | undefined;
       if (defaultAddr && !portfolioAddress) setPortfolioAddress(defaultAddr);
+      try {
+        const listed = await client.listTurnkeyWallets(externalUserId);
+        setTurnkeyWallets(listed.wallets ?? []);
+      } catch {
+        // ignore
+      }
     } catch (e: any) {
       setTurnkeyCreateErr(String(e?.message ?? e));
     } finally {
@@ -173,6 +182,12 @@ export default function App() {
       const defaultAddr = (res as any)?.defaultAddress as string | null | undefined;
       if (defaultAddr && !portfolioAddress) setPortfolioAddress(defaultAddr);
       setTurnkeyPasskeyReady(true);
+      try {
+        const listed = await client.listTurnkeyWallets(externalUserId);
+        setTurnkeyWallets(listed.wallets ?? []);
+      } catch {
+        // ignore
+      }
     } catch (e: any) {
       const msg = String(e?.message ?? e);
       if (msg.includes("NotAllowedError")) {
@@ -183,6 +198,21 @@ export default function App() {
       setTurnkeyCreateErr(msg);
     } finally {
       setTurnkeyCreateLoading(false);
+    }
+  }
+
+  async function onLoadTurnkeyWallets() {
+    setTurnkeyWalletsLoading(true);
+    setTurnkeyWalletsErr(null);
+    try {
+      const listed = await client.listTurnkeyWallets(externalUserId);
+      const wallets = Array.isArray((listed as any)?.wallets) ? (listed as any).wallets : [];
+      setTurnkeyWallets(wallets);
+      if (!turnkeyResourceId && wallets[0]?.id) setTurnkeyResourceId(String(wallets[0].id));
+    } catch (e: any) {
+      setTurnkeyWalletsErr(String(e?.message ?? e));
+    } finally {
+      setTurnkeyWalletsLoading(false);
     }
   }
 
@@ -612,6 +642,21 @@ export default function App() {
             <label>externalUserId</label>
             <input value={externalUserId} onChange={(e) => setExternalUserId(e.target.value)} />
           </div>
+          <div className="actions" style={{ marginTop: 8 }}>
+            <button onClick={onLoadTurnkeyWallets} disabled={!apiKey || !externalUserId || turnkeyWalletsLoading}>
+              {turnkeyWalletsLoading ? "Loading wallets..." : "Load wallets"}
+            </button>
+            {turnkeyWallets.length ? (
+              <div className="pill ok">{turnkeyWallets.length} wallet(s) found</div>
+            ) : (
+              <div className="pill">wallets: none loaded</div>
+            )}
+          </div>
+          {turnkeyWalletsErr ? (
+            <div className="json">
+              <pre className="bad">{turnkeyWalletsErr}</pre>
+            </div>
+          ) : null}
           <div className="row">
             <label>Signer kind</label>
             <select value={signerKind} onChange={(e) => setSignerKind(e.target.value as any)}>
@@ -620,10 +665,23 @@ export default function App() {
             </select>
           </div>
           {signerKind === "turnkey" ? (
-            <div className="row">
-              <label>Turnkey resourceId</label>
-              <input value={turnkeyResourceId} onChange={(e) => setTurnkeyResourceId(e.target.value)} />
-            </div>
+            <>
+              <div className="row">
+                <label>Turnkey wallet (resourceId)</label>
+                <select value={turnkeyResourceId} onChange={(e) => setTurnkeyResourceId(e.target.value)}>
+                  <option value="">(select)</option>
+                  {turnkeyWallets.map((w: any) => (
+                    <option key={String(w.id)} value={String(w.id)}>
+                      {String(w.defaultAddress ?? w.walletId ?? w.id)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="row">
+                <label>Or paste resourceId</label>
+                <input value={turnkeyResourceId} onChange={(e) => setTurnkeyResourceId(e.target.value)} />
+              </div>
+            </>
           ) : (
             <div className="row">
               <label>Taproot address</label>
