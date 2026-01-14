@@ -110,6 +110,14 @@ function isTaprootAddress(s: string) {
   return s.startsWith("bc1p") || s.startsWith("tb1p") || s.startsWith("bcrt1p");
 }
 
+function inferBtcNetworkFromAddress(address: string): "mainnet" | "testnet" | "regtest" | "unknown" {
+  const a = String(address ?? "").toLowerCase();
+  if (a.startsWith("bc1")) return "mainnet";
+  if (a.startsWith("tb1")) return "testnet";
+  if (a.startsWith("bcrt1")) return "regtest";
+  return "unknown";
+}
+
 function isHex64(s: string) {
   return /^[0-9a-fA-F]{64}$/.test(s);
 }
@@ -155,6 +163,18 @@ async function computeBtcUtxoReadiness(params: {
   }
 
   const btcAccountAddress = await params.archRpc.getAccountAddress(params.payerPubkey);
+  const inferred = inferBtcNetworkFromAddress(btcAccountAddress);
+  if (inferred === "regtest") {
+    return {
+      status: "not_ready",
+      reason: "ArchRpcNetworkMismatch",
+      anchoredUtxo: anchored,
+      btcAccountAddress,
+      requiredConfirmations: params.requiredConfirmations,
+      details:
+        "Arch RPC is deriving a regtest (bcrt1...) BTC account address. Point Wallet Hub at a TESTNET-configured Arch node (ARCH_NETWORK_MODE=TESTNET) to use tb1... addresses."
+    } as const;
+  }
   const utxosRes: any = await params.btc.getAddressUtxos(btcAccountAddress, { confirmedOnly: false });
   const utxos: any[] = Array.isArray(utxosRes?.utxos) ? utxosRes.utxos : [];
   const matchUtxo = utxos.find(
