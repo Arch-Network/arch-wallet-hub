@@ -125,6 +125,7 @@ export type GetSigningRequestResponse = {
   signingRequestId: string;
   status: string;
   actionType: string;
+  payloadToSign: unknown;
   display: unknown;
   result: unknown | null;
   error: unknown | null;

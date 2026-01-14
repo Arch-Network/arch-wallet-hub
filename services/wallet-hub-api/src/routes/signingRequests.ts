@@ -90,6 +90,7 @@ const GetSigningRequestResponse = Type.Object({
   signingRequestId: Type.String(),
   status: Type.String(),
   actionType: Type.String(),
+  payloadToSign: Type.Unknown(),
   display: Type.Unknown(),
   result: Type.Union([Type.Unknown(), Type.Null()]),
   error: Type.Union([Type.Unknown(), Type.Null()]),
@@ -220,14 +221,15 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             readiness = { status: "unknown", reason: "MissingPayerAddress" };
           }
         }
-      } catch {
-        // ignore readiness errors
+      } catch (err: any) {
+        readiness = { status: "unknown", reason: `ReadinessError: ${String(err?.message ?? err)}` };
       }
 
       return {
         signingRequestId: row.id,
         status: row.status,
         actionType: row.action_type,
+        payloadToSign: row.payload_to_sign,
         display: row.display_json,
         result: row.result_json,
         error: row.error_json,
