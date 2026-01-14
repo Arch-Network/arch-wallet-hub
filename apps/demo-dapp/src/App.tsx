@@ -371,6 +371,18 @@ export default function App() {
     await refreshApprove();
   }
 
+  async function onAirdropApproveFromAccount() {
+    setApproveErr(null);
+    try {
+      const fromArch = String((approveReq as any)?.display?.from?.archAccountAddress ?? "");
+      if (!fromArch) throw new Error("Missing display.from.archAccountAddress");
+      await client.airdropArchAccount({ archAccountAddress: fromArch });
+      await refreshApprove();
+    } catch (e: any) {
+      setApproveErr(String(e?.message ?? e));
+    }
+  }
+
   async function onSubmitSignature() {
     setSubmitLoading(true);
     setSubmitErr(null);
@@ -475,6 +487,11 @@ export default function App() {
               <button onClick={() => void refreshApprove()} disabled={!approveSigningRequestId || approveLoading}>
                 {approveLoading ? "Refreshing..." : "Refresh"}
               </button>
+              {String(approveReadiness?.reason ?? "") === "ArchAccountNotFound" ? (
+                <button onClick={() => void onAirdropApproveFromAccount()} disabled={!apiKey || approveLoading}>
+                  Airdrop (dev)
+                </button>
+              ) : null}
               <button
                 onClick={() => void onApproveWithPasskey()}
                 disabled={

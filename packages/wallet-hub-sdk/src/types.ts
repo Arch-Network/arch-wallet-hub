@@ -82,6 +82,16 @@ export type ListTurnkeyWalletsResponse = {
   wallets: GetTurnkeyWalletResponse[];
 };
 
+export type AirdropArchAccountRequest = {
+  archAccountAddress: string;
+  lamports?: string;
+};
+
+export type AirdropArchAccountResponse = {
+  archAccountAddress: string;
+  result: unknown;
+};
+
 export type CreateSigningRequest = {
   externalUserId: string;
   signer:

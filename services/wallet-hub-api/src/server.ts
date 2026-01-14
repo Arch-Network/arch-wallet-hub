@@ -15,6 +15,7 @@ import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
 import { registerWalletLinkingRoutes } from "./routes/walletLinking.js";
 import { registerArchTransactionRoutes } from "./routes/archTransactions.js";
+import { registerArchAccountRoutes } from "./routes/archAccounts.js";
 import { registerBtcRoutes } from "./routes/btc.js";
 import { registerPortfolioRoutes } from "./routes/portfolio.js";
 import { registerSigningRequestRoutes } from "./routes/signingRequests.js";
@@ -68,6 +69,7 @@ export async function createServer() {
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });
   await server.register(registerWalletLinkingRoutes, { prefix: "/v1" });
   await server.register(registerArchTransactionRoutes, { prefix: "/v1" });
+  await server.register(registerArchAccountRoutes, { prefix: "/v1" });
   await server.register(registerBtcRoutes, { prefix: "/v1" });
   await server.register(registerPortfolioRoutes, { prefix: "/v1" });
   await server.register(registerSigningRequestRoutes, { prefix: "/v1" });

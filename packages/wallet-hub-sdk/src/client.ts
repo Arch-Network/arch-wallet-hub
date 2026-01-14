@@ -10,6 +10,8 @@ import type {
   CreateTurnkeyPasskeyWalletRequest,
   GetTurnkeyWalletResponse,
   ListTurnkeyWalletsResponse,
+  AirdropArchAccountRequest,
+  AirdropArchAccountResponse,
   CreateSigningRequest,
   CreateSigningResponse,
   GetSigningRequestResponse,
@@ -78,6 +80,13 @@ export class WalletHubClient {
   async listTurnkeyWallets(externalUserId: string): Promise<ListTurnkeyWalletsResponse> {
     const q = new URLSearchParams({ externalUserId });
     return await this.requestJson(`/turnkey/wallets?${q.toString()}`);
+  }
+
+  async airdropArchAccount(body: AirdropArchAccountRequest): Promise<AirdropArchAccountResponse> {
+    return await this.requestJson(`/arch/accounts/airdrop`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
   }
 
   async createTurnkeyPasskeyWallet(params: {
