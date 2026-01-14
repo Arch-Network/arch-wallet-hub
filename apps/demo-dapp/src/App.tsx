@@ -65,6 +65,7 @@ export default function App() {
   const [walletName, setWalletName] = useState("");
   const [turnkeyPasskeyReady, setTurnkeyPasskeyReady] = useState(false);
   const [turnkeyPasskeyErr, setTurnkeyPasskeyErr] = useState<string | null>(null);
+  const [turnkeyPasskeyLoginLoading, setTurnkeyPasskeyLoginLoading] = useState(false);
   const [turnkeySignLoading, setTurnkeySignLoading] = useState(false);
   const [turnkeySignRes, setTurnkeySignRes] = useState<unknown | null>(null);
 
@@ -182,17 +183,34 @@ export default function App() {
   async function onPasskeyLogin() {
     setTurnkeyPasskeyErr(null);
     setTurnkeyPasskeyReady(false);
+    if (turnkeyPasskeyLoginLoading) return;
+    setTurnkeyPasskeyLoginLoading(true);
     try {
       if (!turnkey) throw new Error("Missing Turnkey config (set VITE_TURNKEY_PARENT_ORGANIZATION_ID)");
       const indexedDbClient = await turnkey.indexedDbClient();
       const passkeyClient = turnkey.passkeyClient();
 
+      // Ensure the IndexedDB keypair exists/loaded before trying to use it.
+      await indexedDbClient.init();
       await indexedDbClient.resetKeyPair();
       const publicKey = await indexedDbClient.getPublicKey();
       await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
       setTurnkeyPasskeyReady(true);
     } catch (e: any) {
-      setTurnkeyPasskeyErr(String(e?.message ?? e));
+      const msg = String(e?.message ?? e);
+      if (msg.toLowerCase().includes("request is already pending")) {
+        setTurnkeyPasskeyErr(
+          "A passkey prompt is already open/pending. Complete or cancel the browser passkey prompt, then try again. If it’s stuck, refresh the page."
+        );
+      } else if (msg.includes("NotAllowedError")) {
+        // User canceled passkey prompt; avoid stuck state.
+        window.location.reload();
+        return;
+      } else {
+        setTurnkeyPasskeyErr(msg);
+      }
+    } finally {
+      setTurnkeyPasskeyLoginLoading(false);
     }
   }
 
@@ -402,8 +420,8 @@ export default function App() {
             <input value={turnkeyRpId} onChange={(e) => setTurnkeyRpId(e.target.value)} />
           </div>
           <div className="actions">
-            <button onClick={onPasskeyLogin} disabled={!turnkeyParentOrgId}>
-              Passkey login
+            <button onClick={onPasskeyLogin} disabled={!turnkyParentOrgId || turnkeyPasskeyLoginLoading}>
+              {turnkeyPasskeyLoginLoading ? "Passkey login..." : "Passkey login"}
             </button>
             {turnkeyPasskeyReady ? <div className="pill ok">passkey session: ready</div> : <div className="pill">passkey session: not logged in</div>}
           </div>
