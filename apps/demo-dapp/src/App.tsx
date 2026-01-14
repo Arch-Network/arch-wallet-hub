@@ -78,12 +78,7 @@ export default function App() {
   const [turnkeySignLoading, setTurnkeySignLoading] = useState(false);
   const [turnkeySignRes, setTurnkeySignRes] = useState<unknown | null>(null);
 
-  const [turnkeyApiBaseUrl, setTurnkeyApiBaseUrl] = useState(
-    defaultEnv("VITE_TURNKEY_API_BASE_URL", "https://api.turnkey.com")
-  );
-  const [turnkeyParentOrgId, setTurnkeyParentOrgId] = useState(
-    defaultEnv("VITE_TURNKEY_PARENT_ORGANIZATION_ID", "")
-  );
+  const [turnkeyApiBaseUrl, setTurnkeyApiBaseUrl] = useState(defaultEnv("VITE_TURNKEY_API_BASE_URL", "https://api.turnkey.com"));
   const [turnkeyRpId, setTurnkeyRpId] = useState(
     defaultEnv(
       "VITE_TURNKEY_RP_ID",
@@ -138,14 +133,22 @@ export default function App() {
     }
   }
 
-  const turnkey = useMemo(() => {
-    if (!turnkeyParentOrgId) return null;
+  function getTurnkeyForOrg(organizationId: string) {
+    if (!organizationId) throw new Error("Missing Turnkey organizationId for passkey session");
     return new Turnkey({
       apiBaseUrl: turnkeyApiBaseUrl,
-      defaultOrganizationId: turnkeyParentOrgId,
+      defaultOrganizationId: organizationId,
       rpId: turnkeyRpId
     });
-  }, [turnkeyApiBaseUrl, turnkeyParentOrgId, turnkeyRpId]);
+  }
+
+  async function getSelectedWalletOrgId(): Promise<string> {
+    if (!turnkeyResourceId) throw new Error("Select a Turnkey wallet (resourceId) first");
+    const walletMeta = await client.getTurnkeyWallet({ resourceId: turnkeyResourceId, externalUserId });
+    const orgId = String((walletMeta as any)?.organizationId ?? "");
+    if (!orgId) throw new Error("Selected wallet is missing organizationId");
+    return orgId;
+  }
 
   async function onCreatePasskeyWallet() {
     setTurnkeyCreateLoading(true);
@@ -154,9 +157,11 @@ export default function App() {
     setTurnkeyPasskeyErr(null);
     setTurnkeyPasskeyReady(false);
     try {
-      if (!turnkey) throw new Error("Missing Turnkey config (set VITE_TURNKEY_PARENT_ORGANIZATION_ID)");
+      // Creating a passkey wallet uses server-side Turnkey API keys (Wallet Hub), not the browser.
+      // In the browser we only need Turnkey for passkey login/signing.
+      const turnkeyForRp = new Turnkey({ apiBaseUrl: turnkeyApiBaseUrl, defaultOrganizationId: "00000000-0000-0000-0000-000000000000", rpId: turnkeyRpId });
 
-      const passkeyClient = turnkey.passkeyClient();
+      const passkeyClient = turnkeyForRp.passkeyClient();
       const { encodedChallenge, attestation } =
         (await passkeyClient.createUserPasskey({
           publicKey: {
@@ -222,7 +227,8 @@ export default function App() {
     if (turnkeyPasskeyLoginLoading) return;
     setTurnkeyPasskeyLoginLoading(true);
     try {
-      if (!turnkey) throw new Error("Missing Turnkey config (set VITE_TURNKEY_PARENT_ORGANIZATION_ID)");
+      const organizationId = await getSelectedWalletOrgId();
+      const turnkey = getTurnkeyForOrg(organizationId);
       const indexedDbClient = await turnkey.indexedDbClient();
       const passkeyClient = turnkey.passkeyClient();
 
@@ -255,7 +261,6 @@ export default function App() {
     setTurnkeySignRes(null);
     setSubmitErr(null);
     try {
-      if (!turnkey) throw new Error("Missing Turnkey config");
       const srId = signingRequestIdOverride ?? signingRequestId;
       if (!srId) throw new Error("Missing signingRequestId");
       if (!turnkeyResourceId) throw new Error("Missing Turnkey resourceId");
@@ -263,6 +268,7 @@ export default function App() {
       // Fetch org id for this wallet resource (sub-org)
       const walletMeta = await client.getTurnkeyWallet({ resourceId: turnkeyResourceId, externalUserId });
       const organizationId = walletMeta.organizationId;
+      const turnkey = getTurnkeyForOrg(organizationId);
 
       // Get signing request payload
       const sr = await client.getSigningRequest(srId);
@@ -367,6 +373,9 @@ export default function App() {
     if (!approveSigningRequestId) return;
     setSubmitErr(null);
     setSubmitRes(null);
+    if (!turnkeyPasskeyReady) {
+      await onPasskeyLogin();
+    }
     await onTurnkeySignPayloadAndSubmit(approveSigningRequestId);
     await refreshApprove();
   }
@@ -492,10 +501,15 @@ export default function App() {
                   Airdrop (dev)
                 </button>
               ) : null}
+              {!turnkeyPasskeyReady ? (
+                <button onClick={() => void onPasskeyLogin()} disabled={turnkeyPasskeyLoginLoading || !turnkeyResourceId}>
+                  {turnkeyPasskeyLoginLoading ? "Passkey login..." : "Passkey login"}
+                </button>
+              ) : null}
               <button
                 onClick={() => void onApproveWithPasskey()}
                 disabled={
-                  !turnkeyPasskeyReady ||
+                  // We'll auto-login if needed, but still require a selected wallet.
                   !turnkeyResourceId ||
                   !approveSigningRequestId ||
                   !apiKey ||
