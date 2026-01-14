@@ -179,7 +179,7 @@ export default function App() {
     setTurnkeyPasskeyReady(false);
     try {
       if (!turnkey) throw new Error("Missing Turnkey config (set VITE_TURNKEY_PARENT_ORGANIZATION_ID)");
-      const indexedDbClient = turnkey.indexedDbClient();
+      const indexedDbClient = await turnkey.indexedDbClient();
       const passkeyClient = turnkey.passkeyClient();
 
       await indexedDbClient.resetKeyPair();
@@ -209,7 +209,7 @@ export default function App() {
       const p: any = (sr as any).payloadToSign;
       if (p?.kind !== "taproot_sighash_hex") throw new Error(`Unexpected payloadToSign.kind: ${String(p?.kind)}`);
 
-      const indexedDbClient = turnkey.indexedDbClient();
+      const indexedDbClient = await turnkey.indexedDbClient();
       const reqBody = {
         type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
         timestampMs: String(Date.now()),
