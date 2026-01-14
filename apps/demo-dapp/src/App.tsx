@@ -240,6 +240,8 @@ export default function App() {
       if (p?.kind !== "taproot_sighash_hex") throw new Error(`Unexpected payloadToSign.kind: ${String(p?.kind)}`);
 
       const indexedDbClient = await turnkey.indexedDbClient();
+      // Ensure key material is loaded/initialized for this tab before signing.
+      await indexedDbClient.init();
       const reqBody = {
         type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
         timestampMs: String(Date.now()),

@@ -130,7 +130,16 @@ async function computeBtcUtxoReadiness(params: {
     return { status: "unknown", reason: "ArchRpcNotConfigured" } as const;
   }
 
-  const accInfo: any = await params.archRpc.readAccountInfo(params.payerPubkey);
+  let accInfo: any;
+  try {
+    accInfo = await params.archRpc.readAccountInfo(params.payerPubkey);
+  } catch (err: any) {
+    const msg = String(err?.message ?? err);
+    if (msg.toLowerCase().includes("account is not in database")) {
+      return { status: "not_ready", reason: "ArchAccountNotFound" } as const;
+    }
+    return { status: "unknown", reason: `ArchRpcError: ${msg}` } as const;
+  }
   const anchored = parseAnchoredUtxo(String(accInfo?.utxo ?? ""));
   if (!anchored) {
     return { status: "not_ready", reason: "NotAnchored" } as const;
@@ -514,7 +523,17 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
                 ? `Anchored BTC UTXO confirmations ${readiness.confirmations ?? 0} < required ${readiness.requiredConfirmations ?? server.config.BTC_MIN_CONFIRMATIONS ?? 20}`
                 : readiness.reason === "NotAnchored"
                   ? "Account is not anchored to a BTC UTXO. Fund the BTC account address and submit arch.anchor first."
+                  : readiness.reason === "ArchAccountNotFound"
+                    ? "Arch account not found. Fund the Arch account (airdrop) and then anchor a BTC UTXO."
                   : "Request is not ready",
+            ...readiness
+          });
+        }
+        if (readiness.status === "unknown") {
+          return reply.code(409).send({
+            statusCode: 409,
+            error: readiness.reason ?? "Unknown",
+            message: "Unable to determine readiness (Arch RPC / BTC platform). Try again shortly.",
             ...readiness
           });
         }
