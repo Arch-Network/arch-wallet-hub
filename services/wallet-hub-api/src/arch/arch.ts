@@ -80,6 +80,25 @@ export function createArchRpcClient(nodeUrl: string) {
   return ArchConnection(provider);
 }
 
+/**
+ * Get the best finalized blockhash from Arch RPC.
+ * Falls back to best blockhash if finalized is not available.
+ */
+export async function getFinalizedBlockhash(nodeUrl: string): Promise<string> {
+  const arch = createArchRpcClient(nodeUrl);
+  try {
+    // Try to call getBestFinalizedBlockHash if it exists
+    if (typeof (arch as any).getBestFinalizedBlockHash === "function") {
+      return await (arch as any).getBestFinalizedBlockHash();
+    }
+    // Method doesn't exist, fall back to best blockhash
+    return await arch.getBestBlockHash();
+  } catch (err: any) {
+    // If finalized fails, fall back to best blockhash
+    return await arch.getBestBlockHash();
+  }
+}
+
 export async function submitArchTransaction(params: {
   nodeUrl: string;
   tx: RuntimeTransaction;

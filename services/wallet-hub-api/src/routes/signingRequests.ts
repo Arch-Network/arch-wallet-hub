@@ -6,7 +6,7 @@ import { getOrCreateUserByExternalId } from "../db/apps.js";
 import { insertSigningRequest, getSigningRequestForApp, markSigningRequestSubmitted, markSigningRequestSucceeded, markSigningRequestFailed } from "../db/signingRequests.js";
 import { auditEvent } from "../audit/audit.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
-import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey } from "../arch/arch.js";
+import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey, getFinalizedBlockhash } from "../arch/arch.js";
 import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, type Instruction } from "@saturnbtcio/arch-sdk";
@@ -344,16 +344,27 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       const payerPubkey = parsePubkey(signerArchAccountAddress);
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
-      const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
       // Prefer finalized blockhash (required for transaction validation), fallback to best.
       let recentBlockhashHex: string;
       try {
-        recentBlockhashHex = await (archRpc as any).getBestFinalizedBlockHash();
-      } catch {
-        // Fallback to best blockhash if finalized is not available
-        recentBlockhashHex = await archRpc.getBestBlockHash();
+        recentBlockhashHex = await getFinalizedBlockhash(server.config.ARCH_RPC_NODE_URL);
+      } catch (err: any) {
+        server.log.error({ err: String(err?.message ?? err) }, "Failed to get blockhash from Arch RPC");
+        return reply.code(503).send({
+          statusCode: 503,
+          error: "Service Unavailable",
+          message: `Arch RPC unavailable: ${String(err?.message ?? err)}`
+        });
+      }
+      if (!recentBlockhashHex || recentBlockhashHex.length !== 64) {
+        return reply.code(503).send({
+          statusCode: 503,
+          error: "Service Unavailable",
+          message: `Invalid blockhash from Arch RPC: ${recentBlockhashHex}`
+        });
       }
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
+      const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
 
       let actionType: "arch.transfer" | "arch.anchor";
       let instructions: Instruction[];
@@ -669,6 +680,21 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       // Some client libs normalize the schnorr signature bytes; keep it explicit for Arch.
       const adjusted = SignatureUtil.adjustSignature(Uint8Array.from(sig64));
       const runtimeTransaction = { version: 0, signatures: [adjusted], message: maybeMessage } as any;
+
+      // Debug: Log the pubkey that Arch will use for verification
+      const archPayerPubkey = maybeMessage.account_keys[0];
+      const archPayerPubkeyHex = Buffer.from(archPayerPubkey).toString("hex");
+      server.log.info(
+        {
+          archPayerPubkeyHex,
+          resolvedXOnlyPubkeyHex: resolved.xOnlyPubkeyHex,
+          signature64Hex: body.signature64Hex,
+          adjustedSigHex: Buffer.from(adjusted).toString("hex"),
+          messageHashHex: Buffer.from(messageHash).toString("hex"),
+          payloadHex
+        },
+        "Submitting Arch transaction with signature"
+      );
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       const txid = await submitArchTransaction({ nodeUrl: server.config.ARCH_RPC_NODE_URL, tx: runtimeTransaction });
