@@ -36,8 +36,10 @@ export function computeBip322ToSignTaprootSighash(params: {
   const psbtBase64 = buildBip322ToSignPsbtBase64(params);
   const psbt = Psbt.fromBase64(psbtBase64);
 
-  // `__CACHE` is private in bitcoinjs-lib types; it exists at runtime.
-  const toSignTx = (psbt as any).__CACHE.__TX as Transaction;
+  // Arch's Rust implementation uses to_sign.unsigned_tx for SighashCache.
+  // See arch-network `sdk/src/helper/bip322.rs` line 81.
+  // Extract the unsigned transaction from the PSBT (pass false to get unsigned).
+  const toSignTx = psbt.extractTransaction(false);
   
   // Arch's Rust implementation uses to_spend_tx.output[0] for the prevout, with value 0.
   // See arch-network `sdk/src/helper/bip322.rs` line 86-89.
