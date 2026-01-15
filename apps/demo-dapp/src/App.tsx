@@ -142,6 +142,49 @@ export default function App() {
     });
   }
 
+  function isPublicKeyNotFoundError(err: unknown): boolean {
+    const msg = String((err as any)?.message ?? err);
+    return msg.includes("PUBLIC_KEY_NOT_FOUND") || msg.includes("could not find public key");
+  }
+
+  async function ensureIndexedDbSessionReady(params: {
+    organizationId: string;
+    resourceId: string;
+    externalUserId: string;
+  }): Promise<{ publicKey: string }> {
+    const turnkey = getTurnkeyForOrg(params.organizationId);
+    const indexedDbClient = await turnkey.indexedDbClient();
+    const passkeyClient = turnkey.passkeyClient();
+
+    await indexedDbClient.init();
+    const publicKey = await indexedDbClient.getPublicKey();
+    if (!publicKey) throw new Error("Missing IndexedDB publicKey (call init() first)");
+
+    // Register this public key once per org+pubkey in localStorage to avoid creating duplicate API keys.
+    const regKey = `turnkey_indexeddb_key_registered:${params.organizationId}:${publicKey}`;
+    const alreadyRegistered = (globalThis as any).localStorage?.getItem(regKey) === "true";
+    if (!alreadyRegistered) {
+      try {
+        await client.registerTurnkeyIndexedDbKey({
+          externalUserId: params.externalUserId,
+          resourceId: params.resourceId,
+          publicKey
+        });
+      } catch (e: any) {
+        // If it already exists / was created elsewhere, allow continuing.
+        const msg = String(e?.message ?? e);
+        if (!msg.includes("409") && !msg.toLowerCase().includes("conflict")) {
+          throw e;
+        }
+      }
+      (globalThis as any).localStorage?.setItem(regKey, "true");
+    }
+
+    // Create the READ_WRITE session (this will prompt for passkey).
+    await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
+    return { publicKey };
+  }
+
   async function getSelectedWalletOrgId(): Promise<string> {
     if (!turnkeyResourceId) throw new Error("Select a Turnkey wallet (resourceId) first");
     const walletMeta = await client.getTurnkeyWallet({ resourceId: turnkeyResourceId, externalUserId });
@@ -228,13 +271,12 @@ export default function App() {
     setTurnkeyPasskeyLoginLoading(true);
     try {
       const organizationId = await getSelectedWalletOrgId();
-      const turnkey = getTurnkeyForOrg(organizationId);
-      const indexedDbClient = await turnkey.indexedDbClient();
-      const passkeyClient = turnkey.passkeyClient();
-
-      // Create a read-write session via IndexedDB key + passkey approval.
       try {
-        await indexedDbClient.init();
+        await ensureIndexedDbSessionReady({
+          organizationId,
+          resourceId: turnkeyResourceId,
+          externalUserId
+        });
       } catch (e: any) {
         const msg = String(e?.message ?? e);
         if (msg.toLowerCase().includes("indexeddb") || msg.toLowerCase().includes("backing store")) {
@@ -247,25 +289,6 @@ export default function App() {
           );
         }
         throw e;
-      }
-      const publicKey = await indexedDbClient.getPublicKey();
-      if (!publicKey) throw new Error("Missing IndexedDB publicKey (call init() first)");
-
-      try {
-        await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
-      } catch (e: any) {
-        const msg = String(e?.message ?? e);
-        // If the public key isn't registered in the sub-org yet, register it via Wallet Hub then retry.
-        if (msg.includes("PUBLIC_KEY_NOT_FOUND")) {
-          await client.registerTurnkeyIndexedDbKey({
-            externalUserId,
-            resourceId: turnkeyResourceId,
-            publicKey
-          });
-          await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
-        } else {
-          throw e;
-        }
       }
       setTurnkeyPasskeyReady(true);
     } catch (e: any) {
@@ -313,13 +336,42 @@ export default function App() {
       // Sign using the IndexedDB session (after passkey login).
       const indexedDbClient = await turnkey.indexedDbClient();
       await indexedDbClient.init();
-      const resp: any = await (indexedDbClient as any).signRawPayload({
-        organizationId,
-        signWith: String(p.signWith),
-        payload: String(p.payloadHex),
-        encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-        hashFunction: "HASH_FUNCTION_NO_OP"
-      });
+      let resp: any;
+      try {
+        resp = await (indexedDbClient as any).signRawPayload({
+          organizationId,
+          signWith: String(p.signWith),
+          payload: String(p.payloadHex),
+          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+          hashFunction: "HASH_FUNCTION_NO_OP"
+        });
+      } catch (e: any) {
+        // If the org doesn't recognize the IndexedDB public key yet, register and retry once.
+        if (isPublicKeyNotFoundError(e)) {
+          const publicKey = await indexedDbClient.getPublicKey();
+          if (publicKey) {
+            (globalThis as any).localStorage?.removeItem(
+              `turnkey_indexeddb_key_registered:${organizationId}:${publicKey}`
+            );
+            await ensureIndexedDbSessionReady({
+              organizationId,
+              resourceId: turnkeyResourceId,
+              externalUserId
+            });
+            resp = await (indexedDbClient as any).signRawPayload({
+              organizationId,
+              signWith: String(p.signWith),
+              payload: String(p.payloadHex),
+              encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+              hashFunction: "HASH_FUNCTION_NO_OP"
+            });
+          } else {
+            throw e;
+          }
+        } else {
+          throw e;
+        }
+      }
       const r = resp?.activity?.result?.signRawPayloadResult?.r;
       const s = resp?.activity?.result?.signRawPayloadResult?.s;
       const activityId = resp?.activity?.id ?? null;
