@@ -171,9 +171,15 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
         lamports
       );
 
-      // Get recent blockhash
+      // Get recent finalized blockhash (required for transaction validation)
       const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
-      const recentBlockhashHex = await archRpc.getBestBlockHash();
+      let recentBlockhashHex: string;
+      try {
+        recentBlockhashHex = await (archRpc as any).getBestFinalizedBlockHash();
+      } catch {
+        // Fallback to best blockhash if finalized is not available
+        recentBlockhashHex = await archRpc.getBestBlockHash();
+      }
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
 
       // Audit: transaction requested

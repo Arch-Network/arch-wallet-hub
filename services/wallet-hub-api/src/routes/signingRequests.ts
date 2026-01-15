@@ -345,7 +345,14 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
-      const recentBlockhashHex = await archRpc.getBestBlockHash();
+      // Prefer finalized blockhash (required for transaction validation), fallback to best.
+      let recentBlockhashHex: string;
+      try {
+        recentBlockhashHex = await (archRpc as any).getBestFinalizedBlockHash();
+      } catch {
+        // Fallback to best blockhash if finalized is not available
+        recentBlockhashHex = await archRpc.getBestBlockHash();
+      }
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
 
       let actionType: "arch.transfer" | "arch.anchor";
