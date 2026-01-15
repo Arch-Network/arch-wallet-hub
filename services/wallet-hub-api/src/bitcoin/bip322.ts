@@ -69,15 +69,16 @@ export function computeBip322ToSignTaprootSighash(params: {
     throw new Error("Failed to get unsigned transaction from PSBT");
   }
   
-  // Arch's Rust implementation uses to_spend_tx.output[0] for the prevout, with value 0.
-  // See arch-network `sdk/src/helper/bip322.rs` line 86-89.
-  const toSpendOutput = toSpend.outs[0];
-  if (!toSpendOutput) {
-    throw new Error("BIP-322 toSpend transaction missing output[0]");
+  // The @saturnbtcio/bip322-js Verifier uses toSignTx.data.inputs[0].witnessUtxo.script for the prevout.
+  // See Verifier.js line 308: hashForWitnessV1(0, [toSignTx.data.inputs[0].witnessUtxo.script], [0], hashType)
+  // This should match toSpend.outs[0].script, but we use the PSBT's witnessUtxo to match the Verifier exactly.
+  const witnessUtxo = psbt.data.inputs[0]?.witnessUtxo;
+  if (!witnessUtxo || !witnessUtxo.script) {
+    throw new Error("PSBT input[0] missing witnessUtxo.script");
   }
   
-  const prevoutScript = toSpendOutput.script;
-  const prevoutValue = 0; // BIP-322 toSpend output always has value 0
+  const prevoutScript = witnessUtxo.script;
+  const prevoutValue = witnessUtxo.value ?? 0; // BIP-322 toSpend output always has value 0
 
   // Arch's Rust implementation uses TapSighashType::All for Taproot key-path signing.
   // See arch-network `sdk/src/helper/bip322.rs` line 79.
