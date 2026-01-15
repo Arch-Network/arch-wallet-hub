@@ -11,10 +11,12 @@ function looksLikeBase64(s: string) {
 export function buildBip322ToSignPsbtBase64(params: {
   signerAddress: string;
   message: string | Buffer;
+  tapInternalKey?: Buffer;
 }) {
   const scriptPubKey = Address.convertAdressToScriptPubkey(params.signerAddress);
   const toSpend = BIP322.buildToSpendTx(params.message, scriptPubKey);
-  const toSign = BIP322.buildToSignTx(toSpend.getId(), scriptPubKey);
+  // Pass tapInternalKey during construction (required for correct Taproot sighash computation)
+  const toSign = BIP322.buildToSignTx(toSpend.getId(), scriptPubKey, false, params.tapInternalKey);
   return toSign.toBase64();
 }
 
@@ -32,30 +34,32 @@ export function computeBip322ToSignTaprootSighash(params: {
   const scriptPubKey = Address.convertAdressToScriptPubkey(params.signerAddress);
   const toSpend = BIP322.buildToSpendTx(params.message, scriptPubKey);
   
-  // Build the toSign PSBT.
-  const psbtBase64 = buildBip322ToSignPsbtBase64(params);
-  const psbt = Psbt.fromBase64(psbtBase64);
-
-  // Arch's Rust implementation sets tap_internal_key before computing sighash.
-  // See arch-network `sdk/src/helper/bip322.rs` line 77.
-  // Extract x-only pubkey from Taproot address and set it in the PSBT.
+  // Extract x-only pubkey from Taproot address (needed for tapInternalKey)
   const decoded = btcAddress.fromBech32(params.signerAddress);
   if (decoded.version !== 1 || decoded.data.length !== 32) {
     throw new Error("Invalid Taproot address for BIP-322 signing (must be bech32m v1 with 32-byte witness program)");
   }
-  // The Taproot address encodes the x-only pubkey (32 bytes) in the witness program
   const xOnlyPubkey = Buffer.from(decoded.data);
-  // Set tap_internal_key in the PSBT input (required for correct sighash computation)
-  if (psbt.data.inputs[0]) {
-    psbt.data.inputs[0].tapInternalKey = xOnlyPubkey;
-  }
+
+  // Build the toSign PSBT with tapInternalKey set during construction.
+  // The @saturnbtcio/bip322-js library expects tapInternalKey to be passed to buildToSignTx
+  // so it can properly set up the PSBT for Taproot signing.
+  const psbtBase64 = buildBip322ToSignPsbtBase64({
+    ...params,
+    tapInternalKey: xOnlyPubkey
+  });
+  const psbt = Psbt.fromBase64(psbtBase64);
 
   // Arch's Rust implementation uses to_sign.unsigned_tx for SighashCache.
   // See arch-network `sdk/src/helper/bip322.rs` line 81.
   // Access the unsigned transaction directly from the PSBT's internal cache.
   // `__CACHE` is private in bitcoinjs-lib types; it exists at runtime.
-  // The PSBT cache should be updated after setting tapInternalKey.
+  // Note: tapInternalKey is metadata and doesn't change the transaction structure,
+  // so the cached transaction is still valid after setting it.
   const toSignTx = (psbt as any).__CACHE.__TX as Transaction;
+  if (!toSignTx) {
+    throw new Error("Failed to get unsigned transaction from PSBT");
+  }
   
   // Arch's Rust implementation uses to_spend_tx.output[0] for the prevout, with value 0.
   // See arch-network `sdk/src/helper/bip322.rs` line 86-89.
