@@ -28,23 +28,31 @@ export function computeBip322ToSignTaprootSighash(params: {
   signerAddress: string;
   message: string | Buffer;
 }): Buffer {
+  // Build the toSpend transaction to get the correct prevout (matches Rust implementation).
+  const scriptPubKey = Address.convertAdressToScriptPubkey(params.signerAddress);
+  const toSpend = BIP322.buildToSpendTx(params.message, scriptPubKey);
+  
+  // Build the toSign PSBT.
   const psbtBase64 = buildBip322ToSignPsbtBase64(params);
   const psbt = Psbt.fromBase64(psbtBase64);
 
   // `__CACHE` is private in bitcoinjs-lib types; it exists at runtime.
-  const tx = (psbt as any).__CACHE.__TX as Transaction;
-  const input = psbt.data.inputs[0];
-  if (!input?.witnessUtxo) {
-    throw new Error("BIP-322 toSign PSBT missing witnessUtxo (required for Taproot sighash)");
+  const toSignTx = (psbt as any).__CACHE.__TX as Transaction;
+  
+  // Arch's Rust implementation uses to_spend_tx.output[0] for the prevout, with value 0.
+  // See arch-network `sdk/src/helper/bip322.rs` line 86-89.
+  const toSpendOutput = toSpend.outs[0];
+  if (!toSpendOutput) {
+    throw new Error("BIP-322 toSpend transaction missing output[0]");
   }
-
-  const prevoutScript = Buffer.from(input.witnessUtxo.script);
-  const prevoutValue = input.witnessUtxo.value;
+  
+  const prevoutScript = toSpendOutput.script;
+  const prevoutValue = 0; // BIP-322 toSpend output always has value 0
 
   // Arch's BIP-322 implementation uses TapSighashType::All for Taproot key-path signing.
-  // See arch-network `sdk/src/helper/bip322.rs`.
+  // See arch-network `sdk/src/helper/bip322.rs` line 79.
   const SIGHASH_ALL = 0x01;
-  const digest = tx.hashForWitnessV1(0, [prevoutScript], [prevoutValue], SIGHASH_ALL);
+  const digest = toSignTx.hashForWitnessV1(0, [prevoutScript], [prevoutValue], SIGHASH_ALL);
   return Buffer.from(digest);
 }
 
