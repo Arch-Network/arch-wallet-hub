@@ -1,5 +1,5 @@
 import { Address, BIP322 } from "@saturnbtcio/bip322-js";
-import { Psbt, Transaction } from "bitcoinjs-lib";
+import { Psbt, Transaction, address as btcAddress } from "bitcoinjs-lib";
 import { Buffer } from "node:buffer";
 
 function looksLikeBase64(s: string) {
@@ -36,10 +36,25 @@ export function computeBip322ToSignTaprootSighash(params: {
   const psbtBase64 = buildBip322ToSignPsbtBase64(params);
   const psbt = Psbt.fromBase64(psbtBase64);
 
+  // Arch's Rust implementation sets tap_internal_key before computing sighash.
+  // See arch-network `sdk/src/helper/bip322.rs` line 77.
+  // Extract x-only pubkey from Taproot address and set it in the PSBT.
+  const decoded = btcAddress.fromBech32(params.signerAddress);
+  if (decoded.version !== 1 || decoded.data.length !== 32) {
+    throw new Error("Invalid Taproot address for BIP-322 signing (must be bech32m v1 with 32-byte witness program)");
+  }
+  // The Taproot address encodes the x-only pubkey (32 bytes) in the witness program
+  const xOnlyPubkey = Buffer.from(decoded.data);
+  // Set tap_internal_key in the PSBT input (required for correct sighash computation)
+  if (psbt.data.inputs[0]) {
+    psbt.data.inputs[0].tapInternalKey = xOnlyPubkey;
+  }
+
   // Arch's Rust implementation uses to_sign.unsigned_tx for SighashCache.
   // See arch-network `sdk/src/helper/bip322.rs` line 81.
   // Access the unsigned transaction directly from the PSBT's internal cache.
   // `__CACHE` is private in bitcoinjs-lib types; it exists at runtime.
+  // The PSBT cache should be updated after setting tapInternalKey.
   const toSignTx = (psbt as any).__CACHE.__TX as Transaction;
   
   // Arch's Rust implementation uses to_spend_tx.output[0] for the prevout, with value 0.
@@ -54,8 +69,18 @@ export function computeBip322ToSignTaprootSighash(params: {
 
   // Arch's BIP-322 implementation uses TapSighashType::All for Taproot key-path signing.
   // See arch-network `sdk/src/helper/bip322.rs` line 79.
+  // Use the PSBT's getInputType to determine if it's a Taproot input, then compute sighash.
+  // For Taproot key-path, we need to use hashForWitnessV1 with the correct parameters.
   const SIGHASH_ALL = 0x01;
-  const digest = toSignTx.hashForWitnessV1(0, [prevoutScript], [prevoutValue], SIGHASH_ALL);
+  
+  // Ensure we're using the correct input index (0) and that the prevout arrays match the input count
+  // The Rust code uses Prevouts::All with a single TxOut for input 0
+  const digest = toSignTx.hashForWitnessV1(
+    0, // input index
+    [prevoutScript], // prevoutScripts array (one per input)
+    [prevoutValue], // prevoutValues array (one per input)
+    SIGHASH_ALL
+  );
   return Buffer.from(digest);
 }
 
