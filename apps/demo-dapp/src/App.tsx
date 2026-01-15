@@ -233,7 +233,21 @@ export default function App() {
       const passkeyClient = turnkey.passkeyClient();
 
       // Create a read-write session via IndexedDB key + passkey approval.
-      await indexedDbClient.init();
+      try {
+        await indexedDbClient.init();
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        if (msg.toLowerCase().includes("indexeddb") || msg.toLowerCase().includes("backing store")) {
+          throw new Error(
+            `IndexedDB is unavailable in this browser/profile ("${msg}"). ` +
+              `Fix: open Chrome settings → Privacy & security → Site settings → View permissions and data stored across sites → ` +
+              `clear data for localhost:5173 (and api.turnkey.com), then hard refresh. ` +
+              `Also ensure you are NOT in Incognito and that storage is not blocked by a policy. ` +
+              `If it persists, try a new Chrome profile or Safari/Firefox.`
+          );
+        }
+        throw e;
+      }
       const publicKey = await indexedDbClient.getPublicKey();
       if (!publicKey) throw new Error("Missing IndexedDB publicKey (call init() first)");
 
