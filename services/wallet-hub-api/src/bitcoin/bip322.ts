@@ -56,6 +56,13 @@ export function computeBip322ToSignTaprootSighash(params: {
     throw new Error(`PSBT tapInternalKey mismatch: expected ${xOnlyPubkey.toString("hex")}, got ${psbtTapInternalKey?.toString("hex") ?? "undefined"}`);
   }
 
+  // The @saturnbtcio/bip322-js Signer sets sighashType on the PSBT input before signing.
+  // See Signer.js line 111-113: toSignTx.updateInput(0, { sighashType: bitcoin.Transaction.SIGHASH_ALL })
+  // This is important for correct sighash computation.
+  psbt.updateInput(0, {
+    sighashType: 0x01 // SIGHASH_ALL
+  });
+
   // Arch's Rust implementation uses to_sign.unsigned_tx for SighashCache.
   // See arch-network `sdk/src/helper/bip322.rs` line 81.
   // Access the unsigned transaction directly from the PSBT's internal cache.
