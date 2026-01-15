@@ -229,10 +229,30 @@ export default function App() {
     try {
       const organizationId = await getSelectedWalletOrgId();
       const turnkey = getTurnkeyForOrg(organizationId);
+      const indexedDbClient = await turnkey.indexedDbClient();
       const passkeyClient = turnkey.passkeyClient();
 
-      // Create a passkey-backed session. This should not require a pre-registered API-key public key.
-      await (passkeyClient as any).loginWithPasskey({ sessionType: SessionType.READ_WRITE });
+      // Create a read-write session via IndexedDB key + passkey approval.
+      await indexedDbClient.init();
+      const publicKey = await indexedDbClient.getPublicKey();
+      if (!publicKey) throw new Error("Missing IndexedDB publicKey (call init() first)");
+
+      try {
+        await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        // If the public key isn't registered in the sub-org yet, register it via Wallet Hub then retry.
+        if (msg.includes("PUBLIC_KEY_NOT_FOUND")) {
+          await client.registerTurnkeyIndexedDbKey({
+            externalUserId,
+            resourceId: turnkeyResourceId,
+            publicKey
+          });
+          await passkeyClient.loginWithPasskey({ sessionType: SessionType.READ_WRITE, publicKey });
+        } else {
+          throw e;
+        }
+      }
       setTurnkeyPasskeyReady(true);
     } catch (e: any) {
       const msg = String(e?.message ?? e);
@@ -276,18 +296,15 @@ export default function App() {
         await onPasskeyLogin();
       }
 
-      // Sign via the passkey client (prompts the user), avoiding API-key/publicKey registration issues.
-      const passkeyClient = turnkey.passkeyClient();
-      const resp: any = await (passkeyClient as any).signRawPayload({
-        type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
-        timestampMs: String(Date.now()),
+      // Sign using the IndexedDB session (after passkey login).
+      const indexedDbClient = await turnkey.indexedDbClient();
+      await indexedDbClient.init();
+      const resp: any = await (indexedDbClient as any).signRawPayload({
         organizationId,
-        parameters: {
-          signWith: String(p.signWith),
-          payload: String(p.payloadHex),
-          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-          hashFunction: "HASH_FUNCTION_NO_OP"
-        }
+        signWith: String(p.signWith),
+        payload: String(p.payloadHex),
+        encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+        hashFunction: "HASH_FUNCTION_NO_OP"
       });
       const r = resp?.activity?.result?.signRawPayloadResult?.r;
       const s = resp?.activity?.result?.signRawPayloadResult?.s;

@@ -12,6 +12,8 @@ import type {
   ListTurnkeyWalletsResponse,
   AirdropArchAccountRequest,
   AirdropArchAccountResponse,
+  RegisterTurnkeyIndexedDbKeyRequest,
+  RegisterTurnkeyIndexedDbKeyResponse,
   CreateSigningRequest,
   CreateSigningResponse,
   GetSigningRequestResponse,
@@ -84,6 +86,15 @@ export class WalletHubClient {
 
   async airdropArchAccount(body: AirdropArchAccountRequest): Promise<AirdropArchAccountResponse> {
     return await this.requestJson(`/arch/accounts/airdrop`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  }
+
+  async registerTurnkeyIndexedDbKey(
+    body: RegisterTurnkeyIndexedDbKeyRequest
+  ): Promise<RegisterTurnkeyIndexedDbKeyResponse> {
+    return await this.requestJson(`/turnkey/indexeddb-keys`, {
       method: "POST",
       body: JSON.stringify(body)
     });

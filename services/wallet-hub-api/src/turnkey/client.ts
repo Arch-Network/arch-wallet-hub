@@ -54,6 +54,15 @@ type CreateSubOrganizationWithWalletResult = {
   activityId: string;
 };
 
+type CreateApiKeyForUserParams = {
+  organizationId: string;
+  userId: string;
+  apiKeyName: string;
+  publicKey: string; // compressed P-256 public key hex
+  curveType: "API_KEY_CURVE_P256";
+  expirationSeconds?: string;
+};
+
 type SignRawPayloadParams = {
   signWith: string; // wallet account address, private key address, or privateKeyId
   payload: string;
@@ -263,6 +272,33 @@ export class TurnkeyService {
       addresses,
       activityId
     };
+  }
+
+  async createApiKeyForUser(params: CreateApiKeyForUserParams): Promise<{ apiKeyIds: string[]; activityId: string }> {
+    const res = await (this.client as any).createApiKeys({
+      type: "ACTIVITY_TYPE_CREATE_API_KEYS_V2",
+      timestampMs: nowMs(),
+      organizationId: params.organizationId,
+      parameters: {
+        userId: params.userId,
+        apiKeys: [
+          {
+            apiKeyName: params.apiKeyName,
+            publicKey: params.publicKey,
+            curveType: params.curveType,
+            ...(params.expirationSeconds ? { expirationSeconds: params.expirationSeconds } : {})
+          }
+        ]
+      }
+    });
+
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey createApiKeys did not complete: ${activityId}`);
+    }
+    const apiKeyIds = (activity.result as any)?.createApiKeysResult?.apiKeyIds ?? [];
+    return { apiKeyIds, activityId };
   }
 
   async signRawPayload(

@@ -13,6 +13,7 @@ export type InsertTurnkeyResourceParams = {
   appId: string;
   userId: string | null;
   organizationId: string;
+  turnkeyRootUserId: string | null;
   walletId: string | null;
   vaultId: string | null;
   keyId: string | null;
@@ -27,6 +28,7 @@ export type TurnkeyResourceRow = {
   app_id: string;
   user_id: string | null;
   organization_id: string;
+  turnkey_root_user_id: string | null;
   wallet_id: string | null;
   vault_id: string | null;
   key_id: string | null;
@@ -48,6 +50,7 @@ export async function insertTurnkeyResource(
         app_id,
         user_id,
         organization_id,
+        turnkey_root_user_id,
         wallet_id,
         vault_id,
         key_id,
@@ -56,13 +59,14 @@ export async function insertTurnkeyResource(
         default_address_format,
         default_derivation_path
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       RETURNING *
     `,
     [
       params.appId,
       params.userId,
       params.organizationId,
+      params.turnkeyRootUserId,
       params.walletId,
       params.vaultId,
       params.keyId,

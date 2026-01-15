@@ -92,6 +92,22 @@ export type AirdropArchAccountResponse = {
   result: unknown;
 };
 
+export type RegisterTurnkeyIndexedDbKeyRequest = {
+  externalUserId: string;
+  resourceId: string;
+  publicKey: string;
+  apiKeyName?: string;
+  expirationSeconds?: string;
+};
+
+export type RegisterTurnkeyIndexedDbKeyResponse = {
+  resourceId: string;
+  organizationId: string;
+  turnkeyUserId: string;
+  apiKeyIds: string[];
+  activityId: string;
+};
+
 export type CreateSigningRequest = {
   externalUserId: string;
   signer:

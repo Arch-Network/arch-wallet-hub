@@ -13,6 +13,7 @@ import { registerCors } from "./plugins/cors.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
+import { registerTurnkeySessionRoutes } from "./routes/turnkeySessions.js";
 import { registerWalletLinkingRoutes } from "./routes/walletLinking.js";
 import { registerArchTransactionRoutes } from "./routes/archTransactions.js";
 import { registerArchAccountRoutes } from "./routes/archAccounts.js";
@@ -71,6 +72,7 @@ export async function createServer() {
   await server.register(registerHealthRoutes, { prefix: "/v1" });
   await server.register(registerPlatformRoutes, { prefix: "/v1" });
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });
+  await server.register(registerTurnkeySessionRoutes, { prefix: "/v1" });
   await server.register(registerWalletLinkingRoutes, { prefix: "/v1" });
   await server.register(registerArchTransactionRoutes, { prefix: "/v1" });
   await server.register(registerArchAccountRoutes, { prefix: "/v1" });
