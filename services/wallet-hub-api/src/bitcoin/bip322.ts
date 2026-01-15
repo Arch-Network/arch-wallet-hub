@@ -50,13 +50,21 @@ export function computeBip322ToSignTaprootSighash(params: {
   });
   const psbt = Psbt.fromBase64(psbtBase64);
 
+  // Verify that tapInternalKey was set correctly in the PSBT
+  const psbtTapInternalKey = psbt.data.inputs[0]?.tapInternalKey;
+  if (!psbtTapInternalKey || !psbtTapInternalKey.equals(xOnlyPubkey)) {
+    throw new Error(`PSBT tapInternalKey mismatch: expected ${xOnlyPubkey.toString("hex")}, got ${psbtTapInternalKey?.toString("hex") ?? "undefined"}`);
+  }
+
   // Arch's Rust implementation uses to_sign.unsigned_tx for SighashCache.
   // See arch-network `sdk/src/helper/bip322.rs` line 81.
   // Access the unsigned transaction directly from the PSBT's internal cache.
   // `__CACHE` is private in bitcoinjs-lib types; it exists at runtime.
-  // Note: tapInternalKey is metadata and doesn't change the transaction structure,
-  // so the cached transaction is still valid after setting it.
-  const toSignTx = (psbt as any).__CACHE.__TX as Transaction;
+  // Note: `hashForWitnessV1` doesn't use PSBT metadata - it only needs the transaction
+  // and prevout script/value. The tapInternalKey is used by the PSBT for signing,
+  // but the sighash computation itself only needs the scriptPubKey (which is derived
+  // from the internal key and is already in the prevout script).
+  const toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
   if (!toSignTx) {
     throw new Error("Failed to get unsigned transaction from PSBT");
   }
@@ -71,10 +79,9 @@ export function computeBip322ToSignTaprootSighash(params: {
   const prevoutScript = toSpendOutput.script;
   const prevoutValue = 0; // BIP-322 toSpend output always has value 0
 
-  // Arch's BIP-322 implementation uses TapSighashType::All for Taproot key-path signing.
+  // Arch's Rust implementation uses TapSighashType::All for Taproot key-path signing.
   // See arch-network `sdk/src/helper/bip322.rs` line 79.
-  // Use the PSBT's getInputType to determine if it's a Taproot input, then compute sighash.
-  // For Taproot key-path, we need to use hashForWitnessV1 with the correct parameters.
+  // The Rust code explicitly uses TapSighashType::All (0x01) in taproot_key_spend_signature_hash.
   const SIGHASH_ALL = 0x01;
   
   // Ensure we're using the correct input index (0) and that the prevout arrays match the input count
