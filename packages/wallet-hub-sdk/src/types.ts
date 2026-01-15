@@ -69,6 +69,7 @@ export type GetTurnkeyWalletResponse = {
   userId: string | null;
   externalUserId: string | null;
   organizationId: string;
+  turnkeyRootUserId: string | null;
   walletId: string | null;
   defaultAddress: string | null;
   defaultAddressFormat: string | null;

@@ -145,6 +145,11 @@ export default function App() {
   async function getSelectedWalletOrgId(): Promise<string> {
     if (!turnkeyResourceId) throw new Error("Select a Turnkey wallet (resourceId) first");
     const walletMeta = await client.getTurnkeyWallet({ resourceId: turnkeyResourceId, externalUserId });
+    if (!(walletMeta as any)?.turnkeyRootUserId) {
+      throw new Error(
+        "Selected Turnkey wallet is custodial (no passkey authenticator). Select a passkey wallet or create a passkey wallet."
+      );
+    }
     const orgId = String((walletMeta as any)?.organizationId ?? "");
     if (!orgId) throw new Error("Selected wallet is missing organizationId");
     return orgId;
@@ -693,7 +698,8 @@ export default function App() {
                   <option value="">(select)</option>
                   {turnkeyWallets.map((w: any) => (
                     <option key={String(w.id)} value={String(w.id)}>
-                      {String(w.defaultAddress ?? w.walletId ?? w.id)}
+                      {String(w.defaultAddress ?? w.walletId ?? w.id)}{" "}
+                      {w?.turnkeyRootUserId ? "(passkey)" : "(custodial)"}
                     </option>
                   ))}
                 </select>
