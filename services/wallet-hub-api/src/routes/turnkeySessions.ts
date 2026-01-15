@@ -27,7 +27,7 @@ export const registerTurnkeySessionRoutes: FastifyPluginAsync = async (server) =
     "/turnkey/indexeddb-keys",
     {
       schema: {
-        summary: "Register an IndexedDB session public key as an API key for the user's sub-org (enables passkey read-write sessions)",
+        summary: "Register an IndexedDB session public key as an API key in the parent org (enables passkey read-write sessions for sub-orgs)",
         tags: ["turnkey"],
         body: RegisterIndexedDbKeyBody,
         response: { 200: RegisterIndexedDbKeyResponse }
@@ -56,18 +56,19 @@ export const registerTurnkeySessionRoutes: FastifyPluginAsync = async (server) =
       if (!row) return reply.notFound("Unknown resourceId");
       if (row.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
 
-      const orgId = row.organization_id;
-      const turnkeyUserId = (row as any).turnkey_root_user_id as string | null;
-      if (!turnkeyUserId) {
-        return reply.conflict(
-          "Resource does not have a Turnkey root userId. This endpoint only works for passkey sub-org wallets."
-        );
-      }
-
       const turnkey = getTurnkeyClient();
+      // Important:
+      // We must register the IndexedDB public key in the *parent* org (the org that owns the backend API key),
+      // not the sub-org. Turnkey resolves keys from an org or its parent; registering in the parent avoids
+      // "organization mismatch" errors when the backend API key is a parent-org voter.
+      const whoami: any = await turnkey.ping();
+      const parentOrgUserId = String(whoami?.userId ?? "");
+      if (!parentOrgUserId) return reply.internalServerError("Turnkey whoami missing userId");
+
+      const orgId = server.config.TURNKEY_ORGANIZATION_ID;
       const created = await turnkey.createApiKeyForUser({
         organizationId: orgId,
-        userId: turnkeyUserId,
+        userId: parentOrgUserId,
         apiKeyName,
         publicKey,
         curveType: "API_KEY_CURVE_P256",
@@ -77,11 +78,10 @@ export const registerTurnkeySessionRoutes: FastifyPluginAsync = async (server) =
       return {
         resourceId,
         organizationId: orgId,
-        turnkeyUserId,
+        turnkeyUserId: parentOrgUserId,
         apiKeyIds: created.apiKeyIds,
         activityId: created.activityId
       };
     }
   );
 };
-
