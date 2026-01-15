@@ -56,6 +56,7 @@ export default function App() {
 
   const [approveOpen, setApproveOpen] = useState(false);
   const [approveSigningRequestId, setApproveSigningRequestId] = useState<string>("");
+  const [approveTurnkeyResourceId, setApproveTurnkeyResourceId] = useState<string>("");
   const [approveReq, setApproveReq] = useState<any | null>(null);
   const [approveErr, setApproveErr] = useState<string | null>(null);
   const [approveLoading, setApproveLoading] = useState(false);
@@ -142,9 +143,10 @@ export default function App() {
     });
   }
 
-  async function getSelectedWalletOrgId(): Promise<string> {
-    if (!turnkeyResourceId) throw new Error("Select a Turnkey wallet (resourceId) first");
-    const walletMeta = await client.getTurnkeyWallet({ resourceId: turnkeyResourceId, externalUserId });
+  async function getSelectedWalletOrgId(resourceIdOverride?: string): Promise<string> {
+    const rid = resourceIdOverride ?? turnkeyResourceId;
+    if (!rid) throw new Error("Select a Turnkey wallet (resourceId) first");
+    const walletMeta = await client.getTurnkeyWallet({ resourceId: rid, externalUserId });
     if (!(walletMeta as any)?.turnkeyRootUserId) {
       throw new Error(
         "Selected Turnkey wallet is custodial (no passkey authenticator). Select a passkey wallet or create a passkey wallet."
@@ -232,7 +234,8 @@ export default function App() {
     if (turnkeyPasskeyLoginLoading) return;
     setTurnkeyPasskeyLoginLoading(true);
     try {
-      const organizationId = await getSelectedWalletOrgId();
+      const rid = approveOpen && approveTurnkeyResourceId ? approveTurnkeyResourceId : turnkeyResourceId;
+      const organizationId = await getSelectedWalletOrgId(rid);
       const turnkey = getTurnkeyForOrg(organizationId);
       const passkeyClient = turnkey.passkeyClient();
       // This prompts the user and verifies the passkey authenticator exists for the sub-org.
@@ -263,10 +266,11 @@ export default function App() {
     try {
       const srId = signingRequestIdOverride ?? signingRequestId;
       if (!srId) throw new Error("Missing signingRequestId");
-      if (!turnkeyResourceId) throw new Error("Missing Turnkey resourceId");
+      const rid = approveOpen && approveTurnkeyResourceId ? approveTurnkeyResourceId : turnkeyResourceId;
+      if (!rid) throw new Error("Missing Turnkey resourceId");
 
       // Fetch org id for this wallet resource (sub-org)
-      const walletMeta = await client.getTurnkeyWallet({ resourceId: turnkeyResourceId, externalUserId });
+      const walletMeta = await client.getTurnkeyWallet({ resourceId: rid, externalUserId });
       const organizationId = walletMeta.organizationId;
       const turnkey = getTurnkeyForOrg(organizationId);
 
@@ -332,6 +336,7 @@ export default function App() {
       if (typeof id === "string") {
         setSigningRequestId(id);
         setApproveSigningRequestId(id);
+        if (signerKind === "turnkey") setApproveTurnkeyResourceId(turnkeyResourceId);
         setApproveOpen(true);
       }
     } catch (e: any) {
@@ -774,6 +779,7 @@ export default function App() {
               onClick={() => {
                 if (!signingRequestId) return;
                 setApproveSigningRequestId(signingRequestId);
+                if (signerKind === "turnkey") setApproveTurnkeyResourceId(turnkeyResourceId);
                 setApproveOpen(true);
               }}
               disabled={!signingRequestId}
