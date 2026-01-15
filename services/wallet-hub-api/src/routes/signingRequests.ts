@@ -615,11 +615,18 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         return reply.badRequest("Must provide signature64Hex or signedTransaction");
       }
 
-      // Verify the signature against the expected Taproot output key and sighash (best-effort safety).
-      const payloadHex = String((row.payload_to_sign as any)?.payloadHex ?? "");
+      // Get the exact signer address and payload from the stored signing request.
+      const payloadToSign: any = row.payload_to_sign ?? {};
+      const payloadHex = String(payloadToSign?.payloadHex ?? "");
+      const storedSignWith = String(payloadToSign?.signWith ?? "");
       if (!payloadHex || payloadHex.length !== 64) {
         return reply.badRequest("Signing request missing taproot sighash payloadHex");
       }
+      if (!storedSignWith) {
+        return reply.badRequest("Signing request missing signWith address");
+      }
+      
+      // Verify the signature against the expected Taproot output key and sighash (best-effort safety).
       const ok = schnorr.verify(
         sig64,
         Buffer.from(payloadHex, "hex"),
@@ -630,6 +637,35 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       // Build the runtime tx and submit.
       const maybeMessage = SanitizedMessageUtil.createSanitizedMessage(instructions, payerPubkey, recentBlockhash);
       if (typeof maybeMessage === "string") throw new Error(`Arch message compilation failed: ${maybeMessage}`);
+      
+      // Verify the message hash matches what we signed (defensive check).
+      const messageHash = SanitizedMessageUtil.hash(maybeMessage);
+      const expectedSighash = computeBip322ToSignTaprootSighash({
+        signerAddress: storedSignWith, // Use the exact address from the stored payload
+        message: Buffer.from(messageHash)
+      });
+      const expectedPayloadHex = Buffer.from(expectedSighash).toString("hex");
+      if (expectedPayloadHex !== payloadHex) {
+        server.log.error(
+          {
+            expectedPayloadHex,
+            storedPayloadHex: payloadHex,
+            messageHashHex: Buffer.from(messageHash).toString("hex"),
+            recentBlockhashHex,
+            storedSignWith,
+            fromTaproot
+          },
+          "Message hash mismatch - signature will fail"
+        );
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "MessageHashMismatch",
+          message: "The transaction message hash does not match what was signed. The signing request may be stale or corrupted.",
+          expectedPayloadHex,
+          storedPayloadHex: payloadHex
+        });
+      }
+      
       // Some client libs normalize the schnorr signature bytes; keep it explicit for Arch.
       const adjusted = SignatureUtil.adjustSignature(Uint8Array.from(sig64));
       const runtimeTransaction = { version: 0, signatures: [adjusted], message: maybeMessage } as any;
