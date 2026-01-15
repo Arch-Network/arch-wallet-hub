@@ -92,6 +92,23 @@ export function computeBip322ToSignTaprootSighash(params: {
     [prevoutValue], // prevoutValues array (one per input)
     SIGHASH_ALL
   );
+  
+  // Debug logging to help diagnose sighash computation issues
+  if (typeof process !== "undefined" && process.env.DEBUG_BIP322) {
+    console.log("[BIP322] Sighash computation debug:", {
+      signerAddress: params.signerAddress,
+      messageHex: Buffer.from(params.message).toString("hex"),
+      xOnlyPubkeyHex: xOnlyPubkey.toString("hex"),
+      prevoutScriptHex: prevoutScript.toString("hex"),
+      prevoutValue,
+      sighashType: SIGHASH_ALL,
+      computedSighashHex: Buffer.from(digest).toString("hex"),
+      toSignTxId: toSignTx.getId(),
+      toSignTxInputs: toSignTx.ins.length,
+      toSignTxOutputs: toSignTx.outs.length
+    });
+  }
+  
   return Buffer.from(digest);
 }
 

@@ -684,16 +684,37 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       // Debug: Log the pubkey that Arch will use for verification
       const archPayerPubkey = maybeMessage.account_keys[0];
       const archPayerPubkeyHex = Buffer.from(archPayerPubkey).toString("hex");
-      server.log.info(
+      
+      // Recompute the sighash for debugging (this should match payloadHex)
+      const recomputedSighash = computeBip322ToSignTaprootSighash({
+        signerAddress: storedSignWith,
+        message: Buffer.from(messageHash)
+      });
+      const recomputedPayloadHex = Buffer.from(recomputedSighash).toString("hex");
+      
+      server.log.error(
         {
           archPayerPubkeyHex,
           resolvedXOnlyPubkeyHex: resolved.xOnlyPubkeyHex,
           signature64Hex: body.signature64Hex,
           adjustedSigHex: Buffer.from(adjusted).toString("hex"),
           messageHashHex: Buffer.from(messageHash).toString("hex"),
-          payloadHex
+          payloadHex,
+          recomputedPayloadHex,
+          payloadMatches: payloadHex === recomputedPayloadHex,
+          recentBlockhashHex,
+          storedSignWith,
+          fromTaproot,
+          // Additional debug info
+          messageAccountKeysCount: maybeMessage.account_keys.length,
+          messageInstructionsCount: maybeMessage.instructions.length,
+          messageHeader: {
+            numRequiredSignatures: maybeMessage.header.num_required_signatures,
+            numReadonlySignedAccounts: maybeMessage.header.num_readonly_signed_accounts,
+            numReadonlyUnsignedAccounts: maybeMessage.header.num_readonly_unsigned_accounts
+          }
         },
-        "Submitting Arch transaction with signature"
+        "Submitting Arch transaction with signature - DEBUG"
       );
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
