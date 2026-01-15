@@ -63,42 +63,48 @@ export function computeBip322ToSignTaprootSighash(params: {
     sighashType: 0x01 // SIGHASH_ALL
   });
 
-  // Arch's Rust implementation uses to_sign.unsigned_tx for SighashCache.
-  // See arch-network `sdk/src/helper/bip322.rs` line 81.
-  // Access the unsigned transaction directly from the PSBT's internal cache.
-  // `__CACHE` is private in bitcoinjs-lib types; it exists at runtime.
-  // Note: `hashForWitnessV1` doesn't use PSBT metadata - it only needs the transaction
-  // and prevout script/value. The tapInternalKey is used by the PSBT for signing,
-  // but the sighash computation itself only needs the scriptPubKey (which is derived
-  // from the internal key and is already in the prevout script).
-  const toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
+  // After updating the PSBT input with sighashType, the cached transaction should still be valid
+  // because sighashType is metadata and doesn't change the transaction structure.
+  // However, we need to ensure we're using the correct transaction for sighash computation.
+  // The @saturnbtcio/bip322-js Verifier uses extractTransaction(), but we can't do that on unsigned PSBT.
+  // Instead, we access the cached unsigned transaction directly.
+  // Note: The PSBT cache is built from the PSBT data, so it should reflect tapInternalKey and sighashType.
+  let toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
   if (!toSignTx) {
-    throw new Error("Failed to get unsigned transaction from PSBT");
+    // If cache doesn't exist, the PSBT will build it when we access it
+    // Force cache construction by accessing the transaction builder
+    const _ = psbt.data.globalMap.unsignedTx;
+    toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
+    if (!toSignTx) {
+      throw new Error("Failed to get unsigned transaction from PSBT");
+    }
   }
   
-  // The @saturnbtcio/bip322-js Verifier uses toSignTx.data.inputs[0].witnessUtxo.script for the prevout.
-  // See Verifier.js line 308: hashForWitnessV1(0, [toSignTx.data.inputs[0].witnessUtxo.script], [0], hashType)
-  // This should match toSpend.outs[0].script, but we use the PSBT's witnessUtxo to match the Verifier exactly.
+  // The @saturnbtcio/bip322-js Verifier.getHashForSigP2TR method uses extractTransaction(),
+  // but we can't extract an unsigned PSBT. However, we can replicate its exact logic:
+  // See Verifier.js line 308: toSignTx.extractTransaction().hashForWitnessV1(0, [toSignTx.data.inputs[0].witnessUtxo.script], [0], hashType)
+  // The key difference is that extractTransaction() might rebuild the transaction, but the cached transaction should be equivalent.
   const witnessUtxo = psbt.data.inputs[0]?.witnessUtxo;
   if (!witnessUtxo || !witnessUtxo.script) {
     throw new Error("PSBT input[0] missing witnessUtxo.script");
   }
   
   const prevoutScript = witnessUtxo.script;
-  const prevoutValue = witnessUtxo.value ?? 0; // BIP-322 toSpend output always has value 0
+  const prevoutValue = 0; // Verifier.getHashForSigP2TR uses [0] for prevoutValue (line 308)
 
-  // Arch's Rust implementation uses TapSighashType::All for Taproot key-path signing.
-  // See arch-network `sdk/src/helper/bip322.rs` line 79.
-  // The Rust code explicitly uses TapSighashType::All (0x01) in taproot_key_spend_signature_hash.
+  // The Verifier.getHashForSigP2TR accepts either SIGHASH_DEFAULT (0x00) or SIGHASH_ALL (0x01).
+  // Arch's Rust implementation uses TapSighashType::All (0x01).
+  // We use SIGHASH_ALL to match the Rust code and the Signer implementation.
   const SIGHASH_ALL = 0x01;
   
-  // Ensure we're using the correct input index (0) and that the prevout arrays match the input count
-  // The Rust code uses Prevouts::All with a single TxOut for input 0
+  // Replicate Verifier.getHashForSigP2TR exactly:
+  // toSignTx.extractTransaction().hashForWitnessV1(0, [toSignTx.data.inputs[0].witnessUtxo.script], [0], hashType)
+  // We use the cached transaction instead of extractTransaction() since we can't extract unsigned PSBTs.
   const digest = toSignTx.hashForWitnessV1(
     0, // input index
-    [prevoutScript], // prevoutScripts array (one per input)
-    [prevoutValue], // prevoutValues array (one per input)
-    SIGHASH_ALL
+    [prevoutScript], // prevoutScripts array (one per input) - from witnessUtxo.script
+    [prevoutValue], // prevoutValues array (one per input) - always [0] for BIP-322
+    SIGHASH_ALL // hashType - SIGHASH_ALL (0x01) to match Rust
   );
   
   // Debug logging to help diagnose sighash computation issues
