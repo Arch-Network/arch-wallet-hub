@@ -163,6 +163,11 @@ async function computeBtcUtxoReadiness(params: {
       : ({ status: "ready", reason: "AnchorNotRequired" } as const);
   }
 
+  // Sentinel value "0000...0000:0" means account is not anchored.
+  if (anchored.txid === "0000000000000000000000000000000000000000000000000000000000000000" && anchored.vout === 0) {
+    return { status: "not_ready", reason: "NotAnchored", anchoredUtxo: anchored } as const;
+  }
+
   if (!params.btc) {
     return {
       status: "unknown",
