@@ -618,8 +618,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       // Build the runtime tx and submit.
       const maybeMessage = SanitizedMessageUtil.createSanitizedMessage(instructions, payerPubkey, recentBlockhash);
       if (typeof maybeMessage === "string") throw new Error(`Arch message compilation failed: ${maybeMessage}`);
-      const adjusted = SignatureUtil.adjustSignature(Uint8Array.from(sig64));
-      const runtimeTransaction = { version: 0, signatures: [adjusted], message: maybeMessage } as any;
+      // Important: do NOT mutate the 64-byte Schnorr signature (r||s). Arch validates BIP-322 over these raw bytes.
+      const runtimeTransaction = { version: 0, signatures: [Uint8Array.from(sig64)], message: maybeMessage } as any;
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       const txid = await submitArchTransaction({ nodeUrl: server.config.ARCH_RPC_NODE_URL, tx: runtimeTransaction });
