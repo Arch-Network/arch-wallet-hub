@@ -383,7 +383,7 @@ export default function ReviewStep({
       onComplete({
         success: true,
         signingRequestId: localSigningRequest.signingRequestId,
-        txid: (submitRes as any)?.txid || (submitRes as any)?.txidHex,
+        txid: (submitRes as any)?.result?.txid || (submitRes as any)?.result?.txidHex,
       });
     } catch (e: any) {
       setError(e?.message || "Signing failed");
