@@ -61,6 +61,7 @@ export type CreateTurnkeyWalletResponse = {
   walletId: string;
   addresses: string[];
   defaultAddress: string | null;
+  defaultPublicKeyHex: string | null;
   activityId: string;
 };
 

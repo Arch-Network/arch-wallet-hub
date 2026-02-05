@@ -55,6 +55,9 @@ export default function ConnectStep({
   const [turnkeyWallets, setTurnkeyWallets] = useState<any[]>([]);
   const [turnkeyLoading, setTurnkeyLoading] = useState(false);
   const [turnkeyResourceId, setTurnkeyResourceId] = useState("");
+  const [showCreateWallet, setShowCreateWallet] = useState(false);
+  const [newWalletName, setNewWalletName] = useState("");
+  const [creatingWallet, setCreatingWallet] = useState(false);
 
   // Load Turnkey wallets when panel opens
   useEffect(() => {
@@ -233,6 +236,50 @@ export default function ConnectStep({
     }
   };
 
+  const createCustodialWallet = async () => {
+    if (!newWalletName.trim()) {
+      setError("Please enter a wallet name");
+      return;
+    }
+
+    setCreatingWallet(true);
+    setError(null);
+
+    try {
+      const idempotencyKey = `create-wallet-${externalUserId}-${Date.now()}`;
+      const result = await client.createTurnkeyWallet({
+        idempotencyKey,
+        body: {
+          externalUserId,
+          walletName: newWalletName.trim(),
+          // Default to taproot testnet format
+          addressFormat: "ADDRESS_FORMAT_P2TR_TESTNET",
+        },
+      });
+
+      // Wallet created successfully - reload wallet list and auto-select
+      setNewWalletName("");
+      setShowCreateWallet(false);
+      await loadTurnkeyWallets();
+
+      // Auto-connect to the newly created wallet
+      const newWallet = {
+        resourceId: result.resourceId,
+        defaultAddress: result.defaultAddress,
+        defaultPublicKeyHex: result.defaultPublicKeyHex,
+        organizationId: result.organizationId,
+        walletId: result.walletId,
+        isCustodial: true,
+        name: newWalletName.trim(),
+      };
+      await selectTurnkeyWallet(newWallet);
+    } catch (e: any) {
+      setError(e?.message || "Failed to create wallet");
+    } finally {
+      setCreatingWallet(false);
+    }
+  };
+
   const saveConfig = () => {
     onApiConfigChange(localBaseUrl, localApiKey);
     setShowConfig(false);
@@ -406,6 +453,65 @@ export default function ConnectStep({
               <p>No wallets found for this user.</p>
             </div>
           )}
+
+          {/* Create Wallet Section */}
+          <div className="turnkey-create-section">
+            {!showCreateWallet ? (
+              <button
+                className="btn-secondary create-wallet-btn"
+                onClick={() => setShowCreateWallet(true)}
+                type="button"
+              >
+                + Create New Wallet
+              </button>
+            ) : (
+              <div className="create-wallet-form">
+                <label className="step-label">Create Custodial Wallet</label>
+                <p className="create-wallet-desc">
+                  Create a new Turnkey wallet. The server will manage signing for this wallet.
+                </p>
+                <div className="create-wallet-input">
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={newWalletName}
+                    onChange={(e) => setNewWalletName(e.target.value)}
+                    placeholder="Wallet name (e.g., My Demo Wallet)"
+                    disabled={creatingWallet}
+                  />
+                </div>
+                <div className="create-wallet-actions">
+                  <button
+                    className="btn-secondary"
+                    onClick={() => {
+                      setShowCreateWallet(false);
+                      setNewWalletName("");
+                    }}
+                    disabled={creatingWallet}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={createCustodialWallet}
+                    disabled={!newWalletName.trim() || creatingWallet}
+                    type="button"
+                  >
+                    {creatingWallet ? (
+                      <>
+                        <span className="spinner small"></span>
+                        Creating...
+                      </>
+                    ) : (
+                      "Create Wallet"
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
 
           {/* Manual Resource ID Input */}
           <div className="turnkey-manual">
