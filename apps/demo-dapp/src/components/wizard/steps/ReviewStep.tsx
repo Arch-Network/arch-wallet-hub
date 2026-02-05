@@ -56,6 +56,8 @@ export default function ReviewStep({
   const [pollCount, setPollCount] = useState(0);
   const [isAirdropping, setIsAirdropping] = useState(false);
   const [airdropSuccess, setAirdropSuccess] = useState(false);
+  const [custodialSigningAttempted, setCustodialSigningAttempted] = useState(false);
+  const [isCustodialSigning, setIsCustodialSigning] = useState(false);
 
   const isTurnkey = wallet.type === "turnkey";
   const isCustodialTurnkey = isTurnkey && wallet.isCustodial === true;
@@ -110,6 +112,42 @@ export default function ReviewStep({
 
     return () => clearInterval(interval);
   }, [localSigningRequest?.signingRequestId, client, onSigningRequestCreated]);
+
+  // Auto-sign for custodial Turnkey wallets when readiness is "ready"
+  useEffect(() => {
+    if (!isCustodialTurnkey) return;
+    if (!localSigningRequest?.signingRequestId) return;
+    if (custodialSigningAttempted) return;
+    if (localSigningRequest?.status === "succeeded" || localSigningRequest?.status === "failed") return;
+    if (readiness?.status !== "ready") return;
+
+    const performCustodialSigning = async () => {
+      setCustodialSigningAttempted(true);
+      setIsCustodialSigning(true);
+      setError(null);
+
+      try {
+        const signRes = await client.signWithTurnkey(localSigningRequest.signingRequestId, { externalUserId });
+        setLocalSigningRequest(signRes);
+
+        if (signRes.status === "succeeded") {
+          onComplete({
+            success: true,
+            signingRequestId: signRes.signingRequestId,
+            txid: (signRes as any)?.result?.txid || (signRes as any)?.result?.txidHex,
+          });
+        } else if (signRes.status === "failed") {
+          setError((signRes as any)?.result?.status?.message || "Transaction failed");
+        }
+      } catch (signErr: any) {
+        setError(signErr?.message || "Turnkey server signing failed");
+      } finally {
+        setIsCustodialSigning(false);
+      }
+    };
+
+    performCustodialSigning();
+  }, [isCustodialTurnkey, localSigningRequest?.signingRequestId, localSigningRequest?.status, readiness?.status, custodialSigningAttempted, client, externalUserId, onComplete, setError]);
 
   // Sign with Turnkey passkey (non-custodial wallet)
   const signWithPasskey = async (payloadHex: string, signingRequestId: string): Promise<void> => {
@@ -222,30 +260,9 @@ export default function ReviewStep({
       setLocalSigningRequest(res);
       onSigningRequestCreated(res);
       
-      // Handle signing based on wallet type
-      if (isTurnkey && (res as any)?.signingRequestId) {
-        if (isCustodialTurnkey) {
-          // Custodial Turnkey wallet - server-side signing
-          try {
-            const signRes = await client.signWithTurnkey((res as any).signingRequestId, { externalUserId });
-            setLocalSigningRequest(signRes);
-            
-            if (signRes.status === "succeeded") {
-              onComplete({
-                success: true,
-                signingRequestId: signRes.signingRequestId,
-                txid: (signRes as any)?.result?.txid || (signRes as any)?.result?.txidHex,
-              });
-            } else if (signRes.status === "failed") {
-              setError((signRes as any)?.result?.status?.message || "Transaction failed");
-            }
-          } catch (signErr: any) {
-            setError(signErr?.message || "Turnkey server signing failed");
-          }
-        }
-        // For passkey wallets, don't auto-sign - wait for user to click Sign button
-        // The payloadHex will be extracted from the signing request in handleSign
-      }
+      // For custodial Turnkey wallets, signing will be triggered automatically 
+      // when readiness status becomes "ready" (see useEffect below)
+      // For passkey wallets, wait for user to click Sign button
     } catch (e: any) {
       setError(e?.message || "Failed to create signing request");
     } finally {
@@ -445,10 +462,20 @@ export default function ReviewStep({
               <span className="turnkey-status-icon">✓</span>
               <span>Transaction signed and submitted!</span>
             </>
-          ) : (
+          ) : isCustodialSigning ? (
             <>
               <span className="spinner small"></span>
               <span>Signing via Turnkey (custodial)...</span>
+            </>
+          ) : readiness?.status !== "ready" ? (
+            <>
+              <span className="spinner small"></span>
+              <span>Waiting for account readiness...</span>
+            </>
+          ) : (
+            <>
+              <span className="spinner small"></span>
+              <span>Preparing to sign...</span>
             </>
           )}
         </div>
