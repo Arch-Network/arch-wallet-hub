@@ -1,0 +1,40 @@
+# Build stage
+FROM node:20-alpine AS builder
+
+ARG VITE_API_URL=http://localhost:3005/v1
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY apps/demo-dapp/package*.json ./apps/demo-dapp/
+COPY packages/wallet-hub-sdk/package*.json ./packages/wallet-hub-sdk/
+
+# Install dependencies
+RUN npm ci --workspace=apps/demo-dapp --workspace=packages/wallet-hub-sdk
+
+# Copy source
+COPY apps/demo-dapp ./apps/demo-dapp
+COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk
+
+# Build SDK first
+WORKDIR /app/packages/wallet-hub-sdk
+RUN npm run build || true
+
+# Build frontend with API URL
+WORKDIR /app/apps/demo-dapp
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build
+
+# Production stage - nginx
+FROM nginx:alpine
+
+# Copy built files
+COPY --from=builder /app/apps/demo-dapp/dist /usr/share/nginx/html
+
+# Copy nginx config
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80 443
+
+CMD ["nginx", "-g", "daemon off;"]

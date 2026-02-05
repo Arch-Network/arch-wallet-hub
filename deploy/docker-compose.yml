@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: wallet-hub-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-wallet_hub}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: ${DB_NAME:-wallet_hub}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-wallet_hub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    container_name: wallet-hub-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3005
+      DATABASE_URL: postgresql://${DB_USER:-wallet_hub}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-wallet_hub}
+      API_KEY: ${API_KEY}
+      TURNKEY_API_PUBLIC_KEY: ${TURNKEY_API_PUBLIC_KEY}
+      TURNKEY_API_PRIVATE_KEY: ${TURNKEY_API_PRIVATE_KEY}
+      TURNKEY_ORGANIZATION_ID: ${TURNKEY_ORGANIZATION_ID}
+      ARCH_RPC_URL: ${ARCH_RPC_URL:-https://rpc.testnet.arch.network}
+    ports:
+      - "3005:3005"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3005/v1}
+    container_name: wallet-hub-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+
+volumes:
+  postgres_data:
