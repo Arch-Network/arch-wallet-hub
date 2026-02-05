@@ -12,9 +12,11 @@
   "dependencies": {
     "@arch/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
     "@arch/wallet-hub-ui": "file:../../packages/wallet-hub-ui",
+    "@scure/btc-signer": "^2.0.1",
     "@turnkey/sdk-browser": "^5.2.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "sats-connect": "^2.8.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",
@@ -24,4 +26,3 @@
     "vite": "^6.0.7"
   }
 }
-

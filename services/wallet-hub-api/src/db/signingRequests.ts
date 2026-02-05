@@ -70,14 +70,19 @@ export async function getSigningRequestForApp(client: PoolClient, params: {
 export async function markSigningRequestSubmitted(client: PoolClient, params: {
   id: string;
   submittedSignatureJson: unknown;
+  resultJson?: unknown;
 }) {
   await client.query(
     `
       UPDATE signing_requests
-      SET status = 'submitted', submitted_signature_json = $2::jsonb, updated_at = NOW()
+      SET
+        status = 'submitted',
+        submitted_signature_json = $2::jsonb,
+        result_json = COALESCE($3::jsonb, result_json),
+        updated_at = NOW()
       WHERE id = $1
     `,
-    [params.id, JSON.stringify(params.submittedSignatureJson)]
+    [params.id, JSON.stringify(params.submittedSignatureJson), params.resultJson ? JSON.stringify(params.resultJson) : null]
   );
 }
 

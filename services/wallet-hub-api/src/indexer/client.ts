@@ -52,10 +52,12 @@ export function createIndexerClient(server: FastifyInstance): IndexerClient | nu
   }
 
   return {
+    // Paths are relative to INDEXER_BASE_URL which should include the network segment
+    // e.g., https://explorer.arch.network/api/v1/testnet
     getAccountSummary: async (address: string) =>
-      await getJson(`/api/v1/accounts/${encodeURIComponent(address)}`),
+      await getJson(`/accounts/${encodeURIComponent(address)}`),
     getAccountTransactions: async (address: string, limit = 50) =>
-      await getJson(`/api/v1/accounts/${encodeURIComponent(address)}/transactions?limit=${limit}`),
+      await getJson(`/accounts/${encodeURIComponent(address)}/transactions?limit=${limit}`),
     getTransactions: async (params) => {
       const qs = new URLSearchParams();
       if (params.address) qs.set("address", params.address);
@@ -63,7 +65,7 @@ export function createIndexerClient(server: FastifyInstance): IndexerClient | nu
       if (params.cursor) qs.set("cursor", params.cursor);
       if (params.offset !== undefined) qs.set("offset", String(params.offset));
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      return await getJson(`/api/v1/transactions${suffix}`);
+      return await getJson(`/transactions${suffix}`);
     }
   };
 }

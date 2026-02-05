@@ -112,7 +112,7 @@ export type RegisterTurnkeyIndexedDbKeyResponse = {
 export type CreateSigningRequest = {
   externalUserId: string;
   signer:
-    | { kind: "external"; taprootAddress: string }
+    | { kind: "external"; taprootAddress: string; publicKeyHex?: string }
     | { kind: "turnkey"; resourceId: string };
   action:
     | { type: "arch.transfer"; toAddress: string; lamports: string }

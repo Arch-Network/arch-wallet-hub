@@ -19,6 +19,7 @@ export type InsertTurnkeyResourceParams = {
   keyId: string | null;
   policyId: string | null;
   defaultAddress: string | null;
+  defaultPublicKeyHex: string | null;
   defaultAddressFormat: string | null;
   defaultDerivationPath: string | null;
 };
@@ -34,6 +35,7 @@ export type TurnkeyResourceRow = {
   key_id: string | null;
   policy_id: string | null;
   default_address: string | null;
+  default_public_key_hex: string | null;
   default_address_format: string | null;
   default_derivation_path: string | null;
   created_at: string;
@@ -56,10 +58,11 @@ export async function insertTurnkeyResource(
         key_id,
         policy_id,
         default_address,
+        default_public_key_hex,
         default_address_format,
         default_derivation_path
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       RETURNING *
     `,
     [
@@ -72,6 +75,7 @@ export async function insertTurnkeyResource(
       params.keyId,
       params.policyId,
       params.defaultAddress,
+      params.defaultPublicKeyHex,
       params.defaultAddressFormat,
       params.defaultDerivationPath
     ]
@@ -97,6 +101,22 @@ export async function getTurnkeyResourceByIdForApp(
   const res = await client.query<TurnkeyResourceRow>(
     `SELECT * FROM turnkey_resources WHERE id = $1 AND app_id = $2`,
     [params.id, params.appId]
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function updateTurnkeyResourceDefaultPublicKeyHexForApp(
+  client: PoolClient,
+  params: { id: string; appId: string; defaultPublicKeyHex: string }
+): Promise<TurnkeyResourceRow | null> {
+  const res = await client.query<TurnkeyResourceRow>(
+    `
+      UPDATE turnkey_resources
+      SET default_public_key_hex = $3, updated_at = NOW()
+      WHERE id = $1 AND app_id = $2
+      RETURNING *
+    `,
+    [params.id, params.appId, params.defaultPublicKeyHex]
   );
   return res.rows[0] ?? null;
 }

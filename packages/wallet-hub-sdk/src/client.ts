@@ -27,7 +27,12 @@ export class WalletHubClient {
   private fetchImpl: typeof fetch;
 
   constructor(opts: WalletHubClientOptions) {
-    this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    // The Wallet Hub API is versioned under `/v1`. Make the SDK resilient by accepting:
+    // - baseUrl = http://localhost:3005
+    // - baseUrl = http://localhost:3005/v1
+    // and always normalizing to a `/v1` base.
+    const trimmed = opts.baseUrl.replace(/\/+$/, "");
+    this.baseUrl = /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
     this.apiKey = opts.apiKey;
     // In some environments, calling a captured `window.fetch` with a different `this`
     // (e.g. as `this.fetchImpl(...)`) can throw "Illegal invocation".

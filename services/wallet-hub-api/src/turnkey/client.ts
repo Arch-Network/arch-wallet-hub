@@ -381,4 +381,16 @@ export class TurnkeyService {
 
     return { accounts: (res as any).accounts ?? [] };
   }
+
+  async getWalletAccountsForOrganization(params: {
+    organizationId: string;
+    walletId: string;
+  }): Promise<{ accounts: WalletAccount[] }> {
+    const res = await this.client.getWalletAccounts({
+      organizationId: params.organizationId,
+      walletId: params.walletId,
+      includeWalletDetails: false
+    } as any);
+    return { accounts: (res as any).accounts ?? [] };
+  }
 }

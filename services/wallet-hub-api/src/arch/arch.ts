@@ -80,6 +80,26 @@ export function createArchRpcClient(nodeUrl: string) {
   return ArchConnection(provider);
 }
 
+export async function waitForProcessedTransaction(params: {
+  nodeUrl: string;
+  txid: string;
+  timeoutMs?: number;
+  pollMs?: number;
+}) {
+  const arch = createArchRpcClient(params.nodeUrl);
+  const timeoutMs = params.timeoutMs ?? 10_000;
+  const pollMs = params.pollMs ?? 500;
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const processed = await arch.getProcessedTransaction(params.txid).catch(() => undefined);
+    if (processed) return processed;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+
+  return undefined;
+}
+
 /**
  * Get the best finalized blockhash from Arch RPC.
  * Falls back to best blockhash if finalized is not available.

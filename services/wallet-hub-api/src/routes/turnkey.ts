@@ -47,6 +47,7 @@ const CreateWalletResponse = Type.Object({
   walletId: Type.String(),
   addresses: Type.Array(Type.String()),
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
+  defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   activityId: Type.String()
 });
 
@@ -58,6 +59,7 @@ const GetWalletResponse = Type.Object({
   turnkeyRootUserId: Type.Union([Type.String(), Type.Null()]),
   walletId: Type.Union([Type.String(), Type.Null()]),
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
+  defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   defaultAddressFormat: Type.Union([Type.String(), Type.Null()]),
   defaultDerivationPath: Type.Union([Type.String(), Type.Null()]),
   createdAt: Type.String()
@@ -182,6 +184,21 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         });
 
         const defaultAddress = created.addresses[0] ?? null;
+        let defaultPublicKeyHex: string | null = null;
+        try {
+          const accountsRes = await (turnkey as any).getWalletAccountsForOrganization({
+            organizationId: created.subOrganizationId,
+            walletId: created.walletId
+          });
+          const accounts = Array.isArray(accountsRes?.accounts) ? accountsRes.accounts : [];
+          const match = defaultAddress ? accounts.find((a: any) => a?.address === defaultAddress) : null;
+          defaultPublicKeyHex = typeof match?.publicKey === "string" ? match.publicKey : null;
+        } catch (e: any) {
+          request.log.warn(
+            { err: String(e?.message ?? e), orgId: created.subOrganizationId, walletId: created.walletId },
+            "Failed to fetch Turnkey wallet accounts (suborg) for default public key"
+          );
+        }
 
         const response = await withDbTransaction(db, async (client) => {
           const resource = await insertTurnkeyResource(client, {
@@ -194,6 +211,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             keyId: null,
             policyId: null,
             defaultAddress,
+            defaultPublicKeyHex,
             defaultAddressFormat: addressFormat,
             defaultDerivationPath: derivationPath
           });
@@ -227,6 +245,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             walletId: created.walletId,
             addresses: created.addresses,
             defaultAddress,
+            defaultPublicKeyHex,
             activityId: created.activityId
           };
 
@@ -339,6 +358,21 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         );
 
         const defaultAddress = created.addresses[0] ?? null;
+        let defaultPublicKeyHex: string | null = null;
+        try {
+          const accountsRes = await (turnkey as any).getWalletAccountsForOrganization({
+            organizationId: server.config.TURNKEY_ORGANIZATION_ID,
+            walletId: created.walletId
+          });
+          const accounts = Array.isArray(accountsRes?.accounts) ? accountsRes.accounts : [];
+          const match = defaultAddress ? accounts.find((a: any) => a?.address === defaultAddress) : null;
+          defaultPublicKeyHex = typeof match?.publicKey === "string" ? match.publicKey : null;
+        } catch (e: any) {
+          request.log.warn(
+            { err: String(e?.message ?? e), orgId: server.config.TURNKEY_ORGANIZATION_ID, walletId: created.walletId },
+            "Failed to fetch Turnkey wallet accounts (parent org) for default public key"
+          );
+        }
 
         const response = await withDbTransaction(db, async (client) => {
           const resource = await insertTurnkeyResource(client, {
@@ -351,6 +385,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             keyId: null,
             policyId: null,
             defaultAddress,
+            defaultPublicKeyHex,
             defaultAddressFormat: addressFormat,
             defaultDerivationPath: derivationPath
           });
@@ -381,6 +416,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             walletId: created.walletId,
             addresses: created.addresses,
             defaultAddress,
+            defaultPublicKeyHex,
             activityId: created.activityId
           };
 
@@ -449,6 +485,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           turnkeyRootUserId: (row as any).turnkey_root_user_id ?? null,
           walletId: row.wallet_id,
           defaultAddress: row.default_address,
+          defaultPublicKeyHex: (row as any).default_public_key_hex ?? null,
           defaultAddressFormat: row.default_address_format,
           defaultDerivationPath: row.default_derivation_path,
           createdAt: row.created_at
@@ -493,6 +530,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         turnkeyRootUserId: (row as any).turnkey_root_user_id ?? null,
         walletId: row.wallet_id,
         defaultAddress: row.default_address,
+        defaultPublicKeyHex: (row as any).default_public_key_hex ?? null,
         defaultAddressFormat: row.default_address_format,
         defaultDerivationPath: row.default_derivation_path,
         createdAt: row.created_at

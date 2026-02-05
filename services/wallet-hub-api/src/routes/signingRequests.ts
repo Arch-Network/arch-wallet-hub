@@ -6,8 +6,8 @@ import { getOrCreateUserByExternalId } from "../db/apps.js";
 import { insertSigningRequest, getSigningRequestForApp, markSigningRequestSubmitted, markSigningRequestSucceeded, markSigningRequestFailed } from "../db/signingRequests.js";
 import { auditEvent } from "../audit/audit.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
-import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey, getFinalizedBlockhash } from "../arch/arch.js";
-import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
+import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
+import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, type Instruction } from "@saturnbtcio/arch-sdk";
 import { Buffer } from "node:buffer";
@@ -15,13 +15,17 @@ import bs58 from "bs58";
 import { secp256k1, schnorr } from "@noble/curves/secp256k1";
 import { getBtcPlatformClient } from "../btcPlatform/store.js";
 import { resolveArchAccountAddress } from "../arch/address.js";
+import { address as btcAddress } from "bitcoinjs-lib";
 
 const CreateSigningRequestBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
   signer: Type.Union([
     Type.Object({
       kind: Type.Literal("external"),
-      taprootAddress: Type.String({ minLength: 1 })
+      taprootAddress: Type.String({ minLength: 1 }),
+      // Optional but strongly recommended: 33-byte compressed secp256k1 public key hex.
+      // Arch identity uses the *internal* x-only key (untweaked), which cannot be recovered from a p2tr address.
+      publicKeyHex: Type.Optional(Type.String({ minLength: 1 }))
     }),
     Type.Object({
       kind: Type.Literal("turnkey"),
@@ -217,12 +221,39 @@ async function computeBtcUtxoReadiness(params: {
   } as const;
 }
 
+function publicKeyHexToXOnlyHex(publicKeyHex: string): string {
+  // Handle different public key formats:
+  // - 32 bytes (64 hex chars): x-only key (Taproot/BIP-340), use directly
+  // - 33 bytes (66 hex chars): compressed key, extract x coordinate
+  // - 65 bytes (130 hex chars): uncompressed key, extract x coordinate
+  const cleanHex = publicKeyHex.startsWith("0x") ? publicKeyHex.slice(2) : publicKeyHex;
+  
+  if (cleanHex.length === 64) {
+    // Already x-only (32 bytes) - common for Taproot addresses from wallets like Xverse
+    return cleanHex.toLowerCase();
+  } else if (cleanHex.length === 66 || cleanHex.length === 130) {
+    // Compressed (33 bytes) or uncompressed (65 bytes) - parse as point
+    const pt = secp256k1.ProjectivePoint.fromHex(cleanHex).toAffine();
+    return pt.x.toString(16).padStart(64, "0");
+  } else {
+    throw new Error(`Invalid public key length: ${cleanHex.length} hex chars (expected 64, 66, or 130)`);
+  }
+}
+
 function turnkeyPublicKeyToArchAccountBase58(publicKeyHex: string): string {
   // Turnkey wallet account publicKey is a secp256k1 public key (compressed or uncompressed).
   // Arch account keys are x-only pubkeys (32 bytes) derived from the *internal* key (untweaked).
-  const pt = secp256k1.ProjectivePoint.fromHex(publicKeyHex).toAffine();
-  const xHex = pt.x.toString(16).padStart(64, "0");
+  const xHex = publicKeyHexToXOnlyHex(publicKeyHex);
   return bs58.encode(Buffer.from(xHex, "hex"));
+}
+
+function secp256k1PublicKeyToArchAccountBase58(publicKeyHex: string): string {
+  // Alias for clarity; same conversion rules as Turnkey wallet account publicKey.
+  return turnkeyPublicKeyToArchAccountBase58(publicKeyHex);
+}
+
+function secp256k1PublicKeyToXOnlyHex(publicKeyHex: string): string {
+  return publicKeyHexToXOnlyHex(publicKeyHex);
 }
 
 export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) => {
@@ -242,8 +273,45 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       const db = getDbPool();
       const { id } = request.params as any;
-      const row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
+      let row: any = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
       if (!row) return reply.notFound("Unknown signingRequestId");
+
+      // If the request is still "submitted", best-effort reconcile it by asking the node for the processed tx.
+      // This prevents UIs from getting stuck when the submit endpoint times out before the tx is indexed.
+      try {
+        if (row.status === "submitted" && server.config.ARCH_RPC_NODE_URL) {
+          const txidHex = String((row.result_json as any)?.txidHex ?? "");
+          const txidFallback = String((row.result_json as any)?.txid ?? "");
+          const txidToQuery = txidHex || (txidFallback.length === 64 ? txidFallback : "");
+          if (txidToQuery) {
+            const processed = await waitForProcessedTransaction({
+              nodeUrl: server.config.ARCH_RPC_NODE_URL,
+              txid: txidToQuery,
+              timeoutMs: 2_000,
+              pollMs: 500
+            });
+            if (processed?.status?.type === "failed") {
+              const errorJson = {
+                txid: (row.result_json as any)?.txid ?? txidToQuery,
+                txidHex: (row.result_json as any)?.txidHex ?? txidToQuery,
+                txidBase58: (row.result_json as any)?.txidBase58 ?? null,
+                status: processed.status,
+                rollbackStatus: processed.rollback_status,
+                logs: processed.logs
+              };
+              await withDbTransaction(db, (client) => markSigningRequestFailed(client, { id: row!.id, errorJson }));
+              row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
+            } else if (processed?.status?.type === "processed") {
+              await withDbTransaction(db, (client) =>
+                markSigningRequestSucceeded(client, { id: row!.id, resultJson: { ...(row!.result_json as any), processedTransaction: processed } })
+              );
+              row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
+            }
+          }
+        }
+      } catch {
+        // ignore reconcile errors; GET should remain best-effort
+      }
 
       // Compute live readiness (best-effort).
       let readiness: any = { status: "unknown", reason: "NotApplicable" };
@@ -264,6 +332,30 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             });
           } else {
             readiness = { status: "unknown", reason: "MissingPayerAddress" };
+          }
+        } else if (row.action_type === "arch.anchor") {
+          // For anchor, check if the Arch account exists (so we know the btcAccountAddress)
+          const display: any = row.display_json ?? {};
+          const fromArch = String(display?.account?.archAccountAddress ?? "");
+          const btcAccountAddress = String(display?.account?.btcAccountAddress ?? "");
+          const utxoTxid = String(display?.utxo?.txid ?? "");
+          const utxoVout = Number(display?.utxo?.vout);
+          
+          if (!fromArch) {
+            readiness = { status: "unknown", reason: "MissingArchAccount" };
+          } else if (!btcAccountAddress || btcAccountAddress === "unknown") {
+            readiness = { status: "not_ready", reason: "BtcAccountAddressUnknown", message: "Could not determine BTC account address. The Arch RPC may be unavailable." };
+          } else if (!utxoTxid || Number.isNaN(utxoVout)) {
+            readiness = { status: "not_ready", reason: "MissingUtxo", message: "UTXO txid and vout are required for anchor." };
+          } else {
+            // Anchor is ready to sign - we have the account and UTXO info
+            // Note: We don't verify the UTXO exists/is confirmed here since that would require
+            // querying the BTC indexer. The Arch node will validate it on submission.
+            readiness = { 
+              status: "ready", 
+              btcAccountAddress,
+              utxo: { txid: utxoTxid, vout: utxoVout }
+            };
           }
         }
       } catch (err: any) {
@@ -312,14 +404,24 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       // Determine from signer identity.
       let signerTaprootAddress: string;
       let signerArchAccountAddress: string;
+      let signerInternalXOnlyPubkeyHex: string | null = null;
       let turnkeyResourceId: string | null = null;
       if (body.signer.kind === "external") {
         signerTaprootAddress = body.signer.taprootAddress as string;
-        const resolved = resolveArchAccountAddress(signerTaprootAddress);
-        if (resolved.kind !== "taproot") {
-          return reply.badRequest("External signer must provide a Taproot (p2tr) address");
+        const providedPubkeyHex = (body.signer.publicKeyHex ?? body.signer.public_key_hex) as string | undefined;
+        if (providedPubkeyHex) {
+          signerArchAccountAddress = secp256k1PublicKeyToArchAccountBase58(providedPubkeyHex);
+          signerInternalXOnlyPubkeyHex = secp256k1PublicKeyToXOnlyHex(providedPubkeyHex);
+        } else {
+          // Backward compatibility: derive from address witness program (NOTE: this is the *tweaked* key for p2tr).
+          // External wallets should supply a public key so we can use the *internal* key like Arch expects.
+          const resolved = resolveArchAccountAddress(signerTaprootAddress);
+          if (resolved.kind !== "taproot") {
+            return reply.badRequest("External signer must provide a Taproot (p2tr) address");
+          }
+          signerArchAccountAddress = resolved.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
         }
-        signerArchAccountAddress = resolved.archAccountAddress;
       } else {
         turnkeyResourceId = body.signer.resourceId as string;
         const resource = await withDbTransaction(db, (client) =>
@@ -329,11 +431,51 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
         if (!resource.default_address) return reply.badRequest("Resource has no default address");
         signerTaprootAddress = resource.default_address;
-        const resolved = resolveArchAccountAddress(signerTaprootAddress);
-        if (resolved.kind !== "taproot") {
-          return reply.badRequest("Turnkey resource defaultAddress must be Taproot (p2tr)");
+        let pubkeyHex = (resource as any).default_public_key_hex as string | null;
+        // Best-effort backfill for older rows: fetch wallet account public key from Turnkey.
+        if (!pubkeyHex && resource.wallet_id && resource.organization_id) {
+          try {
+            const turnkey = getTurnkeyClient() as any;
+            const accountsRes = await turnkey.getWalletAccountsForOrganization({
+              organizationId: resource.organization_id,
+              walletId: resource.wallet_id
+            });
+            const accounts = Array.isArray(accountsRes?.accounts) ? accountsRes.accounts : [];
+            const match = accounts.find((a: any) => a?.address === signerTaprootAddress);
+            const fetched = typeof match?.publicKey === "string" ? match.publicKey : null;
+            if (fetched) {
+              pubkeyHex = fetched;
+              await withDbTransaction(db, (client) =>
+                updateTurnkeyResourceDefaultPublicKeyHexForApp(client, {
+                  id: turnkeyResourceId!,
+                  appId,
+                  defaultPublicKeyHex: fetched
+                })
+              );
+            }
+          } catch (e: any) {
+            server.log.warn(
+              { err: String(e?.message ?? e), resourceId: turnkeyResourceId, walletId: resource.wallet_id },
+              "Failed to backfill Turnkey wallet public key"
+            );
+          }
         }
-        signerArchAccountAddress = resolved.archAccountAddress;
+        if (pubkeyHex) {
+          signerArchAccountAddress = turnkeyPublicKeyToArchAccountBase58(pubkeyHex);
+          signerInternalXOnlyPubkeyHex = secp256k1PublicKeyToXOnlyHex(pubkeyHex);
+        } else {
+          // Backward compatibility for older rows. This path is likely WRONG for Taproot because it uses the tweaked key.
+          const resolved = resolveArchAccountAddress(signerTaprootAddress);
+          if (resolved.kind !== "taproot") {
+            return reply.badRequest("Turnkey resource defaultAddress must be Taproot (p2tr)");
+          }
+          signerArchAccountAddress = resolved.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
+          server.log.warn(
+            { resourceId: turnkeyResourceId, defaultAddress: signerTaprootAddress },
+            "Turnkey resource missing default_public_key_hex; derived Arch account from address (may cause invalid signatures)"
+          );
+        }
       }
 
       if (!signerArchAccountAddress) {
@@ -345,9 +487,14 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       // Prefer finalized blockhash (required for transaction validation), fallback to best.
+      // Add timeout to prevent hanging on slow/unresponsive Arch RPC.
       let recentBlockhashHex: string;
       try {
-        recentBlockhashHex = await getFinalizedBlockhash(server.config.ARCH_RPC_NODE_URL);
+        const blockhashPromise = getFinalizedBlockhash(server.config.ARCH_RPC_NODE_URL);
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Blockhash fetch timeout")), 5000); // 5 second timeout
+        });
+        recentBlockhashHex = await Promise.race([blockhashPromise, timeoutPromise]);
       } catch (err: any) {
         server.log.error({ err: String(err?.message ?? err) }, "Failed to get blockhash from Arch RPC");
         return reply.code(503).send({
@@ -385,7 +532,11 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
         display = {
           kind: "arch.transfer",
-          from: { taprootAddress: signerTaprootAddress, archAccountAddress: signerArchAccountAddress },
+          from: {
+            taprootAddress: signerTaprootAddress,
+            archAccountAddress: signerArchAccountAddress,
+            xOnlyPubkeyHex: signerInternalXOnlyPubkeyHex
+          },
           to: { input: body.action.toAddress, archAccountAddress: body.action.toAddress },
           lamports: body.action.lamports,
           warnings:
@@ -400,14 +551,21 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         //
         // Non-custodial UX: we do NOT block request creation. Instead we attach a warning
         // and let clients poll GET /v1/signing-requests/:id for live readiness.
+        // Add a timeout to prevent hanging on slow/unresponsive Arch RPC.
         try {
-          const readiness = await computeBtcUtxoReadiness({
+          const readinessPromise = computeBtcUtxoReadiness({
             archRpc,
             payerPubkey,
             requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
             btc: getBtcPlatformClient(),
             requireAnchoredUtxo: Boolean(server.config.ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO)
           });
+          
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("Readiness check timeout")), 5000); // 5 second timeout
+          });
+          
+          const readiness = await Promise.race([readinessPromise, timeoutPromise]);
 
           if (readiness.status === "not_ready") {
             const msg =
@@ -419,8 +577,9 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             display.warnings = Array.isArray(display.warnings) ? display.warnings : [];
             display.warnings.push(msg);
           }
-        } catch {
-          // ignore preflight errors (best-effort)
+        } catch (err: any) {
+          // ignore preflight errors (best-effort) - including timeouts
+          server.log.debug({ err: String(err?.message ?? err) }, "Preflight readiness check failed or timed out");
         }
       } else if (body.action.type === "arch.anchor") {
         if (!isHex64(body.action.btcTxid)) {
@@ -432,7 +591,18 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
         // This is the BTC Taproot address that should receive a UTXO (via Titan/bitcoind),
         // which will then be referenced by (txid, vout) in the anchor instruction.
-        const btcAccountAddress = await archRpc.getAccountAddress(payerPubkey);
+        // Add timeout to prevent hanging on slow/unresponsive Arch RPC.
+        let btcAccountAddress: string;
+        try {
+          const addressPromise = archRpc.getAccountAddress(payerPubkey);
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("getAccountAddress timeout")), 5000); // 5 second timeout
+          });
+          btcAccountAddress = await Promise.race([addressPromise, timeoutPromise]);
+        } catch (err: any) {
+          server.log.warn({ err: String(err?.message ?? err) }, "Failed to get BTC account address, using placeholder");
+          btcAccountAddress = "unknown"; // Fallback - client can retry later
+        }
 
         display = {
           kind: "arch.anchor",
@@ -451,9 +621,29 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       const maybeMessage = SanitizedMessageUtil.createSanitizedMessage(instructions, payerPubkey, recentBlockhash);
       if (typeof maybeMessage === "string") throw new Error(`Arch message compilation failed: ${maybeMessage}`);
       const messageHash = SanitizedMessageUtil.hash(maybeMessage);
+      
+      // For tapInternalKey, use the INTERNAL key (from wallet's public key) if available,
+      // otherwise fall back to the OUTPUT key from the address (which may cause signature mismatches
+      // with BIP-86 wallets like Xverse that use key tweaking).
+      let xOnlyPubkey: Buffer;
+      if (signerInternalXOnlyPubkeyHex) {
+        // Use the internal key from the wallet's public key (correct for BIP-86 wallets)
+        xOnlyPubkey = Buffer.from(signerInternalXOnlyPubkeyHex, "hex");
+        server.log.info({ signerInternalXOnlyPubkeyHex }, "Using internal key from wallet public key for PSBT tapInternalKey");
+      } else {
+        // Fallback: extract from address (this is the tweaked/output key, may not work with Xverse)
+        const decodedAddress = btcAddress.fromBech32(signerTaprootAddress);
+        if (decodedAddress.version !== 1 || decodedAddress.data.length !== 32) {
+          throw new Error("Invalid Taproot address for BIP-322 signing (must be bech32m v1 with 32-byte witness program)");
+        }
+        xOnlyPubkey = Buffer.from(decodedAddress.data);
+        server.log.warn({ signerTaprootAddress }, "Using address-derived key for PSBT tapInternalKey (may cause signature issues with BIP-86 wallets)");
+      }
+      
       const psbtBase64 = buildBip322ToSignPsbtBase64({
         signerAddress: signerTaprootAddress,
-        message: Buffer.from(messageHash)
+        message: Buffer.from(messageHash),
+        tapInternalKey: xOnlyPubkey  // Required for Xverse/external wallets to sign
       });
 
       // For non-custodial Turnkey: clients sign the Taproot sighash directly via Turnkey SIGN_RAW_PAYLOAD
@@ -468,9 +658,16 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         payloadHex: Buffer.from(sighash).toString("hex"),
         encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
         hashFunction: "HASH_FUNCTION_NO_OP",
+        // For external wallets (Xverse/Unisat): pass the message hash to signMessage().
+        // The wallet computes the BIP-322 signature internally.
+        messageHashHex: Buffer.from(messageHash).toString("hex"),
         // Optional debug/interop fields:
         psbtBase64,
-        recentBlockhashHex
+        recentBlockhashHex,
+        // Store internal key for debugging signature verification (BIP-86 tweak issues)
+        internalXOnlyPubkeyHex: signerInternalXOnlyPubkeyHex,
+        // Also store the PSBT's tapInternalKey for comparison
+        psbtTapInternalKeyHex: xOnlyPubkey.toString("hex")
       };
 
       // Persist request row now (pending). Non-custodial: client must submit signature.
@@ -548,13 +745,14 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return reply.gone("Signing request expired");
 
       const display: any = row.display_json ?? {};
+      // Support both transfer (from.*) and anchor (account.*) display structures
       const fromTaproot = String(display?.from?.taprootAddress ?? display?.account?.taprootAddress ?? "");
       if (!fromTaproot) return reply.badRequest("Signing request missing from.taprootAddress");
 
-      const resolved = resolveArchAccountAddress(fromTaproot);
-      if (resolved.kind !== "taproot") return reply.badRequest("from.taprootAddress must be Taproot (p2tr)");
-
-      const payerPubkey = parsePubkey(resolved.archAccountAddress);
+      const fromArch = String(display?.from?.archAccountAddress ?? display?.account?.archAccountAddress ?? "");
+      if (!fromArch) return reply.badRequest("Signing request missing from.archAccountAddress");
+      const payerPubkey = parsePubkey(fromArch);
+      const internalXOnlyPubkeyHex = String(display?.from?.xOnlyPubkeyHex ?? display?.account?.xOnlyPubkeyHex ?? "");
       const recentBlockhashHex = String((row.payload_to_sign as any)?.recentBlockhashHex ?? "");
       if (!recentBlockhashHex) return reply.badRequest("Signing request missing recentBlockhashHex");
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
@@ -637,13 +835,89 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         return reply.badRequest("Signing request missing signWith address");
       }
       
-      // Verify the signature against the expected Taproot output key and sighash (best-effort safety).
-      const ok = schnorr.verify(
-        sig64,
-        Buffer.from(payloadHex, "hex"),
-        Buffer.from(resolved.xOnlyPubkeyHex, "hex")
-      );
-      if (!ok) return reply.unauthorized("Invalid signature for payload");
+      // Verify the signature against the stored Taproot output key + payload.
+      //
+      // IMPORTANT:
+      // - BIP-322 for P2TR verifies against the Taproot *output* key (the v1 witness program), not the internal key.
+      // - If this check fails, the node may still return a txid for send_transaction but will drop the tx during
+      //   later validation, which presents as get_processed_transaction = NOT FOUND.
+      let taprootOutputXOnlyHex: string | null = null;
+      try {
+        const resolved = resolveArchAccountAddress(storedSignWith);
+        if (resolved.kind !== "taproot") {
+          return reply.badRequest("Signing request signWith must be a Taproot (p2tr) address");
+        }
+        taprootOutputXOnlyHex = resolved.xOnlyPubkeyHex;
+      } catch (err: any) {
+        server.log.warn({ storedSignWith, err: err?.message ?? String(err) }, "Failed to parse Taproot address for signature verification");
+        return reply.badRequest("Signing request signWith must be a valid Taproot (p2tr) address");
+      }
+
+      const payloadBuf = Buffer.from(payloadHex, "hex");
+      const outputKeyBuf = Buffer.from(taprootOutputXOnlyHex, "hex");
+      const okOutputKey = schnorr.verify(sig64, payloadBuf, outputKeyBuf);
+      
+      // Also try verifying against internal key if available (for debugging BIP-86 tweak issues)
+      let okInternalKey = false;
+      const storedInternalKeyHex = String((payloadToSign as any)?.internalXOnlyPubkeyHex ?? "");
+      if (storedInternalKeyHex && storedInternalKeyHex.length === 64) {
+        okInternalKey = schnorr.verify(sig64, payloadBuf, Buffer.from(storedInternalKeyHex, "hex"));
+      }
+      
+      server.log.info({
+        signatureHex: Buffer.from(sig64).toString("hex"),
+        payloadHex,
+        outputKeyHex: taprootOutputXOnlyHex,
+        internalKeyHex: storedInternalKeyHex || "(not stored)",
+        okOutputKey,
+        okInternalKey,
+      }, "Signature verification results");
+      
+      if (!okOutputKey) {
+        // If signature verifies against internal key but not output key, it's a BIP-86 tweak issue
+        const errorDetail = okInternalKey 
+          ? "Signature verifies against internal key but NOT the tweaked output key. The wallet may not be applying the BIP-86 tweak when signing."
+          : "Signature does not verify against either output key or internal key. Check that the wallet is signing the correct sighash.";
+        
+        server.log.warn(
+          {
+            storedSignWith,
+            payloadHex,
+            signature64Hex: body.signature64Hex ?? null,
+            taprootOutputXOnlyHex,
+            storedInternalKeyHex,
+            okInternalKey,
+            errorDetail
+          },
+          "Local schnorr.verify failed - rejecting"
+        );
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "InvalidSignature",
+          message: `Signature did not verify for Taproot output key (p2tr). ${errorDetail}`
+        });
+      }
+
+      // Additional debug-only sanity check: verify against the *internal* x-only key when we have it.
+      if (internalXOnlyPubkeyHex && internalXOnlyPubkeyHex.length === 64) {
+        const ok = schnorr.verify(
+          sig64,
+          payloadBuf,
+          Buffer.from(internalXOnlyPubkeyHex, "hex")
+        );
+        if (!ok) {
+          server.log.warn(
+            {
+              payloadHex,
+              signature64Hex: body.signature64Hex,
+              internalXOnlyPubkeyHex,
+              storedSignWith,
+              taprootOutputXOnlyHex
+            },
+            "Local schnorr.verify failed (internal key) - signature might still be valid for tweaked key"
+          );
+        }
+      }
 
       // Build the runtime tx and submit.
       const maybeMessage = SanitizedMessageUtil.createSanitizedMessage(instructions, payerPubkey, recentBlockhash);
@@ -695,7 +969,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       server.log.error(
         {
           archPayerPubkeyHex,
-          resolvedXOnlyPubkeyHex: resolved.xOnlyPubkeyHex,
+          internalXOnlyPubkeyHex,
           signature64Hex: body.signature64Hex,
           adjustedSigHex: Buffer.from(adjusted).toString("hex"),
           messageHashHex: Buffer.from(messageHash).toString("hex"),
@@ -718,10 +992,35 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       );
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
-      const txid = await submitArchTransaction({ nodeUrl: server.config.ARCH_RPC_NODE_URL, tx: runtimeTransaction });
+      server.log.info(
+        {
+          signingRequestId: row.id,
+          actionType: row.action_type,
+          nodeUrl: server.config.ARCH_RPC_NODE_URL,
+          signWith: storedSignWith
+        },
+        "arch.send_transaction.requested"
+      );
+      const txidHex = await submitArchTransaction({ nodeUrl: server.config.ARCH_RPC_NODE_URL, tx: runtimeTransaction });
+      // Arch RPC txids are 32-byte values; the RPC returns them as a 64-hex string.
+      // For client UX (wallet/explorer-like), we return base58 while preserving the hex for RPC lookups.
+      const txidBase58 = (() => {
+        try {
+          const buf = Buffer.from(txidHex, "hex");
+          return buf.length === 32 ? bs58.encode(buf) : null;
+        } catch {
+          return null;
+        }
+      })();
+      server.log.info(
+        { signingRequestId: row.id, txidHex, txidBase58, nodeUrl: server.config.ARCH_RPC_NODE_URL },
+        "arch.send_transaction.accepted"
+      );
 
-      const result = {
-        txid,
+      const submitResult = {
+        txid: txidBase58 ?? txidHex,
+        txidHex,
+        txidBase58,
         turnkeyActivityId: body.turnkeyActivityId ?? null,
         runtimeTransaction: {
           version: runtimeTransaction.version,
@@ -730,25 +1029,87 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         }
       };
 
+      // Persist as submitted immediately (tx broadcast).
       await withDbTransaction(db, async (client) => {
-        await markSigningRequestSubmitted(client, { id: row.id, submittedSignatureJson: submittedSigJson });
-        await markSigningRequestSucceeded(client, { id: row.id, resultJson: result });
-        await auditEvent({
-          client,
-          appId,
-          requestId: request.id,
-          userId: user.id,
-          eventType: "signing_request.succeeded",
-          entityType: "signing_request",
-          entityId: row.id,
-          turnkeyActivityId: body.turnkeyActivityId ?? null,
-          turnkeyRequestId: null,
-          payloadJson: { txid },
-          outcome: "succeeded"
+        await markSigningRequestSubmitted(client, {
+          id: row.id,
+          submittedSignatureJson: submittedSigJson,
+          resultJson: { txid: txidBase58 ?? txidHex, txidHex, txidBase58 }
         });
       });
 
-      return { signingRequestId: row.id, status: "succeeded", result };
+      // Best-effort: wait briefly for execution result so we can return a truthful status to clients/UX.
+      const processed = await waitForProcessedTransaction({
+        nodeUrl: server.config.ARCH_RPC_NODE_URL,
+        txid: txidHex,
+        timeoutMs: 10_000,
+        pollMs: 500
+      });
+      server.log.info(
+        {
+          signingRequestId: row.id,
+          txidHex,
+          txidBase58,
+          processedStatus: processed?.status?.type ?? "not_found",
+          processedMessage: (processed as any)?.status?.message ?? null
+        },
+        "arch.get_processed_transaction.result"
+      );
+
+      if (processed?.status?.type === "failed") {
+        const errorJson = {
+          txid: txidBase58 ?? txidHex,
+          txidHex,
+          txidBase58,
+          status: processed.status,
+          rollbackStatus: processed.rollback_status,
+          logs: processed.logs
+        };
+        await withDbTransaction(db, async (client) => {
+          await markSigningRequestFailed(client, { id: row.id, errorJson });
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: user.id,
+            eventType: "signing_request.failed",
+            entityType: "signing_request",
+            entityId: row.id,
+            turnkeyActivityId: body.turnkeyActivityId ?? null,
+            turnkeyRequestId: null,
+            payloadJson: errorJson,
+            outcome: "failed"
+          });
+        });
+        return { signingRequestId: row.id, status: "failed", result: errorJson };
+      }
+
+      if (processed?.status?.type === "processed") {
+        const result = {
+          ...submitResult,
+          processedTransaction: processed
+        };
+        await withDbTransaction(db, async (client) => {
+          await markSigningRequestSucceeded(client, { id: row.id, resultJson: result });
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: user.id,
+            eventType: "signing_request.succeeded",
+            entityType: "signing_request",
+            entityId: row.id,
+            turnkeyActivityId: body.turnkeyActivityId ?? null,
+            turnkeyRequestId: null,
+            payloadJson: { txid: submitResult.txid, txidHex: submitResult.txidHex, txidBase58: submitResult.txidBase58 },
+            outcome: "succeeded"
+          });
+        });
+        return { signingRequestId: row.id, status: "succeeded", result };
+      }
+
+      // Still processing / not found yet: return submitted so clients can poll.
+      return { signingRequestId: row.id, status: "submitted", result: submitResult };
     }
   );
 };

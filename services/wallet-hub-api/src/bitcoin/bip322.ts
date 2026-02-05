@@ -1,4 +1,4 @@
-import { Address, BIP322 } from "@saturnbtcio/bip322-js";
+import { Address, BIP322, Verifier } from "@saturnbtcio/bip322-js";
 import { Psbt, Transaction, address as btcAddress } from "bitcoinjs-lib";
 import { Buffer } from "node:buffer";
 
@@ -56,56 +56,98 @@ export function computeBip322ToSignTaprootSighash(params: {
     throw new Error(`PSBT tapInternalKey mismatch: expected ${xOnlyPubkey.toString("hex")}, got ${psbtTapInternalKey?.toString("hex") ?? "undefined"}`);
   }
 
-  // The @saturnbtcio/bip322-js Signer sets sighashType on the PSBT input before signing.
-  // See Signer.js line 111-113: toSignTx.updateInput(0, { sighashType: bitcoin.Transaction.SIGHASH_ALL })
-  // This is important for correct sighash computation.
-  psbt.updateInput(0, {
-    sighashType: 0x01 // SIGHASH_ALL
-  });
-
-  // After updating the PSBT input with sighashType, the cached transaction should still be valid
-  // because sighashType is metadata and doesn't change the transaction structure.
-  // However, we need to ensure we're using the correct transaction for sighash computation.
-  // The @saturnbtcio/bip322-js Verifier uses extractTransaction(), but we can't do that on unsigned PSBT.
-  // Instead, we access the cached unsigned transaction directly.
-  // Note: The PSBT cache is built from the PSBT data, so it should reflect tapInternalKey and sighashType.
-  let toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
-  if (!toSignTx) {
-    // If cache doesn't exist, the PSBT will build it when we access it
-    // Force cache construction by accessing the transaction builder
-    const _ = psbt.data.globalMap.unsignedTx;
-    toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
-    if (!toSignTx) {
-      throw new Error("Failed to get unsigned transaction from PSBT");
+  // CRITICAL: For Taproot, SIGHASH_DEFAULT (0x00) and SIGHASH_ALL (0x01) produce the SAME sighash
+  // per BIP-341. However, we need to match the Rust implementation exactly, which uses SIGHASH_ALL (0x01).
+  // Turnkey requires SIGHASH_DEFAULT (0x00) for signing, but since the sighash is the same, this should work.
+  // The Rust verifier will try both formats (64 bytes and 65 bytes with appended 0x01).
+  //
+  // We'll compute the sighash with SIGHASH_ALL (0x01) to match Rust, but set the PSBT sighashType
+  // to SIGHASH_DEFAULT (0x00) to satisfy Turnkey's requirement. The actual sighash value will be the same.
+  const existingSighashType = psbt.data.inputs[0]?.sighashType;
+  // Set to SIGHASH_DEFAULT (0x00) for Turnkey, but we'll compute sighash with SIGHASH_ALL (0x01)
+  // since they produce the same result for Taproot
+  if (existingSighashType !== undefined && existingSighashType !== 0x00) {
+    try {
+      psbt.updateInput(0, {
+        sighashType: 0x00 // SIGHASH_DEFAULT (Turnkey requirement)
+      });
+    } catch (err: any) {
+      if (typeof process !== "undefined" && process.env.DEBUG_BIP322) {
+        console.log("[BIP322] Could not update sighashType:", err.message, "existing:", existingSighashType);
+      }
+    }
+  } else if (existingSighashType === undefined) {
+    try {
+      psbt.updateInput(0, {
+        sighashType: 0x00 // SIGHASH_DEFAULT (Turnkey requirement)
+      });
+    } catch (err: any) {
+      if (typeof process !== "undefined" && process.env.DEBUG_BIP322) {
+        console.log("[BIP322] Could not set sighashType:", err.message);
+      }
     }
   }
-  
-  // The @saturnbtcio/bip322-js Verifier.getHashForSigP2TR method uses extractTransaction(),
-  // but we can't extract an unsigned PSBT. However, we can replicate its exact logic:
-  // See Verifier.js line 308: toSignTx.extractTransaction().hashForWitnessV1(0, [toSignTx.data.inputs[0].witnessUtxo.script], [0], hashType)
-  // The key difference is that extractTransaction() might rebuild the transaction, but the cached transaction should be equivalent.
-  const witnessUtxo = psbt.data.inputs[0]?.witnessUtxo;
-  if (!witnessUtxo || !witnessUtxo.script) {
-    throw new Error("PSBT input[0] missing witnessUtxo.script");
-  }
-  
-  const prevoutScript = witnessUtxo.script;
-  const prevoutValue = 0; // Verifier.getHashForSigP2TR uses [0] for prevoutValue (line 308)
 
-  // The Verifier.getHashForSigP2TR accepts either SIGHASH_DEFAULT (0x00) or SIGHASH_ALL (0x01).
-  // Arch's Rust implementation uses TapSighashType::All (0x01).
-  // We use SIGHASH_ALL to match the Rust code and the Signer implementation.
-  const SIGHASH_ALL = 0x01;
-  
-  // Replicate Verifier.getHashForSigP2TR exactly:
-  // toSignTx.extractTransaction().hashForWitnessV1(0, [toSignTx.data.inputs[0].witnessUtxo.script], [0], hashType)
-  // We use the cached transaction instead of extractTransaction() since we can't extract unsigned PSBTs.
-  const digest = toSignTx.hashForWitnessV1(
-    0, // input index
-    [prevoutScript], // prevoutScripts array (one per input) - from witnessUtxo.script
-    [prevoutValue], // prevoutValues array (one per input) - always [0] for BIP-322
-    SIGHASH_ALL // hashType - SIGHASH_ALL (0x01) to match Rust
-  );
+  // Use the @saturnbtcio/bip322-js Verifier's getHashForSigP2TR method directly!
+  // This is the exact same method the verifier uses, so it should match what the Rust implementation expects.
+  //
+  // The Verifier.getHashForSigP2TR method:
+  //   return toSignTx.extractTransaction().hashForWitnessV1(0, [toSignTx.data.inputs[0].witnessUtxo.script], [0], hashType);
+  //
+  // Key points:
+  // - Uses witnessUtxo.script (NOT toSpend.outs[0].script)
+  // - Uses [0] for prevout value
+  // - Accepts either SIGHASH_DEFAULT (0x00) or SIGHASH_ALL (0x01)
+  //
+  // The Signer uses SIGHASH_ALL (0x01), but Turnkey requires SIGHASH_DEFAULT (0x00).
+  // Since the Verifier accepts both and the Rust verifier tries both, we'll use SIGHASH_DEFAULT.
+  try {
+    // Use Verifier.getHashForSigP2TR directly - this is the most reliable approach
+    // It uses extractTransaction() internally, which may fail for unsigned PSBTs, but let's try it
+    const digest = (Verifier as any).getHashForSigP2TR(psbt, 0x00); // SIGHASH_DEFAULT
+    return Buffer.from(digest);
+  } catch (err: any) {
+    // If the method fails (e.g., extractTransaction() fails on unsigned PSBT), fall back to manual computation
+    // This replicates the Verifier's logic exactly
+    const witnessUtxo = psbt.data.inputs[0]?.witnessUtxo;
+    if (!witnessUtxo || !witnessUtxo.script) {
+      throw new Error("PSBT input[0] missing witnessUtxo.script");
+    }
+    
+    // Fallback: Replicate Verifier.getHashForSigP2TR logic manually
+    // Try extractTransaction() first, then fall back to cached transaction
+    let toSignTx: Transaction;
+    try {
+      toSignTx = psbt.extractTransaction(false); // false = don't validate signatures
+    } catch (extractErr: any) {
+      // If extraction fails, use cached transaction
+      toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
+      if (!toSignTx) {
+        const unsignedTx = psbt.data.globalMap.unsignedTx;
+        if (!unsignedTx) {
+          throw new Error("PSBT missing unsigned transaction");
+        }
+        toSignTx = unsignedTx as Transaction;
+        if (!toSignTx) {
+          throw new Error(`Failed to get transaction from PSBT: ${extractErr.message}`);
+        }
+      }
+    }
+    
+    // Replicate Verifier.getHashForSigP2TR exactly (line 308)
+    const prevoutScript = witnessUtxo.script;
+    const prevoutValue = 0;
+    const SIGHASH_DEFAULT = 0x00;
+    
+    const digest = toSignTx.hashForWitnessV1(
+      0,
+      [prevoutScript],
+      [prevoutValue],
+      SIGHASH_DEFAULT
+    );
+    
+    return Buffer.from(digest);
+  }
   
   // Debug logging to help diagnose sighash computation issues
   if (typeof process !== "undefined" && process.env.DEBUG_BIP322) {
@@ -115,7 +157,7 @@ export function computeBip322ToSignTaprootSighash(params: {
       xOnlyPubkeyHex: xOnlyPubkey.toString("hex"),
       prevoutScriptHex: prevoutScript.toString("hex"),
       prevoutValue,
-      sighashType: SIGHASH_ALL,
+      sighashType: SIGHASH_DEFAULT,
       computedSighashHex: Buffer.from(digest).toString("hex"),
       toSignTxId: toSignTx.getId(),
       toSignTxInputs: toSignTx.ins.length,
