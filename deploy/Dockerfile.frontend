@@ -1,7 +1,7 @@
 # Build stage
 FROM node:20-alpine AS builder
 
-ARG VITE_API_URL=http://localhost:3005/v1
+ARG VITE_WALLET_HUB_BASE_URL=http://localhost:3005/v1
 ARG VITE_WALLET_HUB_API_KEY=
 
 WORKDIR /app
@@ -17,7 +17,7 @@ COPY apps/demo-dapp ./
 RUN npm install --ignore-scripts
 
 # Set API URL and API key for build
-ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_WALLET_HUB_BASE_URL=$VITE_WALLET_HUB_BASE_URL
 ENV VITE_WALLET_HUB_API_KEY=$VITE_WALLET_HUB_API_KEY
 RUN npm run build
 

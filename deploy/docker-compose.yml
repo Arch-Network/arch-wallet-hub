@@ -40,6 +40,7 @@ services:
       INDEXER_BASE_URL: ${INDEXER_BASE_URL:-}
       INDEXER_API_KEY: ${INDEXER_API_KEY:-}
       ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: ${ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO:-false}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
     ports:
       - "3005:3005"
 
@@ -48,7 +49,7 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:3005/v1}
+        VITE_WALLET_HUB_BASE_URL: ${VITE_WALLET_HUB_BASE_URL:-http://localhost:3005/v1}
         VITE_WALLET_HUB_API_KEY: ${VITE_WALLET_HUB_API_KEY:-}
     container_name: wallet-hub-frontend
     restart: unless-stopped

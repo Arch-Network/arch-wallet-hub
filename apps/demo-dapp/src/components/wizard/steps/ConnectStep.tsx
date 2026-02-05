@@ -252,8 +252,8 @@ export default function ConnectStep({
         body: {
           externalUserId,
           walletName: newWalletName.trim(),
-          // Default to taproot testnet format
-          addressFormat: "ADDRESS_FORMAT_P2TR_TESTNET",
+          // Default to taproot testnet format (Turnkey format)
+          addressFormat: "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR",
         },
       });
 
