@@ -143,7 +143,7 @@ export default function ReviewStep({
     const submitRes = await client.submitSigningRequest(signingRequestId, {
       externalUserId,
       signature64Hex,
-      turnkeyActivityId: signResult.activityId,
+      turnkeyActivityId: signResult.activity?.id,
     });
 
     console.log("[Passkey] Submit response:", submitRes);

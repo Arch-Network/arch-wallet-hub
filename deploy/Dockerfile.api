@@ -3,41 +3,31 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
-COPY services/wallet-hub-api/package*.json ./services/wallet-hub-api/
-COPY packages/wallet-hub-sdk/package*.json ./packages/wallet-hub-sdk/
-
-# Install dependencies
-RUN npm ci --workspace=services/wallet-hub-api --workspace=packages/wallet-hub-sdk
-
-# Copy source
-COPY services/wallet-hub-api ./services/wallet-hub-api
-COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk
-
-# Build SDK first (dependency)
+# Copy SDK first (all files, then install)
+COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk/
 WORKDIR /app/packages/wallet-hub-sdk
-RUN npm run build || true
+RUN npm install --ignore-scripts && npm run build || true
 
-# Build API
+# Copy and build API
 WORKDIR /app/services/wallet-hub-api
+COPY services/wallet-hub-api ./
+RUN npm install --ignore-scripts
 RUN npm run build || true
 
 # Production stage
 FROM node:20-alpine
 
-WORKDIR /app
-
-# Copy built files and dependencies
-COPY --from=builder /app/services/wallet-hub-api ./services/wallet-hub-api
-COPY --from=builder /app/packages/wallet-hub-sdk ./packages/wallet-hub-sdk
-COPY --from=builder /app/node_modules ./node_modules
-COPY package*.json ./
-
-# Set working directory to API
 WORKDIR /app/services/wallet-hub-api
 
-# Run migrations on startup and then start server
+# Copy built files and dependencies
+COPY --from=builder /app/services/wallet-hub-api ./
+COPY --from=builder /app/packages/wallet-hub-sdk /app/packages/wallet-hub-sdk
+
+# Set environment
+ENV NODE_ENV=production
+ENV PORT=3005
+ENV DB_RUN_MIGRATIONS=true
+
 EXPOSE 3005
 
-CMD ["sh", "-c", "npm run migrate && npm start"]
+CMD ["npm", "start"]

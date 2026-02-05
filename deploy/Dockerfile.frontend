@@ -5,24 +5,17 @@ ARG VITE_API_URL=http://localhost:3005/v1
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
-COPY apps/demo-dapp/package*.json ./apps/demo-dapp/
-COPY packages/wallet-hub-sdk/package*.json ./packages/wallet-hub-sdk/
-
-# Install dependencies
-RUN npm ci --workspace=apps/demo-dapp --workspace=packages/wallet-hub-sdk
-
-# Copy source
-COPY apps/demo-dapp ./apps/demo-dapp
-COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk
-
-# Build SDK first
+# Copy SDK first (all files, then install)
+COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk/
 WORKDIR /app/packages/wallet-hub-sdk
-RUN npm run build || true
+RUN npm install --ignore-scripts && npm run build || true
 
-# Build frontend with API URL
+# Copy and build frontend
 WORKDIR /app/apps/demo-dapp
+COPY apps/demo-dapp ./
+RUN npm install --ignore-scripts
+
+# Set API URL and build
 ENV VITE_API_URL=$VITE_API_URL
 RUN npm run build
 
