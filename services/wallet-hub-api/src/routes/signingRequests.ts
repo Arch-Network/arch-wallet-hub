@@ -1112,4 +1112,113 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       return { signingRequestId: row.id, status: "submitted", result: submitResult };
     }
   );
+
+  // Sign and submit a signing request using Turnkey (server-side signing)
+  // This endpoint signs with Turnkey and then internally forwards to the submit endpoint
+  server.post(
+    "/signing-requests/:id/sign-with-turnkey",
+    {
+      schema: {
+        summary: "Sign a signing request using Turnkey (server-side)",
+        tags: ["signing-requests"],
+        params: Type.Object({ id: Type.String() }),
+        body: Type.Object({
+          externalUserId: Type.String({ minLength: 1 })
+        }),
+        response: { 200: SubmitSignatureResponse }
+      }
+    },
+    async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+      const db = getDbPool();
+      const { id } = request.params as any;
+      const body = request.body as any;
+
+      const externalUserId: string = body.externalUserId;
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId })
+      );
+
+      const row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
+      if (!row) return reply.notFound("Unknown signingRequestId");
+      if (row.user_id !== user.id) return reply.forbidden("Signing request does not belong to user");
+      if (row.status !== "pending") return reply.conflict(`Signing request status is ${row.status}`);
+      if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return reply.gone("Signing request expired");
+
+      // Get the Turnkey resource ID from the signing request
+      const turnkeyResourceId = (row as any).turnkey_resource_id;
+      if (!turnkeyResourceId) {
+        return reply.badRequest("Signing request was not created with a Turnkey signer");
+      }
+
+      const resource = await withDbTransaction(db, (client) =>
+        getTurnkeyResourceByIdForApp(client, { id: turnkeyResourceId, appId })
+      );
+      if (!resource) return reply.notFound("Turnkey resource not found");
+      if (resource.user_id !== user.id) return reply.forbidden("Turnkey resource does not belong to user");
+      if (!resource.default_address) return reply.badRequest("Turnkey resource has no default address");
+
+      // Check if this is a passkey wallet (sub-organization) - server can't sign for these
+      const rootOrgId = server.config.TURNKEY_ORGANIZATION_ID;
+      if (resource.organization_id !== rootOrgId) {
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "PasskeyWalletNotSupported",
+          message: "This wallet is a passkey wallet in a sub-organization. Server-side signing is not supported - the user's passkey must sign on the client side. Use an external wallet or a regular Turnkey wallet for server-side signing."
+        });
+      }
+
+      const payloadToSign: any = row.payload_to_sign ?? {};
+      const payloadHex = String(payloadToSign?.payloadHex ?? "");
+      if (!payloadHex || payloadHex.length !== 64) {
+        return reply.badRequest("Signing request missing taproot sighash payloadHex");
+      }
+
+      // Sign using Turnkey
+      let signature64Hex: string;
+      let turnkeyActivityId: string | null = null;
+      try {
+        const turnkey = getTurnkeyClient();
+        const signed = await turnkey.signRawPayload({
+          signWith: resource.default_address,
+          payload: payloadHex,
+          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+          hashFunction: "HASH_FUNCTION_NO_OP",
+          organizationId: resource.organization_id // Use sub-org ID for passkey wallets
+        });
+        signature64Hex = `${signed.r}${signed.s}`;
+        turnkeyActivityId = signed.activityId ?? null;
+        request.log.info(
+          { activityId: signed.activityId, resourceId: turnkeyResourceId, signingRequestId: row.id, organizationId: resource.organization_id },
+          "turnkey.sign_signing_request.completed"
+        );
+      } catch (e: any) {
+        request.log.error(
+          { err: e, resourceId: turnkeyResourceId, signingRequestId: row.id, organizationId: resource.organization_id, defaultAddress: resource.default_address },
+          "turnkey.sign_signing_request.failed"
+        );
+        return reply.internalServerError(`Turnkey signing failed: ${e?.message ?? "Unknown error"}`);
+      }
+
+      // Now forward to the submit endpoint by injecting the request
+      const submitResponse = await server.inject({
+        method: "POST",
+        url: `/v1/signing-requests/${id}/submit`,
+        headers: {
+          "x-api-key": request.headers["x-api-key"] as string,
+          "content-type": "application/json"
+        },
+        payload: {
+          externalUserId,
+          signature64Hex,
+          turnkeyActivityId
+        }
+      });
+
+      // Forward the response
+      reply.code(submitResponse.statusCode);
+      return submitResponse.json();
+    }
+  );
 };

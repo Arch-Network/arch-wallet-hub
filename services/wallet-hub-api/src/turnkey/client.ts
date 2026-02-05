@@ -68,6 +68,7 @@ type SignRawPayloadParams = {
   payload: string;
   encoding: "PAYLOAD_ENCODING_TEXT_UTF8" | "PAYLOAD_ENCODING_HEXADECIMAL";
   hashFunction: "HASH_FUNCTION_NO_OP" | "HASH_FUNCTION_SHA256";
+  organizationId?: string; // Optional: override for sub-organization signing
 };
 
 type SignRawPayloadResult = {
@@ -137,14 +138,15 @@ export class TurnkeyService {
     return await this.client.getWhoami({ organizationId: this.organizationId });
   }
 
-  private async pollActivity(activityId: string) {
+  private async pollActivity(activityId: string, organizationId?: string) {
     // Keep polling conservative for Phase 0; callers should expect < a few seconds.
     const maxAttempts = 60;
     const delayMs = 500;
+    const orgId = organizationId ?? this.organizationId;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const res = await this.client.getActivity({
-        organizationId: this.organizationId,
+        organizationId: orgId,
         activityId
       });
 
@@ -304,10 +306,11 @@ export class TurnkeyService {
   async signRawPayload(
     params: SignRawPayloadParams
   ): Promise<SignRawPayloadResult> {
+    const targetOrgId = params.organizationId ?? this.organizationId;
     const res = await this.client.signRawPayload({
       type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
       timestampMs: nowMs(),
-      organizationId: this.organizationId,
+      organizationId: targetOrgId,
       parameters: {
         signWith: params.signWith,
         payload: params.payload,
@@ -317,7 +320,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, targetOrgId);
 
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnky signRawPayload did not complete: ${activityId}`);

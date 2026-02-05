@@ -62,7 +62,9 @@ const GetWalletResponse = Type.Object({
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   defaultAddressFormat: Type.Union([Type.String(), Type.Null()]),
   defaultDerivationPath: Type.Union([Type.String(), Type.Null()]),
-  createdAt: Type.String()
+  createdAt: Type.String(),
+  // True if wallet is in root org (server can sign), false if passkey wallet in sub-org (client must sign)
+  isCustodial: Type.Boolean()
 });
 
 const ListWalletsResponse = Type.Object({
@@ -474,6 +476,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         listTurnkeyResourcesForUserForApp(client, { appId, userId: user.id })
       );
 
+      const rootOrgId = server.config.TURNKEY_ORGANIZATION_ID;
       return {
         externalUserId,
         userId: user.id,
@@ -488,7 +491,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           defaultPublicKeyHex: (row as any).default_public_key_hex ?? null,
           defaultAddressFormat: row.default_address_format,
           defaultDerivationPath: row.default_derivation_path,
-          createdAt: row.created_at
+          createdAt: row.created_at,
+          isCustodial: row.organization_id === rootOrgId
         }))
       };
     }
@@ -522,6 +526,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       if (!row) return reply.notFound();
       if (row.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
 
+      const rootOrgId = server.config.TURNKEY_ORGANIZATION_ID;
       return {
         id: row.id,
         userId: row.user_id,
@@ -533,7 +538,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         defaultPublicKeyHex: (row as any).default_public_key_hex ?? null,
         defaultAddressFormat: row.default_address_format,
         defaultDerivationPath: row.default_derivation_path,
-        createdAt: row.created_at
+        createdAt: row.created_at,
+        isCustodial: row.organization_id === rootOrgId
       };
     }
   );

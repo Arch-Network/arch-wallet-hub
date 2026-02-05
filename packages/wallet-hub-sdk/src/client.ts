@@ -143,4 +143,11 @@ export class WalletHubClient {
       body: JSON.stringify(body)
     });
   }
+
+  async signWithTurnkey(id: string, body: { externalUserId: string }): Promise<SubmitSigningResponse> {
+    return await this.requestJson(`/signing-requests/${encodeURIComponent(id)}/sign-with-turnkey`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  }
 }
