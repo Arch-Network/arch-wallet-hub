@@ -154,22 +154,30 @@ async function computeBtcUtxoReadiness(params: {
     return { status: "unknown", reason: `ArchRpcError: ${msg}` } as const;
   }
 
-  // Some Arch deployments allow arch transfers without anchoring to a BTC UTXO.
-  // In that configuration, skip *all* BTC readiness checks (including confirmations).
-  if (!params.requireAnchoredUtxo) {
-    return { status: "ready", reason: "AnchorNotRequired" } as const;
-  }
-
+  // Check if the account has a UTXO anchor. On Arch Network, the system program
+  // requires UTXO data to generate the "transaction to sign". Without this, transfers
+  // will fail with "Transaction to sign empty".
   const anchored = parseAnchoredUtxo(String(accInfo?.utxo ?? ""));
-  if (!anchored) {
-    return params.requireAnchoredUtxo
-      ? ({ status: "not_ready", reason: "NotAnchored" } as const)
-      : ({ status: "ready", reason: "AnchorNotRequired" } as const);
+  
+  // Sentinel value "0000...0000:0" or missing UTXO means account is not anchored.
+  const isNullUtxo = !anchored || 
+    (anchored.txid === "0000000000000000000000000000000000000000000000000000000000000000" && anchored.vout === 0);
+  
+  if (isNullUtxo) {
+    // Even if requireAnchoredUtxo is false, the Arch system program still needs UTXO data.
+    // Return not_ready so users know they need to anchor a UTXO first.
+    return { 
+      status: "not_ready", 
+      reason: "NotAnchored",
+      message: "Account has no UTXO anchor. You must first anchor a BTC UTXO to this account before transferring ARCH tokens.",
+      anchoredUtxo: anchored ?? undefined
+    } as const;
   }
-
-  // Sentinel value "0000...0000:0" means account is not anchored.
-  if (anchored.txid === "0000000000000000000000000000000000000000000000000000000000000000" && anchored.vout === 0) {
-    return { status: "not_ready", reason: "NotAnchored", anchoredUtxo: anchored } as const;
+  
+  // If requireAnchoredUtxo is false, we have a UTXO but skip confirmation checks.
+  // This allows faster transfers when the deployment doesn't require confirmed UTXOs.
+  if (!params.requireAnchoredUtxo) {
+    return { status: "ready", reason: "AnchorNotRequired", anchoredUtxo: anchored } as const;
   }
 
   if (!params.btc) {

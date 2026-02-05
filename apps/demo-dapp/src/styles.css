@@ -1557,6 +1557,17 @@ button:disabled {
   transform: none;
 }
 
+.anchor-info {
+  margin-top: var(--spacing-xs);
+}
+
+.anchor-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
 .review-loading {
   display: flex;
   flex-direction: column;

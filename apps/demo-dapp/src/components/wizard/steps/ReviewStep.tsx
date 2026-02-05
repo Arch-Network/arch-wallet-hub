@@ -579,13 +579,15 @@ export default function ReviewStep({
             <span className="review-warning-icon">⚠️</span>
             <div className="review-warning-content">
               <span>
-                {readiness.reason === "NotAnchored"
-                  ? "Account has no ARCH balance. Request an airdrop to fund the account."
+                {readiness.message 
+                  ? readiness.message
+                  : readiness.reason === "NotAnchored"
+                  ? "Account has no UTXO anchor. You must first send BTC to the account's Taproot address and anchor the UTXO before transferring ARCH tokens."
                   : readiness.reason === "ArchAccountNotFound"
-                  ? "Arch account does not exist or has no balance. Request an airdrop to create and fund the account."
-                  : readiness.message || readiness.reason}
+                  ? "Arch account does not exist. Request an airdrop to create the account, then anchor a BTC UTXO."
+                  : readiness.reason}
               </span>
-              {(readiness.reason === "ArchAccountNotFound" || readiness.reason === "NotAnchored") && (
+              {readiness.reason === "ArchAccountNotFound" && (
                 <button
                   className="btn-airdrop"
                   onClick={handleAirdrop}
@@ -603,6 +605,13 @@ export default function ReviewStep({
                     "🪂 Request Airdrop"
                   )}
                 </button>
+              )}
+              {readiness.reason === "NotAnchored" && (
+                <div className="anchor-info">
+                  <p className="anchor-hint">
+                    To anchor a UTXO: Send testnet BTC to the account's Taproot address, then use the "Anchor UTXO" action.
+                  </p>
+                </div>
               )}
             </div>
           </div>
