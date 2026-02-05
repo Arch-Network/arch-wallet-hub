@@ -2052,6 +2052,31 @@ button:disabled {
   color: #a78bfa;
 }
 
+/* Explorer Link */
+.explorer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+  color: white;
+  text-decoration: none;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.explorer-link:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+}
+
+.explorer-link .external-icon {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
 /* Create Wallet Section */
 .turnkey-create-section {
   padding-top: var(--spacing-md);

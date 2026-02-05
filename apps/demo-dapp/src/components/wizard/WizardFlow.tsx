@@ -236,6 +236,7 @@ export default function WizardFlow({
           <CompleteStep
             result={result}
             onStartNew={resetWizard}
+            network={wallet?.network}
           />
         );
       default:

@@ -3,10 +3,21 @@ import type { TransactionResult } from "../WizardFlow";
 interface CompleteStepProps {
   result: TransactionResult | null;
   onStartNew: () => void;
+  network?: string;
 }
 
-export default function CompleteStep({ result, onStartNew }: CompleteStepProps) {
+function getExplorerUrl(txid: string, network?: string): string {
+  // Testnet4/Testnet use testnet explorer, Mainnet uses mainnet explorer
+  const isMainnet = network?.toLowerCase() === "mainnet";
+  if (isMainnet) {
+    return `https://explorer.arch.network/tx/${txid}`;
+  }
+  return `https://explorer.arch.network/testnet/tx/${txid}`;
+}
+
+export default function CompleteStep({ result, onStartNew, network }: CompleteStepProps) {
   const isSuccess = result?.success ?? false;
+  const explorerUrl = result?.txid ? getExplorerUrl(result.txid, network) : null;
 
   return (
     <div className="step-container complete-step">
@@ -44,6 +55,24 @@ export default function CompleteStep({ result, onStartNew }: CompleteStepProps) 
               </button>
             </div>
           </div>
+
+          {/* Explorer Link */}
+          {explorerUrl && (
+            <div className="complete-detail-row">
+              <span className="complete-detail-label">View on Explorer</span>
+              <div className="complete-detail-value">
+                <a 
+                  href={explorerUrl} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="explorer-link"
+                >
+                  <span>Arch Explorer</span>
+                  <span className="external-icon">↗</span>
+                </a>
+              </div>
+            </div>
+          )}
 
           {result.signingRequestId && (
             <div className="complete-detail-row">
