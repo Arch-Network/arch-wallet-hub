@@ -1,0 +1,1895 @@
+openapi: 3.1.0
+info:
+  title: Arch Indexer API
+  version: "1.0.0"
+  description: >
+    Public, non-internal HTTP API for querying indexed Arch blockchain data.
+    This specification intentionally excludes internal management endpoints that
+    are only available to the Explorer / Developer Portal via session
+    authentication or internal keys.
+
+servers:
+  - url: https://api.arch.network
+    description: Production (example)
+  - url: http://localhost:3002
+    description: Local API server
+  - url: http://localhost:3000
+    description: Local Next.js dev server (proxying /api/*)
+
+security:
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: api-key
+      description: >
+        API key to authenticate requests. Send as `Authorization: Bearer <key>`
+        or `X-API-Key: <key>`.
+
+  parameters:
+    LimitParam:
+      name: limit
+      in: query
+      description: Maximum number of items to return.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    OffsetParam:
+      name: offset
+      in: query
+      description: Number of items to skip before starting to return results.
+      required: false
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  schemas:
+    TokenHolding:
+      type: object
+      properties:
+        mint_address:
+          type: string
+          description: Mint address (base58).
+        mint_address_hex:
+          type: string
+          description: Mint address (hex).
+        token_account_address:
+          type: string
+          description: Token account address (base58).
+        name:
+          type: string
+          nullable: true
+          description: Token name from metadata, null if unavailable.
+        symbol:
+          type: string
+          nullable: true
+          description: Token symbol from metadata, null if unavailable.
+        decimals:
+          type: integer
+          description: Decimal precision of the token.
+        image:
+          type: string
+          nullable: true
+          description: Token image URL from metadata, null if unavailable.
+        amount:
+          type: string
+          description: Raw balance as a string (u64 safe).
+        ui_amount:
+          type: string
+          description: Human-readable balance (amount / 10^decimals).
+        state:
+          type: string
+          enum: [uninitialized, initialized, frozen]
+          description: Account state.
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      additionalProperties: true
+
+    BlockSummary:
+      type: object
+      description: Light summary of a block.
+      properties:
+        height:
+          type: integer
+          example: 12345
+        hash:
+          type: string
+          example: "0xabc123..."
+        parent_hash:
+          type: string
+          example: "0xdef456..."
+        timestamp:
+          type: string
+          format: date-time
+        transaction_count:
+          type: integer
+      additionalProperties: true
+
+    TokenTransferSummary:
+      type: object
+      description: Best-effort summary for the first token transfer found in a transaction.
+      properties:
+        program_id:
+          type: [string, "null"]
+        source_account:
+          type: [string, "null"]
+        destination_account:
+          type: [string, "null"]
+        mint:
+          type: [string, "null"]
+        amount:
+          type: [string, "null"]
+          description: Raw integer amount as a string (DB decimal -> text).
+        decimals:
+          type: [integer, "null"]
+        authority:
+          type: [string, "null"]
+      additionalProperties: true
+
+    TransactionListItem:
+      type: object
+      description: Transaction list item (newest-first).
+      properties:
+        txid:
+          type: string
+        block_height:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+          description: Indexer insertion time (can be non-monotonic after backfills).
+        confirmed_at:
+          type: string
+          format: date-time
+          description: On-chain confirmation time (from the associated block).
+        status:
+          description: Runtime status payload (shape is chain-dependent).
+          type: object
+          additionalProperties: true
+        data:
+          description: Runtime transaction payload (raw).
+          type: object
+          additionalProperties: true
+        bitcoin_txids:
+          type: [array, "null"]
+          items:
+            type: string
+        instructions:
+          description: Compact “chip” labels derived from decoded instructions.
+          type: array
+          items:
+            type: string
+        fee_estimated_arch:
+          type: [number, "null"]
+        from_address:
+          type: [string, "null"]
+          description: Best-effort sender (fee payer / first account key).
+        to_address:
+          type: [string, "null"]
+          description: Best-effort receiver (token destination account when available).
+        programs:
+          type: array
+          items:
+            type: string
+          description: Program ids involved (base58 when possible; falls back to hex).
+        token_mints:
+          type: array
+          items:
+            type: string
+          description: Token mint ids involved (base58 when possible; falls back to hex).
+        token_transfer:
+          type: [object, "null"]
+          $ref: "#/components/schemas/TokenTransferSummary"
+      additionalProperties: true
+
+    TransactionListResponse:
+      type: object
+      properties:
+        total_count:
+          description: Exact total count when include_total=true, otherwise null.
+          oneOf:
+            - type: integer
+            - type: "null"
+        next_cursor:
+          description: 'Cursor for fetching the next page (null when no more results). Format: "<block_height>:<txid>".'
+          oneOf:
+            - type: string
+            - type: "null"
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionListItem"
+      additionalProperties: true
+
+    TransactionDetails:
+      type: object
+      description: Transaction details.
+      properties:
+        txid:
+          type: string
+        block_height:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        status:
+          type: object
+          additionalProperties: true
+        data:
+          type: object
+          additionalProperties: true
+        bitcoin_txids:
+          type: [array, "null"]
+          items:
+            type: string
+        logs:
+          type: [array, "null"]
+          items:
+            type: string
+      additionalProperties: true
+
+    ProgramTransactionSummaryItem:
+      type: object
+      description: Minimal transaction fields for program transaction list UIs.
+      properties:
+        txid:
+          type: string
+        block_height:
+          type: integer
+        status:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        confirmed_at:
+          type: string
+          format: date-time
+        instructions:
+          type: array
+          items:
+            type: string
+      additionalProperties: true
+
+    ProgramTransactionsSummaryResponse:
+      type: object
+      properties:
+        total_count:
+          type: integer
+        transactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProgramTransactionSummaryItem"
+      additionalProperties: true
+
+    TransactionSummary:
+      type: object
+      properties:
+        txid:
+          type: string
+          example: "0xdeadbeef..."
+        slot:
+          type: integer
+        height:
+          type: integer
+        success:
+          type: boolean
+        fee:
+          type: string
+          description: Fee in lamports (string for 64-bit safety).
+      additionalProperties: true
+
+    AccountSummary:
+      type: object
+      properties:
+        address:
+          type: string
+        address_hex:
+          type: string
+        balance:
+          type: string
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+      additionalProperties: true
+
+    TokenDetail:
+      type: object
+      properties:
+        mint_address:
+          type: string
+        mint_address_hex:
+          type: string
+        program_id:
+          type: string
+        decimals:
+          type: integer
+        supply:
+          type: string
+        name:
+          type: string
+        symbol:
+          type: string
+        image:
+          type: string
+        description:
+          type: string
+      additionalProperties: true
+
+    NetworkStats:
+      type: object
+      properties:
+        total_transactions:
+          type: integer
+        total_blocks:
+          type: integer
+        indexed_height:
+          type: integer
+        latest_block_height:
+          type: integer
+        current_tps:
+          type: number
+        average_tps:
+          type: number
+        peak_tps:
+          type: number
+        daily_transactions:
+          type: integer
+      additionalProperties: true
+
+    BtcAddressStats:
+      type: object
+      properties:
+        funded_txo_count:
+          type: integer
+        funded_txo_sum:
+          type: integer
+          description: Total satoshis received.
+        spent_txo_count:
+          type: integer
+        spent_txo_sum:
+          type: integer
+          description: Total satoshis spent.
+
+    BtcAddressSummary:
+      type: object
+      properties:
+        address:
+          type: string
+        chain_stats:
+          $ref: "#/components/schemas/BtcAddressStats"
+        mempool_stats:
+          $ref: "#/components/schemas/BtcAddressStats"
+      additionalProperties: true
+
+    BtcTxStatus:
+      type: object
+      properties:
+        confirmed:
+          type: boolean
+        block_height:
+          type: integer
+          nullable: true
+        block_hash:
+          type: string
+          nullable: true
+        block_time:
+          type: integer
+          nullable: true
+          description: Unix epoch seconds.
+
+    BtcUtxo:
+      type: object
+      properties:
+        txid:
+          type: string
+        vout:
+          type: integer
+        value:
+          type: integer
+          description: Value in satoshis.
+        status:
+          $ref: "#/components/schemas/BtcTxStatus"
+
+    BtcTxOutput:
+      type: object
+      properties:
+        scriptpubkey:
+          type: string
+        scriptpubkey_asm:
+          type: string
+          nullable: true
+        scriptpubkey_type:
+          type: string
+          nullable: true
+        scriptpubkey_address:
+          type: string
+          nullable: true
+        value:
+          type: integer
+      additionalProperties: true
+
+    BtcTxInput:
+      type: object
+      properties:
+        txid:
+          type: string
+        vout:
+          type: integer
+        prevout:
+          $ref: "#/components/schemas/BtcTxOutput"
+          nullable: true
+        scriptsig:
+          type: string
+        witness:
+          type: array
+          items:
+            type: string
+          nullable: true
+        is_coinbase:
+          type: boolean
+        sequence:
+          type: integer
+      additionalProperties: true
+
+    BtcTransaction:
+      type: object
+      properties:
+        txid:
+          type: string
+        version:
+          type: integer
+        locktime:
+          type: integer
+        vin:
+          type: array
+          items:
+            $ref: "#/components/schemas/BtcTxInput"
+        vout:
+          type: array
+          items:
+            $ref: "#/components/schemas/BtcTxOutput"
+        size:
+          type: integer
+        weight:
+          type: integer
+        fee:
+          type: integer
+          description: Fee in satoshis.
+        status:
+          $ref: "#/components/schemas/BtcTxStatus"
+      additionalProperties: true
+
+    BtcChainTip:
+      type: object
+      properties:
+        height:
+          type: integer
+        hash:
+          type: string
+
+    BtcBlockInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Block hash.
+        height:
+          type: integer
+        version:
+          type: integer
+        timestamp:
+          type: integer
+          description: Unix epoch seconds.
+        tx_count:
+          type: integer
+        size:
+          type: integer
+        weight:
+          type: integer
+        merkle_root:
+          type: string
+        previousblockhash:
+          type: string
+          nullable: true
+        nonce:
+          type: integer
+      additionalProperties: true
+
+tags:
+  - name: Auth
+    description: Authentication and plan discovery.
+  - name: Blocks
+    description: Indexed blocks and block metadata.
+  - name: Transactions
+    description: Transactions and related views.
+  - name: Accounts
+    description: Accounts, balances, and activity.
+  - name: Tokens
+    description: Tokens, holders, and analytics.
+  - name: Programs
+    description: On-chain programs and their activity.
+  - name: Network
+    description: High-level network statistics.
+  - name: Search
+    description: Cross-entity search.
+  - name: Realtime
+    description: Realtime indexing and WebSocket helpers.
+  - name: Mempool
+    description: Pending transactions in the mempool.
+  - name: Validators
+    description: Validators and staking-related data.
+  - name: Faucet
+    description: Request airdrop tokens on testnet or mainnet.
+  - name: Bitcoin
+    description: >
+      Bitcoin blockchain data proxied from the Titan indexer (Esplora-compatible).
+      Includes address UTXOs, transaction lookup, fee estimates, broadcast, and
+      chain-tip queries. All endpoints are also available under
+      /api/v1/{network}/bitcoin/... for explicit network selection.
+
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new API account
+      description: Create a new Arch Indexer API account and initial login.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+            example:
+              email: "you@example.com"
+              password: "a-strong-password"
+      responses:
+        "200":
+          description: Account created.
+          content:
+            application/json:
+              example:
+                message: "Account created"
+        "400":
+          description: Validation error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and start a session
+      description: >
+        Login with email and password. Returns a session cookie when called from
+        a browser; backend clients typically use API keys instead of sessions.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        "200":
+          description: Login successful.
+          content:
+            application/json:
+              example:
+                message: "Logged in"
+        "401":
+          description: Invalid credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/plans:
+    get:
+      tags: [Auth]
+      summary: List available plans
+      description: Public information about Free and Enterprise plans.
+      security: []
+      responses:
+        "200":
+          description: List of plans.
+          content:
+            application/json:
+              example:
+                plans:
+                  - id: "free"
+                    name: "Free"
+                    monthly_quota: 30000000
+                  - id: "enterprise"
+                    name: "Enterprise"
+                    monthly_quota: null
+
+  /api/v1/blocks:
+    get:
+      tags: [Blocks]
+      summary: List recent blocks
+      parameters:
+        - name: before
+          in: query
+          description: Return blocks with height less than this value.
+          required: false
+          schema:
+            type: integer
+        - name: after
+          in: query
+          description: Return blocks with height greater than this value.
+          required: false
+          schema:
+            type: integer
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paged list of blocks.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  blocks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BlockSummary"
+              example:
+                blocks:
+                  - height: 12345
+                    hash: "0xabc123..."
+                    parent_hash: "0xdef456..."
+                    timestamp: "2025-01-01T00:00:00Z"
+                    transaction_count: 42
+
+  /api/v1/blocks/height/{height}:
+    get:
+      tags: [Blocks]
+      summary: Get a block by height
+      parameters:
+        - name: height
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Block found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockSummary"
+        "404":
+          description: Block not found.
+
+  /api/v1/blocks/{blockhash}:
+    get:
+      tags: [Blocks]
+      summary: Get a block by hash
+      parameters:
+        - name: blockhash
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Block found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockSummary"
+        "404":
+          description: Block not found.
+
+  /api/v1/transactions:
+    get:
+      tags: [Transactions]
+      summary: List recent transactions
+      parameters:
+        - name: address
+          in: query
+          required: false
+          description: Filter by account or program address.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/LimitParam"
+        - name: cursor
+          in: query
+          required: false
+          description: Cursor for keyset pagination. Format "<block_height>:<txid>". When provided, `offset` is ignored.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/OffsetParam"
+        - name: include_total
+          in: query
+          required: false
+          description: When true, include an exact (and potentially expensive) total count.
+          schema:
+            type: boolean
+            default: false
+        - name: confirmed_after
+          in: query
+          required: false
+          description: "Inclusive lower bound for confirmed_at (RFC3339 or YYYY-MM-DD). Alias: from"
+          schema:
+            type: string
+        - name: confirmed_before
+          in: query
+          required: false
+          description: "Exclusive upper bound for confirmed_at (RFC3339 or YYYY-MM-DD). Alias: to"
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paged list of transactions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionListResponse"
+              example:
+                total_count: null
+                transactions:
+                  - txid: "e34936bc84a8be4ca73e99f2cc10a6df86b2aa38f31f3ed848d139bc6f618b66"
+                    block_height: 222000
+                    created_at: "2025-12-18T17:41:58.653102Z"
+                    confirmed_at: "2025-12-16T13:05:03.939320Z"
+                    instructions: ["TransferChecked"]
+                    fee_estimated_arch: 0.000005
+                    programs: ["APLToken111111111111111111111111111111111"]
+                    token_mints: []
+                    from_address: "..."
+                    to_address: null
+                    token_transfer: null
+
+  /api/v1/transactions/summary:
+    get:
+      tags: [Transactions]
+      summary: List recent transactions (summary)
+      description: >
+        Lightweight listing intended for UIs and high-throughput consumers.
+        Returns minimal fields and avoids returning the full runtime transaction payload.
+        Supports cursor pagination via `cursor=<block_height>:<txid>`.
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+        - name: cursor
+          in: query
+          required: false
+          description: Cursor for keyset pagination. Format "<block_height>:<txid>". When provided, `offset` is ignored.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/OffsetParam"
+        - name: include_total
+          in: query
+          required: false
+          description: When true, include an exact (and potentially expensive) total count.
+          schema:
+            type: boolean
+            default: false
+        - name: confirmed_after
+          in: query
+          required: false
+          description: "Inclusive lower bound for confirmed_at (RFC3339 or YYYY-MM-DD). Alias: from"
+          schema:
+            type: string
+        - name: confirmed_before
+          in: query
+          required: false
+          description: "Exclusive upper bound for confirmed_at (RFC3339 or YYYY-MM-DD). Alias: to"
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paged list of transaction summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count:
+                    oneOf:
+                      - type: integer
+                      - type: "null"
+                  next_cursor:
+                    oneOf:
+                      - type: string
+                      - type: "null"
+                  transactions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        txid: { type: string }
+                        block_height: { type: integer }
+                        status: { type: object, additionalProperties: true }
+                        created_at: { type: string, format: date-time }
+                        confirmed_at: { type: string, format: date-time }
+                      additionalProperties: true
+                additionalProperties: true
+
+  /api/v1/transactions/{txid}:
+    get:
+      tags: [Transactions]
+      summary: Get transaction by ID
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionDetails"
+              example:
+                txid: "0xdeadbeef..."
+                block_height: 12345
+                created_at: "2025-01-01T00:01:00Z"
+                bitcoin_txids: []
+                logs: null
+        "404":
+          description: Transaction not found.
+
+  /api/v1/transactions/{txid}/execution:
+    get:
+      tags: [Transactions]
+      summary: Get transaction execution details
+      description: Get execution details including status, logs, compute units, and CPI information.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Execution details.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                status: "Ok"
+                logs:
+                  - "Program log: Instruction 1"
+                  - "Program log: Instruction 2"
+                compute_units_consumed: 150000
+                has_cpi: true
+                cpi_count: 3
+        "404":
+          description: Transaction not found.
+
+  /api/v1/transactions/{txid}/participants:
+    get:
+      tags: [Transactions]
+      summary: Get transaction participants
+      description: Get all accounts (participants) involved in the transaction with their roles and balances.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of participants.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    address_hex:
+                      type: string
+                    address_base58:
+                      type: string
+                    is_signer:
+                      type: boolean
+                    is_writable:
+                      type: boolean
+                    is_readonly:
+                      type: boolean
+                    is_fee_payer:
+                      type: boolean
+              example:
+                - address_hex: "0x00112233..."
+                  address_base58: "arch1xyz..."
+                  is_signer: true
+                  is_writable: true
+                  is_readonly: false
+                  is_fee_payer: true
+        "404":
+          description: Transaction not found.
+
+  /api/v1/transactions/{txid}/instructions:
+    get:
+      tags: [Transactions]
+      summary: Get transaction instructions
+      description: Get the list of instructions executed in the transaction.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of instructions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+              example:
+                - program_id: "11111111111111111111111111111111"
+                  accounts: []
+                  data: "AQAAAAA="
+        "404":
+          description: Transaction not found.
+
+  /api/v1/transactions/{txid}/tree:
+    get:
+      tags: [Transactions]
+      summary: Get transaction instruction tree
+      description: Get the hierarchical instruction tree showing nested CPI (Cross-Program Invocation) structure.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Instruction tree.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+              example:
+                - index: 0
+                  program_id_base58: "11111111111111111111111111111111"
+                  children: []
+        "404":
+          description: Transaction not found.
+
+  /api/v1/transactions/{txid}/metrics:
+    get:
+      tags: [Transactions]
+      summary: Get transaction metrics
+      description: Get performance metrics including compute units consumed, timing, and execution statistics.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction metrics.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  txid:
+                    type: string
+                  compute_units_consumed:
+                    type: integer
+                    nullable: true
+                  fee_priority:
+                    type: integer
+                    nullable: true
+                  size_bytes:
+                    type: integer
+                    nullable: true
+                  in_mempool:
+                    type: boolean
+                  created_at:
+                    type: string
+                    format: date-time
+                    nullable: true
+              example:
+                txid: "0xdeadbeef..."
+                compute_units_consumed: 150000
+                fee_priority: 100
+                size_bytes: 512
+                in_mempool: false
+                created_at: "2025-01-01T00:01:00Z"
+        "404":
+          description: Transaction not found.
+
+  /api/v1/accounts/{address}:
+    get:
+      tags: [Accounts]
+      summary: Get account summary
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Account summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountSummary"
+              example:
+                address: "arch1xyz..."
+                address_hex: "0x00112233..."
+                balance: "123.456"
+                first_seen_at: "2025-01-01T00:00:00Z"
+                last_seen_at: "2025-01-02T12:34:56Z"
+        "404":
+          description: Account not found.
+
+  /api/v1/accounts/{address}/tokens:
+    get:
+      tags: [Accounts]
+      summary: Get APL tokens held by an address
+      description: >
+        Returns all APL token balances for a given owner address, including
+        mint info, decimals, human-readable amounts, and metadata (name,
+        symbol, image) when available.
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Owner address (base58 or hex).
+      responses:
+        "200":
+          description: Token holdings for the address.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  owner:
+                    type: string
+                    description: The queried owner address (base58).
+                  tokens:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TokenHolding"
+              example:
+                owner: "4EvgGQJk...9PRjcp"
+                tokens:
+                  - mint_address: "ATokenMint..."
+                    mint_address_hex: "0a1b2c..."
+                    token_account_address: "5FTokenAcct..."
+                    name: "My Token"
+                    symbol: "MTK"
+                    decimals: 8
+                    image: "https://example.com/token.png"
+                    amount: "1000000000"
+                    ui_amount: "10.00000000"
+                    state: "initialized"
+        "400":
+          description: Invalid address format.
+
+  /api/v1/accounts/{address}/transactions:
+    get:
+      tags: [Accounts]
+      summary: List transactions for an account
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paged list of transactions involving the account.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TransactionSummary"
+              example:
+                transactions:
+                  - txid: "0xdeadbeef..."
+                    slot: 100
+                    height: 12345
+                    success: true
+                    fee: "5000"
+
+  /api/v1/tokens:
+    get:
+      tags: [Tokens]
+      summary: List tokens
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Search by mint address, symbol, or name.
+          schema:
+            type: string
+        - name: sort
+          in: query
+          required: false
+          description: >
+            Sort key, e.g. `holders`, `supply`, `name`, `first_seen_at`,
+            optionally with `:asc` or `:desc`.
+          schema:
+            type: string
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Token list with basic stats.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TokenDetail"
+              example:
+                page: 1
+                limit: 2
+                total: 2
+                results:
+                  - mint_address: "ARCHTOKEN..."
+                    mint_address_hex: "0xabc123..."
+                    program_id: "Tokenkeg..."
+                    decimals: 9
+                    supply: "1000000000000000"
+                    name: "Arch Token"
+                    symbol: "ARCH"
+                    image: "https://example.com/arch.png"
+                    description: "Native token of the Arch network."
+                  - mint_address: "USDCTOKEN..."
+                    mint_address_hex: "0xdef456..."
+                    program_id: "Tokenkeg..."
+                    decimals: 6
+                    supply: "500000000000"
+                    name: "USD Coin"
+                    symbol: "USDC"
+
+  /api/v1/tokens/{mint}:
+    get:
+      tags: [Tokens]
+      summary: Get token detail
+      parameters:
+        - name: mint
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Token detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TokenDetail"
+              example:
+                mint_address: "ARCHTOKEN..."
+                mint_address_hex: "0xabc123..."
+                program_id: "Tokenkeg..."
+                decimals: 9
+                supply: "1000000000000000"
+                name: "Arch Token"
+                symbol: "ARCH"
+                image: "https://example.com/arch.png"
+                description: "Native token of the Arch network."
+        "404":
+          description: Token not found.
+
+  /api/v1/tokens/leaderboard:
+    get:
+      tags: [Tokens]
+      summary: Token leaderboard
+      description: Top tokens by holders and activity.
+      responses:
+        "200":
+          description: Leaderboard entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TokenDetail"
+              example:
+                results:
+                  - mint_address: "ARCHTOKEN..."
+                    holders: 12034
+                    symbol: "ARCH"
+                  - mint_address: "USDCTOKEN..."
+                    holders: 9876
+                    symbol: "USDC"
+
+  /api/v1/network/stats:
+    get:
+      tags: [Network]
+      summary: Network stats snapshot
+      responses:
+        "200":
+          description: Current high-level network statistics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkStats"
+              example:
+                total_transactions: 123456789
+                total_blocks: 543210
+                indexed_height: 540000
+                latest_block_height: 543210
+                current_tps: 120.5
+                average_tps: 85.2
+                peak_tps: 250.0
+                daily_transactions: 345678
+
+  /api/v1/programs:
+    get:
+      tags: [Programs]
+      summary: List programs
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Paged list of programs with activity stats.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  programs:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+              example:
+                programs:
+                  - program_id: "ArchSystem111..."
+                    name: "System Program"
+                    transaction_count: 123456
+                    first_seen_at: "2025-01-01T00:00:00Z"
+                    last_seen_at: "2025-01-02T12:34:56Z"
+
+  /api/v1/programs/{program_id}:
+    get:
+      tags: [Programs]
+      summary: Get program detail
+      parameters:
+        - name: program_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Program detail and usage stats.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                program_id: "ArchSystem111..."
+                name: "System Program"
+                transaction_count: 123456
+                first_seen_at: "2025-01-01T00:00:00Z"
+                last_seen_at: "2025-01-02T12:34:56Z"
+                recent_activity_24h: 2345
+        "404":
+          description: Program not found.
+
+  /api/v1/programs/{program_id}/transactions:
+    get:
+      tags: [Programs]
+      summary: List program transactions (full payload)
+      description: >
+        Returns program transactions including full transaction payload fields (can be large).
+        For list UIs, prefer the lightweight `.../transactions/summary` endpoint.
+      parameters:
+        - name: program_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: Paged list of full transaction objects for this program.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_count:
+                    type: integer
+                  transactions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TransactionDetails"
+
+  /api/v1/programs/{program_id}/transactions/summary:
+    get:
+      tags: [Programs]
+      summary: List program transactions (summary)
+      description: >
+        Lightweight listing intended for UI tables: returns minimal per-transaction fields
+        plus instruction chips, without full transaction `data` payload.
+      parameters:
+        - name: program_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/LimitParam"
+        - $ref: "#/components/parameters/OffsetParam"
+      responses:
+        "200":
+          description: Paged list of summarized transactions for this program.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProgramTransactionsSummaryResponse"
+
+  /api/v1/search:
+    get:
+      tags: [Search]
+      summary: Universal search
+      description: >
+        Search for blocks, transactions, accounts, programs, or tokens by
+        hash, address, or identifier.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Search results grouped by type.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                query: "arch1xyz..."
+                blocks: []
+                transactions:
+                  - txid: "0xdeadbeef..."
+                    height: 12345
+                accounts:
+                  - address: "arch1xyz..."
+                    label: "User wallet"
+                programs: []
+                tokens: []
+
+  /api/v1/realtime/status:
+    get:
+      tags: [Realtime]
+      summary: Realtime indexer status
+      responses:
+        "200":
+          description: Status and lag information for the realtime indexer.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                indexed_height: 543200
+                latest_block_height: 543210
+                blocks_behind: 10
+                status: "catching_up"
+
+  /api/v1/realtime/events:
+    get:
+      tags: [Realtime]
+      summary: Recent realtime events
+      description: Last few realtime events useful for debugging WebSocket consumers.
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Recent events.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                events:
+                  - height: 12345
+                    txid: "0xdeadbeef..."
+                    type: "transaction"
+                    timestamp: "2025-01-01T00:00:00Z"
+
+  /api/v1/websocket/stats:
+    get:
+      tags: [Realtime]
+      summary: WebSocket stats
+      responses:
+        "200":
+          description: WebSocket connection and subscription statistics.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                active_connections: 42
+                subscriptions:
+                  blocks: 10
+                  transactions: 32
+
+  /api/v1/mempool/stats:
+    get:
+      tags: [Mempool]
+      summary: Mempool stats
+      responses:
+        "200":
+          description: Summary statistics for the mempool.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                pending_transactions: 1234
+                oldest_timestamp: "2025-01-01T00:00:00Z"
+                newest_timestamp: "2025-01-01T00:05:00Z"
+
+  /api/v1/mempool/recent:
+    get:
+      tags: [Mempool]
+      summary: Recent mempool transactions
+      parameters:
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Recent unconfirmed transactions.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                transactions:
+                  - txid: "0xabc123..."
+                    slot: 200
+                    fee: "5000"
+                    timestamp: "2025-01-01T00:04:00Z"
+
+  /api/v1/validators:
+    get:
+      tags: [Validators]
+      summary: List validators
+      responses:
+        "200":
+          description: Validators with stake and status.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                validators:
+                  - vote_address_hex: "0xvote1..."
+                    identity_address_hex: "0xid1..."
+                    commission: 5
+                    total_stake_lamports: "1000000000000"
+                    status: "active"
+
+  /api/v1/validators/{vote_hex}:
+    get:
+      tags: [Validators]
+      summary: Get validator detail
+      parameters:
+        - name: vote_hex
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Validator detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+              example:
+                vote_address_hex: "0xvote1..."
+                identity_address_hex: "0xid1..."
+                commission: 5
+                total_stake_lamports: "1000000000000"
+                status: "active"
+                last_vote: 543210
+        "404":
+          description: Validator not found.
+
+  /api/v1/faucet/airdrop:
+    post:
+      tags: [Faucet]
+      summary: Request an airdrop
+      description: >
+        Send tokens to a wallet address. Accepts a Base58-encoded public key
+        (32 bytes) and forwards an `request_airdrop` JSON-RPC call to the
+        network's RPC node. No authentication required.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address:
+                  type: string
+                  description: Base58-encoded public key (must decode to exactly 32 bytes).
+            example:
+              address: "E11k85ukD5hb6cpybdjeGPxFsaCuEJApXcG3P1Cy"
+      responses:
+        "200":
+          description: Airdrop transaction submitted successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  txid:
+                    type: string
+                    description: Transaction ID of the airdrop.
+                  address:
+                    type: string
+                    description: The recipient address.
+                  network:
+                    type: string
+                    description: Network the airdrop was sent on (testnet or mainnet).
+              example:
+                txid: "a1b2c3d4e5f6..."
+                address: "E11k85ukD5hb6cpybdjeGPxFsaCuEJApXcG3P1Cy"
+                network: "testnet"
+        "400":
+          description: Invalid address or RPC error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Invalid base58 address"
+
+  # ─── Bitcoin (Titan proxy) ───────────────────────────────────────────
+
+  /api/v1/bitcoin/address/{address}:
+    get:
+      tags: [Bitcoin]
+      summary: Get Bitcoin address summary
+      description: >
+        Returns funded/spent totals for a Bitcoin address (both confirmed chain
+        stats and unconfirmed mempool stats). Data sourced from Titan indexer.
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Bitcoin address (any format accepted by the network).
+      responses:
+        "200":
+          description: Address summary.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BtcAddressSummary"
+              example:
+                address: "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+                chain_stats:
+                  funded_txo_count: 5
+                  funded_txo_sum: 500000
+                  spent_txo_count: 3
+                  spent_txo_sum: 300000
+                mempool_stats:
+                  funded_txo_count: 0
+                  funded_txo_sum: 0
+                  spent_txo_count: 0
+                  spent_txo_sum: 0
+        "404":
+          description: Address not found.
+
+  /api/v1/bitcoin/address/{address}/utxo:
+    get:
+      tags: [Bitcoin]
+      summary: List UTXOs for a Bitcoin address
+      description: >
+        Returns all unspent transaction outputs for the given address, including
+        both confirmed and unconfirmed UTXOs.
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of UTXOs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BtcUtxo"
+              example:
+                - txid: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+                  vout: 0
+                  value: 200000
+                  status:
+                    confirmed: true
+                    block_height: 800000
+                    block_hash: "00000000000000000002..."
+                    block_time: 1700000000
+
+  /api/v1/bitcoin/address/{address}/txs:
+    get:
+      tags: [Bitcoin]
+      summary: List transactions for a Bitcoin address
+      description: >
+        Returns up to 25 transactions involving the address.
+        Use `after_txid` for pagination.
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: after_txid
+          in: query
+          required: false
+          description: Fetch transactions appearing after this txid (for pagination).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Array of transactions.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BtcTransaction"
+
+  /api/v1/bitcoin/tx/{txid}:
+    get:
+      tags: [Bitcoin]
+      summary: Get Bitcoin transaction details
+      description: Full transaction details including inputs, outputs, fees, and confirmation status.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BtcTransaction"
+        "404":
+          description: Transaction not found.
+
+  /api/v1/bitcoin/tx/{txid}/status:
+    get:
+      tags: [Bitcoin]
+      summary: Get Bitcoin transaction status
+      description: Returns confirmation status, block height, block hash, and block time.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BtcTxStatus"
+              example:
+                confirmed: true
+                block_height: 800000
+                block_hash: "00000000000000000002..."
+                block_time: 1700000000
+        "404":
+          description: Transaction not found.
+
+  /api/v1/bitcoin/tx/{txid}/raw:
+    get:
+      tags: [Bitcoin]
+      summary: Get raw Bitcoin transaction hex
+      description: Returns the raw transaction as a hex-encoded string.
+      parameters:
+        - name: txid
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Raw transaction hex.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "0200000001..."
+        "404":
+          description: Transaction not found.
+
+  /api/v1/bitcoin/tx:
+    post:
+      tags: [Bitcoin]
+      summary: Broadcast a raw Bitcoin transaction
+      description: >
+        Submit a raw transaction in hex format for broadcast to the Bitcoin
+        network. Returns the txid on success.
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              description: Raw transaction hex.
+            example: "0200000001..."
+      responses:
+        "200":
+          description: Transaction broadcast successfully. Returns the txid.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "a1b2c3d4e5f6..."
+        "400":
+          description: Transaction rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/v1/bitcoin/fee-estimates:
+    get:
+      tags: [Bitcoin]
+      summary: Get Bitcoin fee rate estimates
+      description: >
+        Returns a map of confirmation targets (in blocks) to estimated fee
+        rates (in sat/vB).
+      responses:
+        "200":
+          description: Fee estimates.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: number
+              example:
+                "1": 25.0
+                "3": 12.5
+                "6": 8.0
+                "25": 2.0
+
+  /api/v1/bitcoin/tip:
+    get:
+      tags: [Bitcoin]
+      summary: Get Bitcoin chain tip
+      description: Returns the current best block height and hash.
+      responses:
+        "200":
+          description: Chain tip.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BtcChainTip"
+              example:
+                height: 880000
+                hash: "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72f..."
+
+  /api/v1/bitcoin/block/{hash}:
+    get:
+      tags: [Bitcoin]
+      summary: Get Bitcoin block by hash
+      description: Returns block header details for the given block hash.
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Block details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BtcBlockInfo"
+        "404":
+          description: Block not found.
+
+  /api/v1/bitcoin/block-height/{height}:
+    get:
+      tags: [Bitcoin]
+      summary: Get block hash by height
+      description: Returns the block hash at the given height.
+      parameters:
+        - name: height
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Block hash as plain text.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "00000000000000000002a7c4c1e48d76c5a37902..."
+        "404":
+          description: No block at this height.

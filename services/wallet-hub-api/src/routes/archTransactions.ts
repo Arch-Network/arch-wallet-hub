@@ -12,7 +12,7 @@ import { auditEvent } from "../audit/audit.js";
 import { consumeIdempotencyKey, computeRequestHash } from "../idempotency/idempotency.js";
 import { getTurnkeyResourceByIdForApp, markIdempotencySucceeded, markIdempotencyFailed } from "../db/queries.js";
 import { resolveArchAccountAddress } from "../arch/address.js";
-import { SystemInstruction as SystemInstructionUtil, type Instruction, type Pubkey } from "@saturnbtcio/arch-sdk";
+import { SystemInstruction as SystemInstructionUtil, type Instruction, type Pubkey } from "@arch-network/arch-sdk";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import bs58 from "bs58";
 import { getOrCreateUserByExternalId } from "../db/apps.js";

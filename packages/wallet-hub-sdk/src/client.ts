@@ -18,12 +18,27 @@ import type {
   CreateSigningResponse,
   GetSigningRequestResponse,
   SubmitSigningRequest,
-  SubmitSigningResponse
+  SubmitSigningResponse,
+  WalletOverviewResponse,
+  TransactionListResponse,
+  TransactionListParams,
+  ArchTransactionDetail,
+  TokenListResponse,
+  TokenInfo,
+  NetworkStatsResponse,
+  FaucetAirdropResponse,
+  BtcAddressSummary,
+  BtcUtxo,
+  BtcTransaction,
+  BtcFeeEstimates,
+  SendBtcRequest,
+  SendBtcResponse,
+  AccountTokensResponse
 } from "./types.js";
 
 export class WalletHubClient {
   private baseUrl: string;
-  private apiKey: string;
+  private apiKey: string | undefined;
   private fetchImpl: typeof fetch;
 
   constructor(opts: WalletHubClientOptions) {
@@ -44,7 +59,7 @@ export class WalletHubClient {
 
   private async requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
-    headers.set("x-api-key", this.apiKey);
+    if (this.apiKey) headers.set("x-api-key", this.apiKey);
     if (!headers.has("content-type") && init.body) headers.set("content-type", "application/json");
 
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
@@ -149,5 +164,91 @@ export class WalletHubClient {
       method: "POST",
       body: JSON.stringify(body)
     });
+  }
+
+  // ── Wallet Overview (aggregated dashboard) ──
+
+  async getWalletOverview(address: string): Promise<WalletOverviewResponse> {
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/overview`);
+  }
+
+  // ── Arch Transactions ──
+
+  async getTransactionHistory(address: string, params?: TransactionListParams): Promise<TransactionListResponse> {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.page !== undefined) qs.set("page", String(params.page));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/transactions${suffix}`);
+  }
+
+  async getTransactionDetail(txid: string): Promise<ArchTransactionDetail> {
+    return await this.requestJson(`/wallet/transactions/${encodeURIComponent(txid)}`);
+  }
+
+  // ── Tokens ──
+
+  async getTokenList(params?: { q?: string; sort?: string; limit?: number }): Promise<TokenListResponse> {
+    const qs = new URLSearchParams();
+    if (params?.q) qs.set("q", params.q);
+    if (params?.sort) qs.set("sort", params.sort);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return await this.requestJson(`/wallet/tokens${suffix}`);
+  }
+
+  async getTokenDetail(mint: string): Promise<TokenInfo> {
+    return await this.requestJson(`/wallet/tokens/${encodeURIComponent(mint)}`);
+  }
+
+  // ── Network ──
+
+  async getNetworkStats(): Promise<NetworkStatsResponse> {
+    return await this.requestJson("/wallet/network/stats");
+  }
+
+  // ── Faucet ──
+
+  async requestFaucetAirdrop(address: string): Promise<FaucetAirdropResponse> {
+    return await this.requestJson("/wallet/faucet/airdrop", {
+      method: "POST",
+      body: JSON.stringify({ address })
+    });
+  }
+
+  // ── Bitcoin ──
+
+  async getBtcAddressSummary(address: string): Promise<BtcAddressSummary> {
+    return await this.requestJson(`/wallet/btc/address/${encodeURIComponent(address)}`);
+  }
+
+  async getBtcUtxos(address: string): Promise<BtcUtxo[]> {
+    return await this.requestJson(`/wallet/btc/address/${encodeURIComponent(address)}/utxos`);
+  }
+
+  async getBtcTransactions(address: string, afterTxid?: string): Promise<BtcTransaction[]> {
+    const suffix = afterTxid ? `?after_txid=${encodeURIComponent(afterTxid)}` : "";
+    return await this.requestJson(`/wallet/btc/address/${encodeURIComponent(address)}/txs${suffix}`);
+  }
+
+  async getBtcTransaction(txid: string): Promise<BtcTransaction> {
+    return await this.requestJson(`/wallet/btc/tx/${encodeURIComponent(txid)}`);
+  }
+
+  async getBtcFeeEstimates(): Promise<BtcFeeEstimates> {
+    return await this.requestJson("/wallet/btc/fee-estimates");
+  }
+
+  async sendBitcoin(params: SendBtcRequest): Promise<SendBtcResponse> {
+    return await this.requestJson("/btc/send", {
+      method: "POST",
+      body: JSON.stringify(params)
+    });
+  }
+
+  // ── Account Token Holdings ──
+
+  async getAccountTokens(address: string): Promise<AccountTokensResponse> {
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held`);
   }
 }

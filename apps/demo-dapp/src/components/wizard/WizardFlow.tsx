@@ -35,6 +35,7 @@ export interface TransactionResult {
   success: boolean;
   signingRequestId?: string;
   txid?: string;
+  rawTxid?: string;
   error?: string;
 }
 

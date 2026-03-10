@@ -4,6 +4,7 @@ import { WalletHubClient } from "@arch/wallet-hub-sdk";
 import { request } from "sats-connect";
 import { Turnkey } from "@turnkey/sdk-browser";
 import type { WalletState, TransactionDetails, TransactionResult } from "../WizardFlow";
+import { formatArchId } from "../../../utils/archFormat";
 
 interface ReviewStepProps {
   client: WalletHubClient;
@@ -33,6 +34,31 @@ function hexToBytes(hex: string): Uint8Array {
     bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
   }
   return bytes;
+}
+
+function extractTapKeySig(psbtBytes: Uint8Array): string {
+  // PSBT_IN_TAP_KEY_SIG key type = 0x13
+  // Pattern: <keylen=01> <keytype=13> <valuelen=40|41> <sig bytes>
+  for (let i = 0; i < psbtBytes.length - 67; i++) {
+    if (psbtBytes[i] === 0x01 && psbtBytes[i + 1] === 0x13) {
+      const valueLen = psbtBytes[i + 2];
+      if (valueLen === 0x40 || valueLen === 0x41) {
+        return bytesToHex(psbtBytes.slice(i + 3, i + 3 + 64));
+      }
+    }
+  }
+
+  // Fallback: 0x40-prefixed 64-byte chunk where first 32 bytes aren't all zero
+  for (let i = 0; i < psbtBytes.length - 64; i++) {
+    if (psbtBytes[i] === 0x40) {
+      const sigBytes = psbtBytes.slice(i + 1, i + 1 + 64);
+      if (sigBytes.length === 64 && sigBytes.slice(0, 32).some((b) => b !== 0)) {
+        return bytesToHex(sigBytes);
+      }
+    }
+  }
+
+  throw new Error("Could not extract Schnorr signature from signed PSBT");
 }
 
 export default function ReviewStep({
@@ -74,12 +100,13 @@ export default function ReviewStep({
   useEffect(() => {
     if (!localSigningRequest?.signingRequestId) return;
     
-    // Check if Turnkey already succeeded
     if (localSigningRequest?.status === "succeeded") {
+      const rawTxid = localSigningRequest?.result?.txid || localSigningRequest?.result?.txidHex;
       onComplete({
         success: true,
         signingRequestId: localSigningRequest.signingRequestId,
-        txid: localSigningRequest?.result?.txid || localSigningRequest?.result?.txidHex,
+        txid: formatArchId(rawTxid),
+        rawTxid,
       });
       return;
     }
@@ -91,12 +118,13 @@ export default function ReviewStep({
         setReadiness((sr as any)?.readiness);
         onSigningRequestCreated(sr);
         
-        // Check if status changed to succeeded (Turnkey server-side signing)
         if ((sr as any)?.status === "succeeded") {
+          const rawTxid = (sr as any)?.result?.txid || (sr as any)?.result?.txidHex;
           onComplete({
             success: true,
             signingRequestId: localSigningRequest.signingRequestId,
-            txid: (sr as any)?.result?.txid || (sr as any)?.result?.txidHex,
+            txid: formatArchId(rawTxid),
+            rawTxid,
           });
         }
       } catch (e) {
@@ -131,10 +159,12 @@ export default function ReviewStep({
         setLocalSigningRequest(signRes);
 
         if (signRes.status === "succeeded") {
+          const rawTxid = (signRes as any)?.result?.txid || (signRes as any)?.result?.txidHex;
           onComplete({
             success: true,
             signingRequestId: signRes.signingRequestId,
-            txid: (signRes as any)?.result?.txid || (signRes as any)?.result?.txidHex,
+            txid: formatArchId(rawTxid),
+            rawTxid,
           });
         } else if (signRes.status === "failed") {
           setError((signRes as any)?.result?.status?.message || "Transaction failed");
@@ -190,32 +220,29 @@ export default function ReviewStep({
     setLocalSigningRequest(submitRes);
 
     const status = (submitRes as any)?.status;
-    const txid = (submitRes as any)?.result?.txid || 
-                 (submitRes as any)?.result?.txidHex ||
-                 (submitRes as any)?.txid ||
-                 (submitRes as any)?.txidHex;
+    const rawTxid = (submitRes as any)?.result?.txid || 
+                    (submitRes as any)?.result?.txidHex ||
+                    (submitRes as any)?.txid ||
+                    (submitRes as any)?.txidHex;
+    const txid = formatArchId(rawTxid);
 
     if (status === "succeeded") {
       onComplete({
         success: true,
         signingRequestId,
         txid,
+        rawTxid,
       });
     } else if (status === "failed") {
       throw new Error((submitRes as any)?.result?.status?.message || "Transaction failed");
     } else {
-      // For any other status (submitted, pending, etc.), show waiting state
-      // The polling will detect when it transitions to "succeeded"
       setIsSubmitted(true);
-      console.log(`[Passkey] Transaction status: ${status}, waiting for confirmation...`);
-      
-      // If there's already a txid, we can complete (some backends return success differently)
       if (txid) {
-        console.log(`[Passkey] Found txid: ${txid}, completing...`);
         onComplete({
           success: true,
           signingRequestId,
           txid,
+          rawTxid,
         });
       }
     }
@@ -292,18 +319,7 @@ export default function ReviewStep({
 
     // Decode base64 to bytes and extract signature
     const signedPsbtBytes = Uint8Array.from(atob(signedPsbtBase64), (c) => c.charCodeAt(0));
-    
-    // Find the 64-byte Schnorr signature (tap_key_sig)
-    for (let i = 0; i < signedPsbtBytes.length - 64; i++) {
-      if (signedPsbtBytes[i] === 0x40) {
-        const sigBytes = signedPsbtBytes.slice(i + 1, i + 1 + 64);
-        if (sigBytes.length === 64) {
-          return bytesToHex(sigBytes);
-        }
-      }
-    }
-
-    throw new Error("Could not extract signature from signed PSBT");
+    return extractTapKeySig(signedPsbtBytes);
   };
 
   const signWithUnisat = async (psbtBase64: string): Promise<string> => {
@@ -311,24 +327,12 @@ export default function ReviewStep({
       throw new Error("Unisat signPsbt not available");
     }
 
-    // Convert base64 to hex for Unisat
     const psbtBytes = Uint8Array.from(atob(psbtBase64), (c) => c.charCodeAt(0));
     const psbtHex = bytesToHex(psbtBytes);
 
     const signedPsbtHex = await window.unisat.signPsbt(psbtHex, { autoFinalized: false });
     const signedPsbtBytes = hexToBytes(signedPsbtHex);
-
-    // Find the 64-byte Schnorr signature
-    for (let i = 0; i < signedPsbtBytes.length - 64; i++) {
-      if (signedPsbtBytes[i] === 0x40) {
-        const sigBytes = signedPsbtBytes.slice(i + 1, i + 1 + 64);
-        if (sigBytes.length === 64) {
-          return bytesToHex(sigBytes);
-        }
-      }
-    }
-
-    throw new Error("Could not extract signature from signed PSBT");
+    return extractTapKeySig(signedPsbtBytes);
   };
 
   // Handle airdrop request
@@ -397,10 +401,12 @@ export default function ReviewStep({
         signature64Hex,
       });
 
+      const rawExtTxid = (submitRes as any)?.result?.txid || (submitRes as any)?.result?.txidHex;
       onComplete({
         success: true,
         signingRequestId: localSigningRequest.signingRequestId,
-        txid: (submitRes as any)?.result?.txid || (submitRes as any)?.result?.txidHex,
+        txid: formatArchId(rawExtTxid),
+        rawTxid: rawExtTxid,
       });
     } catch (e: any) {
       setError(e?.message || "Signing failed");
@@ -538,7 +544,7 @@ export default function ReviewStep({
             <div className="review-row">
               <span className="review-label">Amount</span>
               <span className="review-value">
-                <strong>{(parseInt(transaction.lamports) / 100000000).toFixed(8)} ARCH</strong>
+                <strong>{(parseInt(transaction.lamports) / 1000000000).toFixed(9)} ARCH</strong>
                 <span className="review-value-sub">
                   ({parseInt(transaction.lamports).toLocaleString()} lamports)
                 </span>
@@ -579,13 +585,9 @@ export default function ReviewStep({
             <span className="review-warning-icon">⚠️</span>
             <div className="review-warning-content">
               <span>
-                {readiness.message 
-                  ? readiness.message
-                  : readiness.reason === "NotAnchored"
-                  ? "Account has no UTXO anchor. You must first send BTC to the account's Taproot address and anchor the UTXO before transferring ARCH tokens."
-                  : readiness.reason === "ArchAccountNotFound"
-                  ? "Arch account does not exist. Request an airdrop to create the account, then anchor a BTC UTXO."
-                  : readiness.reason}
+                {readiness.reason === "ArchAccountNotFound"
+                  ? "Arch account does not exist or has no balance. Request an airdrop to create and fund the account."
+                  : readiness.message || readiness.reason}
               </span>
               {readiness.reason === "ArchAccountNotFound" && (
                 <button
@@ -605,13 +607,6 @@ export default function ReviewStep({
                     "🪂 Request Airdrop"
                   )}
                 </button>
-              )}
-              {readiness.reason === "NotAnchored" && (
-                <div className="anchor-info">
-                  <p className="anchor-hint">
-                    To anchor a UTXO: Send testnet BTC to the account's Taproot address, then use the "Anchor UTXO" action.
-                  </p>
-                </div>
               )}
             </div>
           </div>

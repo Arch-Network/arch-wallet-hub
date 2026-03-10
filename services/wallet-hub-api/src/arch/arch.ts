@@ -5,7 +5,7 @@ import {
   SignatureUtil,
   type Instruction,
   type RuntimeTransaction
-} from "@saturnbtcio/arch-sdk";
+} from "@arch-network/arch-sdk";
 import { computeBip322ToSignTaprootSighash } from "../bitcoin/bip322.js";
 import type { TurnkeyService } from "../turnkey/client.js";
 import bs58 from "bs58";

@@ -3,15 +3,16 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy SDK first (all files, then install)
+# Copy SDK first (all files, then install + build)
 COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk/
 WORKDIR /app/packages/wallet-hub-sdk
-RUN npm install --ignore-scripts && npm run build || true
+RUN npm install && npm run build || true
 
 # Copy and build API
 WORKDIR /app/services/wallet-hub-api
+COPY services/wallet-hub-api/package.json services/wallet-hub-api/package-lock.json* ./
+RUN npm install
 COPY services/wallet-hub-api ./
-RUN npm install --ignore-scripts
 RUN npm run build || true
 
 # Production stage
@@ -19,11 +20,9 @@ FROM node:20-alpine
 
 WORKDIR /app/services/wallet-hub-api
 
-# Copy built files and dependencies
 COPY --from=builder /app/services/wallet-hub-api ./
 COPY --from=builder /app/packages/wallet-hub-sdk /app/packages/wallet-hub-sdk
 
-# Set environment
 ENV NODE_ENV=production
 ENV PORT=3005
 ENV DB_RUN_MIGRATIONS=true

@@ -17,7 +17,8 @@ function getExplorerUrl(txid: string, network?: string): string {
 
 export default function CompleteStep({ result, onStartNew, network }: CompleteStepProps) {
   const isSuccess = result?.success ?? false;
-  const explorerUrl = result?.txid ? getExplorerUrl(result.txid, network) : null;
+  const explorerTxid = result?.rawTxid || result?.txid;
+  const explorerUrl = explorerTxid ? getExplorerUrl(explorerTxid, network) : null;
 
   return (
     <div className="step-container complete-step">

@@ -35,7 +35,7 @@ export default function DetailsStep({
   // Sync ARCH input value
   useEffect(() => {
     if (amountUnit === "arch" && !archInputValue) {
-      setArchInputValue((parseInt(lamports) / 100000000).toString());
+      setArchInputValue((parseInt(lamports) / 1000000000).toString());
     }
   }, [amountUnit, lamports, archInputValue]);
 
@@ -46,7 +46,7 @@ export default function DetailsStep({
     
     // Convert to lamports
     const archNum = parseFloat(value) || 0;
-    const newLamports = Math.floor(archNum * 100000000);
+    const newLamports = Math.floor(archNum * 1000000000);
     setLamports(newLamports.toString());
   };
 
@@ -95,7 +95,7 @@ export default function DetailsStep({
   };
 
   const lamportsNum = parseInt(lamports) || 0;
-  const archEquivalent = (lamportsNum / 100000000).toFixed(8);
+  const archEquivalent = (lamportsNum / 1000000000).toFixed(9);
 
   return (
     <div className="step-container">

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     container_name: wallet-hub-db
     restart: unless-stopped
     environment:
@@ -50,11 +50,12 @@ services:
       dockerfile: deploy/Dockerfile.frontend
       args:
         VITE_WALLET_HUB_BASE_URL: ${VITE_WALLET_HUB_BASE_URL:-http://localhost:3005/v1}
-        VITE_WALLET_HUB_API_KEY: ${VITE_WALLET_HUB_API_KEY:-}
     container_name: wallet-hub-frontend
     restart: unless-stopped
     depends_on:
       - api
+    environment:
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY}
     ports:
       - "80:80"
       - "443:443"

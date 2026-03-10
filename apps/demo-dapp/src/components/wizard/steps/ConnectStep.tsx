@@ -18,14 +18,16 @@ interface ConnectStepProps {
   client: WalletHubClient;
 }
 
-// Type declarations for wallet browser extensions
+// Type declarations for wallet browser extensions - must match connect/ConnectView.tsx
 declare global {
   interface Window {
     unisat?: {
       requestAccounts(): Promise<string[]>;
       getAccounts(): Promise<string[]>;
       getPublicKey(): Promise<string>;
-      signPsbt(psbtHex: string, options?: { autoFinalized?: boolean }): Promise<string>;
+      signPsbt?(psbtHex: string, options?: { autoFinalized?: boolean }): Promise<string>;
+      sendBitcoin?(toAddress: string, satoshis: number): Promise<string>;
+      signMessage?(message: string, type?: string): Promise<string>;
     };
   }
 }
@@ -61,10 +63,10 @@ export default function ConnectStep({
 
   // Load Turnkey wallets when panel opens
   useEffect(() => {
-    if (showTurnkeyPanel && apiKey) {
+    if (showTurnkeyPanel) {
       loadTurnkeyWallets();
     }
-  }, [showTurnkeyPanel, apiKey, externalUserId]);
+  }, [showTurnkeyPanel, externalUserId]);
 
   const loadTurnkeyWallets = async () => {
     setTurnkeyLoading(true);

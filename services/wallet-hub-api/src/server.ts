@@ -20,6 +20,8 @@ import { registerArchAccountRoutes } from "./routes/archAccounts.js";
 import { registerBtcRoutes } from "./routes/btc.js";
 import { registerPortfolioRoutes } from "./routes/portfolio.js";
 import { registerSigningRequestRoutes } from "./routes/signingRequests.js";
+import { registerWalletProxyRoutes } from "./routes/walletProxy.js";
+import { registerBtcTransactionRoutes } from "./routes/btcTransactions.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -79,6 +81,8 @@ export async function createServer() {
   await server.register(registerBtcRoutes, { prefix: "/v1" });
   await server.register(registerPortfolioRoutes, { prefix: "/v1" });
   await server.register(registerSigningRequestRoutes, { prefix: "/v1" });
+  await server.register(registerWalletProxyRoutes, { prefix: "/v1" });
+  await server.register(registerBtcTransactionRoutes, { prefix: "/v1" });
 
   return server;
 }
