@@ -27,9 +27,14 @@ export default function App() {
 
   const [connectedWallet, setConnectedWallet] = useState<ConnectedWallet | null>(null);
 
+  const apiKey = useMemo(
+    () => defaultEnv("VITE_WALLET_HUB_API_KEY", ""),
+    []
+  );
+
   const client = useMemo(
-    () => new WalletHubClient({ baseUrl }),
-    [baseUrl]
+    () => new WalletHubClient({ baseUrl, ...(apiKey ? { apiKey } : {}) }),
+    [baseUrl, apiKey]
   );
 
   useEffect(() => {

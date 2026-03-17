@@ -140,7 +140,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
       const userId = (consumed as { userId: string }).userId;
       const externalUserId = (body as any).externalUserId;
-      const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}`;
+      const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
       const addressFormat = (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
       const derivationPath = (body as any).derivationPath ?? "m/86'/1'/0'/0/0";
 
@@ -326,7 +326,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
       const userId = (consumed as { userId: string }).userId;
       const externalUserId = (body as any).externalUserId;
-      const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}`;
+      const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
       const addressFormat =
         (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
       const derivationPath = (body as any).derivationPath ?? "m/86'/1'/0'/0/0";

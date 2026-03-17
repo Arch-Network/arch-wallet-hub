@@ -9,7 +9,7 @@ import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extract
 import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
-import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, type Instruction } from "@arch-network/arch-sdk";
+import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
 import { Buffer } from "node:buffer";
 import bs58 from "bs58";
 import { secp256k1, schnorr } from "@noble/curves/secp256k1";
@@ -35,8 +35,15 @@ const CreateSigningRequestBody = Type.Object({
   action: Type.Union([
     Type.Object({
       type: Type.Literal("arch.transfer"),
-      toAddress: Type.String({ minLength: 1 }), // Arch or Taproot
+      toAddress: Type.String({ minLength: 1 }),
       lamports: Type.String({ minLength: 1 })
+    }),
+    Type.Object({
+      type: Type.Literal("arch.token_transfer"),
+      mintAddress: Type.String({ minLength: 1 }),
+      toAddress: Type.String({ minLength: 1 }),
+      amount: Type.String({ minLength: 1 }),
+      decimals: Type.Optional(Type.Integer({ minimum: 0, maximum: 18 }))
     }),
     Type.Object({
       type: Type.Literal("arch.anchor"),
@@ -248,8 +255,35 @@ function turnkeyPublicKeyToArchAccountBase58(publicKeyHex: string): string {
 }
 
 function secp256k1PublicKeyToArchAccountBase58(publicKeyHex: string): string {
-  // Alias for clarity; same conversion rules as Turnkey wallet account publicKey.
   return turnkeyPublicKeyToArchAccountBase58(publicKeyHex);
+}
+
+// ── APL Token Transfer helpers ──
+
+const APL_TOKEN_PROGRAM_ID: Pubkey = new Uint8Array(
+  Buffer.from("AplToken111111111111111111111111", "ascii")
+);
+
+function buildTokenTransferInstruction(
+  sourceAta: Pubkey,
+  destAta: Pubkey,
+  ownerPubkey: Pubkey,
+  amount: bigint
+): Instruction {
+  const data = new Uint8Array(9);
+  data[0] = 3; // Transfer discriminant
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  view.setBigUint64(1, amount, true);
+
+  return {
+    program_id: APL_TOKEN_PROGRAM_ID,
+    accounts: [
+      { pubkey: sourceAta, is_signer: false, is_writable: true } as AccountMeta,
+      { pubkey: destAta, is_signer: false, is_writable: true } as AccountMeta,
+      { pubkey: ownerPubkey, is_signer: true, is_writable: false } as AccountMeta,
+    ],
+    data,
+  };
 }
 
 function secp256k1PublicKeyToXOnlyHex(publicKeyHex: string): string {
@@ -316,7 +350,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       // Compute live readiness (best-effort).
       let readiness: any = { status: "unknown", reason: "NotApplicable" };
       try {
-        if (row.action_type === "arch.transfer") {
+        if (row.action_type === "arch.transfer" || row.action_type === "arch.token_transfer") {
           const btc = getBtcPlatformClient();
           const archRpc = server.config.ARCH_RPC_NODE_URL ? createArchRpcClient(server.config.ARCH_RPC_NODE_URL) : null;
           const display: any = row.display_json ?? {};
@@ -408,20 +442,14 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       let turnkeyResourceId: string | null = null;
       if (body.signer.kind === "external") {
         signerTaprootAddress = body.signer.taprootAddress as string;
-        const providedPubkeyHex = (body.signer.publicKeyHex ?? body.signer.public_key_hex) as string | undefined;
-        if (providedPubkeyHex) {
-          signerArchAccountAddress = secp256k1PublicKeyToArchAccountBase58(providedPubkeyHex);
-          signerInternalXOnlyPubkeyHex = secp256k1PublicKeyToXOnlyHex(providedPubkeyHex);
-        } else {
-          // Backward compatibility: derive from address witness program (NOTE: this is the *tweaked* key for p2tr).
-          // External wallets should supply a public key so we can use the *internal* key like Arch expects.
-          const resolved = resolveArchAccountAddress(signerTaprootAddress);
-          if (resolved.kind !== "taproot") {
-            return reply.badRequest("External signer must provide a Taproot (p2tr) address");
-          }
-          signerArchAccountAddress = resolved.archAccountAddress;
-          signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
+        // Always derive Arch account from the taproot address (tweaked output key)
+        // to stay consistent with the dashboard, airdrop, and indexer endpoints.
+        const resolved = resolveArchAccountAddress(signerTaprootAddress);
+        if (resolved.kind !== "taproot") {
+          return reply.badRequest("External signer must provide a Taproot (p2tr) address");
         }
+        signerArchAccountAddress = resolved.archAccountAddress;
+        signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
       } else {
         turnkeyResourceId = body.signer.resourceId as string;
         const resource = await withDbTransaction(db, (client) =>
@@ -460,22 +488,15 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             );
           }
         }
-        if (pubkeyHex) {
-          signerArchAccountAddress = turnkeyPublicKeyToArchAccountBase58(pubkeyHex);
-          signerInternalXOnlyPubkeyHex = secp256k1PublicKeyToXOnlyHex(pubkeyHex);
-        } else {
-          // Backward compatibility for older rows. This path is likely WRONG for Taproot because it uses the tweaked key.
-          const resolved = resolveArchAccountAddress(signerTaprootAddress);
-          if (resolved.kind !== "taproot") {
-            return reply.badRequest("Turnkey resource defaultAddress must be Taproot (p2tr)");
-          }
-          signerArchAccountAddress = resolved.archAccountAddress;
-          signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
-          server.log.warn(
-            { resourceId: turnkeyResourceId, defaultAddress: signerTaprootAddress },
-            "Turnkey resource missing default_public_key_hex; derived Arch account from address (may cause invalid signatures)"
-          );
+        // Always derive Arch account from the taproot address (tweaked output key)
+        // to stay consistent with the dashboard, airdrop, and overview endpoints.
+        // The taproot witness program IS the key Arch uses to identify accounts.
+        const resolved = resolveArchAccountAddress(signerTaprootAddress);
+        if (resolved.kind !== "taproot") {
+          return reply.badRequest("Turnkey resource defaultAddress must be Taproot (p2tr)");
         }
+        signerArchAccountAddress = resolved.archAccountAddress;
+        signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
       }
 
       if (!signerArchAccountAddress) {
@@ -513,7 +534,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
       const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
 
-      let actionType: "arch.transfer" | "arch.anchor";
+      let actionType: "arch.transfer" | "arch.token_transfer" | "arch.anchor";
       let instructions: Instruction[];
       let display: any;
 
@@ -581,6 +602,38 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           // ignore preflight errors (best-effort) - including timeouts
           server.log.debug({ err: String(err?.message ?? err) }, "Preflight readiness check failed or timed out");
         }
+      } else if (body.action.type === "arch.token_transfer") {
+        if (isTaprootAddress(body.action.toAddress)) {
+          return reply.badRequest(
+            "toAddress must be an Arch account address (base58 pubkey)."
+          );
+        }
+
+        const mintPubkey = parsePubkey(body.action.mintAddress);
+        const toPubkey = parsePubkey(body.action.toAddress);
+        const amount = BigInt(body.action.amount);
+
+        const sourceAta = PubkeyUtil.getAssociatedTokenAddress(mintPubkey, payerPubkey);
+        const destAta = PubkeyUtil.getAssociatedTokenAddress(mintPubkey, toPubkey);
+
+        actionType = "arch.token_transfer";
+        instructions = [buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, amount)];
+
+        display = {
+          kind: "arch.token_transfer",
+          from: {
+            taprootAddress: signerTaprootAddress,
+            archAccountAddress: signerArchAccountAddress,
+            xOnlyPubkeyHex: signerInternalXOnlyPubkeyHex
+          },
+          to: { input: body.action.toAddress, archAccountAddress: body.action.toAddress },
+          mint: body.action.mintAddress,
+          amount: body.action.amount,
+          decimals: body.action.decimals ?? null,
+          sourceAta: bs58.encode(Buffer.from(sourceAta)),
+          destAta: bs58.encode(Buffer.from(destAta)),
+        };
+
       } else if (body.action.type === "arch.anchor") {
         if (!isHex64(body.action.btcTxid)) {
           return reply.badRequest("btcTxid must be a 64-char hex string");
@@ -757,8 +810,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       if (!recentBlockhashHex) return reply.badRequest("Signing request missing recentBlockhashHex");
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
 
-      // Enforce readiness on submit for arch.transfer.
-      if (row.action_type === "arch.transfer") {
+      // Enforce readiness on submit for arch.transfer / arch.token_transfer.
+      if (row.action_type === "arch.transfer" || row.action_type === "arch.token_transfer") {
         if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
         const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
         const readiness = await computeBtcUtxoReadiness({
@@ -802,6 +855,16 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const toPubkey = parsePubkey(toAddr);
         const lamports = parseLamports(lamportsStr);
         instructions = [SystemInstructionUtil.transfer(payerPubkey, toPubkey, lamports)];
+      } else if (row.action_type === "arch.token_transfer") {
+        const mint = String(display?.mint ?? "");
+        const amountStr = String(display?.amount ?? "");
+        const sourceAtaStr = String(display?.sourceAta ?? "");
+        const destAtaStr = String(display?.destAta ?? "");
+        if (!mint || !amountStr || !sourceAtaStr || !destAtaStr)
+          return reply.badRequest("Signing request display missing token transfer fields");
+        const sourceAta = parsePubkey(sourceAtaStr);
+        const destAta = parsePubkey(destAtaStr);
+        instructions = [buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, BigInt(amountStr))];
       } else if (row.action_type === "arch.anchor") {
         const txid = String(display?.utxo?.txid ?? "");
         const vout = Number(display?.utxo?.vout);

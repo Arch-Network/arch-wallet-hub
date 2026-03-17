@@ -92,15 +92,30 @@ export default function DashboardView({
       return;
     }
     setAirdropLoading(true);
+    setError(null);
     try {
+      const prevLamports = (overview?.arch?.account as any)?.lamports_balance ?? -1;
       await client.requestFaucetAirdrop(resolvedArch);
-      await fetchOverview();
+
+      const DELAYS = [2000, 3000, 4000, 5000, 6000];
+      for (const delay of DELAYS) {
+        await new Promise((r) => setTimeout(r, delay));
+        try {
+          const fresh = await client.getWalletOverview(wallet.address);
+          setOverview(fresh);
+          const newLamports = (fresh?.arch?.account as any)?.lamports_balance ?? -1;
+          if (newLamports !== prevLamports) break;
+        } catch {
+          // ignore transient fetch errors during polling
+        }
+      }
     } catch (e: any) {
       setError(e?.message || "Airdrop failed");
     } finally {
       setAirdropLoading(false);
+      setLoading(false);
     }
-  }, [client, overview?.archAccountAddress, wallet.archAddress, fetchOverview]);
+  }, [client, overview, wallet.address, wallet.archAddress]);
 
   const btcSummary = overview?.btc?.summary;
   const chainFunded = btcSummary?.chain_stats?.funded_txo_sum ?? 0;

@@ -36,8 +36,12 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       if (!indexer) return;
       const { address } = request.params as any;
 
+      const noCache =
+        (request.query as any)?.nocache !== undefined ||
+        request.headers["cache-control"]?.includes("no-cache");
+
       const cached = overviewCache.get(address);
-      if (cached && Date.now() - cached.ts < OVERVIEW_TTL_MS) {
+      if (!noCache && cached && Date.now() - cached.ts < OVERVIEW_TTL_MS) {
         return cached.data;
       }
 

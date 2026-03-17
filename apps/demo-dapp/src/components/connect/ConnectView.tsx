@@ -41,7 +41,7 @@ export default function ConnectView({
   externalUserId,
   onConnect,
 }: ConnectViewProps) {
-  const NETWORKS = ["Testnet4", "Testnet", "Signet", "Mainnet"] as const;
+  const NETWORKS = ["Testnet4", "Mainnet"] as const;
   const [network, setNetwork] = useState<string>(
     () => localStorage.getItem("arch-wallet-hub:network") || "Testnet4"
   );
@@ -135,7 +135,7 @@ export default function ConnectView({
     clearError();
     try {
       const result = await client.createTurnkeyWallet({
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: self.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
         body: { externalUserId },
       });
 
@@ -381,9 +381,14 @@ export default function ConnectView({
                     disabled={loading}
                     type="button"
                   >
-                    <div className="turnkey-wallet-icon">🔐</div>
+                    <div className="turnkey-wallet-icon">{tw.isCustodial ? "🔐" : "🔑"}</div>
                     <div className="turnkey-wallet-info">
-                      <span className="turnkey-wallet-name">{label}</span>
+                      <span className="turnkey-wallet-name">
+                        {label}
+                        <span className={`turnkey-wallet-badge ${tw.isCustodial ? "custodial" : "passkey"}`}>
+                          {tw.isCustodial ? "Custodial" : "Passkey"}
+                        </span>
+                      </span>
                       <span className="turnkey-wallet-address mono">
                         {addr
                           ? `${addr.slice(0, 12)}…${addr.slice(-6)}`

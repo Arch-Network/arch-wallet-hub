@@ -1911,6 +1911,26 @@ button:disabled {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.turnkey-wallet-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.turnkey-wallet-badge.custodial {
+  background: rgba(56, 189, 126, 0.15);
+  color: #38bd7e;
+}
+.turnkey-wallet-badge.passkey {
+  background: rgba(168, 130, 255, 0.15);
+  color: #a882ff;
 }
 
 .turnkey-wallet-address {
@@ -2353,6 +2373,15 @@ button:disabled {
   transition: all var(--transition-fast);
   text-align: left;
   width: 100%;
+}
+
+.send-asset-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.send-asset-card.disabled:hover {
+  transform: none;
+  border-color: var(--border-primary);
 }
 
 .send-asset-card:hover {
@@ -3352,12 +3381,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.turnkey-wallet-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
 }
 
 .turnkey-wallet-address {

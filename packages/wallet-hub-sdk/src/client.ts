@@ -168,8 +168,13 @@ export class WalletHubClient {
 
   // ── Wallet Overview (aggregated dashboard) ──
 
-  async getWalletOverview(address: string): Promise<WalletOverviewResponse> {
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/overview`);
+  async getWalletOverview(address: string, opts?: { noCache?: boolean }): Promise<WalletOverviewResponse> {
+    const qs = opts?.noCache ? "?nocache" : "";
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/overview${qs}`);
+  }
+
+  async getArchAccount(address: string): Promise<unknown> {
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/arch-account`);
   }
 
   // ── Arch Transactions ──
@@ -214,6 +219,12 @@ export class WalletHubClient {
       method: "POST",
       body: JSON.stringify({ address })
     });
+  }
+
+  // ── Token Holdings ──
+
+  async getTokensHeld(address: string): Promise<unknown> {
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held`);
   }
 
   // ── Bitcoin ──

@@ -117,6 +117,7 @@ export type CreateSigningRequest = {
     | { kind: "turnkey"; resourceId: string };
   action:
     | { type: "arch.transfer"; toAddress: string; lamports: string }
+    | { type: "arch.token_transfer"; mintAddress: string; toAddress: string; amount: string; decimals?: number }
     | { type: "arch.anchor"; btcTxid: string; vout: number };
 };
 
