@@ -118,19 +118,11 @@ export function computeBip322ToSignTaprootSighash(params: {
     // Try extractTransaction() first, then fall back to cached transaction
     let toSignTx: Transaction;
     try {
-      toSignTx = psbt.extractTransaction(false); // false = don't validate signatures
+      toSignTx = psbt.extractTransaction(false);
     } catch (extractErr: any) {
-      // If extraction fails, use cached transaction
       toSignTx = (psbt as any).__CACHE?.__TX as Transaction;
       if (!toSignTx) {
-        const unsignedTx = psbt.data.globalMap.unsignedTx;
-        if (!unsignedTx) {
-          throw new Error("PSBT missing unsigned transaction");
-        }
-        toSignTx = unsignedTx as Transaction;
-        if (!toSignTx) {
-          throw new Error(`Failed to get transaction from PSBT: ${extractErr.message}`);
-        }
+        throw new Error(`Failed to get transaction from PSBT: ${extractErr.message}`);
       }
     }
     
@@ -148,24 +140,6 @@ export function computeBip322ToSignTaprootSighash(params: {
     
     return Buffer.from(digest);
   }
-  
-  // Debug logging to help diagnose sighash computation issues
-  if (typeof process !== "undefined" && process.env.DEBUG_BIP322) {
-    console.log("[BIP322] Sighash computation debug:", {
-      signerAddress: params.signerAddress,
-      messageHex: Buffer.from(params.message).toString("hex"),
-      xOnlyPubkeyHex: xOnlyPubkey.toString("hex"),
-      prevoutScriptHex: prevoutScript.toString("hex"),
-      prevoutValue,
-      sighashType: SIGHASH_DEFAULT,
-      computedSighashHex: Buffer.from(digest).toString("hex"),
-      toSignTxId: toSignTx.getId(),
-      toSignTxInputs: toSignTx.ins.length,
-      toSignTxOutputs: toSignTx.outs.length
-    });
-  }
-  
-  return Buffer.from(digest);
 }
 
 export function extractBip322TaprootSignature64(params: {

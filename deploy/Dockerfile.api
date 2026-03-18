@@ -6,14 +6,14 @@ WORKDIR /app
 # Copy SDK first (all files, then install + build)
 COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk/
 WORKDIR /app/packages/wallet-hub-sdk
-RUN npm install && npm run build || true
+RUN npm install && npm run build
 
 # Copy and build API
 WORKDIR /app/services/wallet-hub-api
 COPY services/wallet-hub-api/package.json services/wallet-hub-api/package-lock.json* ./
 RUN npm install
 COPY services/wallet-hub-api ./
-RUN npm run build || true
+RUN npm run build
 
 # Production stage
 FROM node:20-alpine

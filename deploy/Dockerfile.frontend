@@ -6,10 +6,17 @@ ARG VITE_WALLET_HUB_API_KEY=
 
 WORKDIR /app
 
-# Copy SDK first (all files, then install + build)
-COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk/
+# Copy and build SDK
+COPY packages/wallet-hub-sdk /app/packages/wallet-hub-sdk
 WORKDIR /app/packages/wallet-hub-sdk
-RUN npm install && npm run build || true
+RUN npm install && npm run build
+
+# Copy UI source, rewrite SDK dep to file: reference, install deps (skip lifecycle), build
+COPY packages/wallet-hub-ui /app/packages/wallet-hub-ui
+WORKDIR /app/packages/wallet-hub-ui
+RUN npm pkg set "dependencies.@arch/wallet-hub-sdk=file:../wallet-hub-sdk" \
+    && npm install --ignore-scripts \
+    && npm run build
 
 # Copy and build frontend
 WORKDIR /app/apps/demo-dapp
@@ -24,8 +31,10 @@ RUN npm run build
 # Production stage - nginx
 FROM nginx:alpine
 
+ARG NGINX_CONF=deploy/nginx.conf.template
+
 COPY --from=builder /app/apps/demo-dapp/dist /usr/share/nginx/html
-COPY deploy/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY ${NGINX_CONF} /etc/nginx/templates/default.conf.template
 
 EXPOSE 80 443
 

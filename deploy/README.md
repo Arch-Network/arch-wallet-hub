@@ -1,148 +1,141 @@
-# Arch Wallet Hub - AWS EC2 Deployment
+# Arch Wallet Hub - Deployment
 
-This guide deploys the Wallet Hub application to a single EC2 instance using Docker Compose.
+## Live Environment
 
-## Prerequisites
+| | URL |
+|---|---|
+| **Frontend (demo dapp)** | http://wallet-hub-alb-1812078009.us-east-1.elb.amazonaws.com |
+| **API** | http://wallet-hub-alb-1812078009.us-east-1.elb.amazonaws.com/v1 |
+| **Health check** | http://wallet-hub-alb-1812078009.us-east-1.elb.amazonaws.com/v1/health |
 
-- AWS CLI installed and configured (`aws configure`)
-- An AWS key pair for SSH access
-- Docker installed locally (for testing)
+## Architecture (ECS Fargate)
 
-## Quick Start
+```
+┌─────────────────────────────────────────────────┐
+│               Application Load Balancer         │
+│                                                 │
+│   /*          → Frontend (nginx, port 80)       │
+│   /v1/*       → API (Node.js, port 3005)        │
+└─────────────────────────────────────────────────┘
+                        │
+        ┌───────────────┼───────────────┐
+        │               │               │
+   ┌────▼────┐   ┌──────▼──────┐  ┌────▼─────┐
+   │ Frontend │   │   API       │  │  RDS     │
+   │ (Fargate)│   │  (Fargate)  │──│ Postgres │
+   │  nginx   │   │  Fastify    │  │  16      │
+   └──────────┘   └─────────────┘  └──────────┘
+                        │
+              ┌─────────┼──────────┐
+              │         │          │
+         Arch RPC   Turnkey   Explorer
+         (testnet)   API       API
+```
 
-### 1. Create EC2 Instance
+**AWS Resources:**
+- ECS Fargate cluster (`wallet-hub`) with 2 services
+- RDS Postgres 16 (`db.t3.micro`, free tier)
+- ALB with path-based routing
+- Secrets Manager (`WalletHub/AppSecrets`)
+- ECR repos: `wallet-hub-api`, `wallet-hub-frontend`
+
+**Estimated cost:** ~$30-50/month (testing/low traffic)
+
+## For Testers
+
+1. Open the frontend URL above
+2. Connect a wallet (Testnet4)
+3. The API key is baked into the frontend build
+
+To test the API directly (Postman, curl, SDK):
+```bash
+curl -H "X-Api-Key: YOUR_API_KEY" \
+  http://wallet-hub-alb-1812078009.us-east-1.elb.amazonaws.com/v1/health
+```
+
+## CI/CD
+
+Push to `main` triggers `.github/workflows/deploy.yml`:
+1. Builds Docker images for API and frontend
+2. Pushes to ECR
+3. Updates ECS services (rolling deployment)
+
+**Prerequisites:** Set `AWS_DEPLOY_ROLE_ARN` in GitHub repo secrets (IAM role with ECR push + ECS update permissions).
+
+## Manual Operations
+
+### Rebuild and deploy images manually
+
+```bash
+# Login to ECR
+aws ecr get-login-password --region us-east-1 | \
+  docker login --username AWS --password-stdin 590184001652.dkr.ecr.us-east-1.amazonaws.com
+
+# Build and push API
+docker build --platform linux/amd64 \
+  -t 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-api:latest \
+  -f deploy/Dockerfile.api .
+docker push 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-api:latest
+
+# Build and push frontend
+docker build --platform linux/amd64 \
+  --build-arg VITE_WALLET_HUB_BASE_URL=/v1 \
+  --build-arg VITE_WALLET_HUB_API_KEY=YOUR_API_KEY \
+  --build-arg NGINX_CONF=deploy/nginx-fargate.conf.template \
+  -t 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-frontend:latest \
+  -f deploy/Dockerfile.frontend .
+docker push 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-frontend:latest
+
+# Force ECS to pull new images
+aws ecs update-service --cluster wallet-hub --service wallet-hub-api --force-new-deployment
+aws ecs update-service --cluster wallet-hub --service wallet-hub-frontend --force-new-deployment
+```
+
+### Update secrets
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id WalletHub/AppSecrets \
+  --secret-string '{"TURNKEY_API_PUBLIC_KEY":"...","TURNKEY_API_PRIVATE_KEY":"...","TURNKEY_ORGANIZATION_ID":"...","PLATFORM_ADMIN_API_KEY":"...","INDEXER_API_KEY":"...","INTERNAL_API_KEY":"...","DB_PASSWORD":"..."}'
+```
+
+After updating secrets, force a new API deployment to pick up the changes.
+
+### Infrastructure changes (CDK)
+
+```bash
+cd infra/cdk
+npm install
+npx cdk deploy --require-approval never
+```
+
+### View logs
+
+```bash
+# API logs
+aws logs tail WalletHubStack-ApiTaskDefapiLogGroup9FDF1262-QSwOGdEbh7LA --follow
+
+# Frontend logs
+aws logs tail WalletHubStack-FrontendTaskDeffrontendLogGroupFDDEEC5B-Jjzf74V1OmnV --follow
+```
+
+### Tear down everything
+
+```bash
+cd infra/cdk
+npx cdk destroy
+```
+
+## Local Development (Docker Compose)
+
+For local development, use the docker-compose setup which includes nginx proxying:
 
 ```bash
 cd deploy
-./deploy-ec2.sh
-```
-
-This script will:
-- Create a security group with required ports (22, 80, 443, 3005)
-- Launch an EC2 instance with Docker pre-installed
-- Output connection instructions
-
-### 2. Copy Project to Server
-
-```bash
-# From project root
-scp -i YOUR_KEY.pem -r . ec2-user@YOUR_EC2_IP:/opt/wallet-hub/
-```
-
-### 3. SSH and Configure
-
-```bash
-ssh -i YOUR_KEY.pem ec2-user@YOUR_EC2_IP
-
-cd /opt/wallet-hub/deploy
 cp .env.example .env
-nano .env  # Configure your secrets
-```
-
-**Required Environment Variables:**
-
-| Variable | Description |
-|----------|-------------|
-| `DB_PASSWORD` | PostgreSQL password |
-| `API_KEY` | Your Wallet Hub API key |
-| `TURNKEY_API_PUBLIC_KEY` | Turnkey API public key |
-| `TURNKEY_API_PRIVATE_KEY` | Turnkey API private key |
-| `TURNKEY_ORGANIZATION_ID` | Turnkey organization ID |
-| `VITE_API_URL` | Frontend API URL (e.g., `http://YOUR_EC2_IP/v1`) |
-
-### 4. Deploy
-
-```bash
+# Edit .env with your secrets
 docker-compose up -d --build
 ```
 
-### 5. Access Application
-
-- **Frontend:** `http://YOUR_EC2_IP`
-- **API:** `http://YOUR_EC2_IP/v1`
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│              EC2 Instance               │
-│  ┌─────────────────────────────────┐   │
-│  │    nginx (port 80)              │   │
-│  │    - Serves frontend            │   │
-│  │    - Proxies /v1/* to API       │   │
-│  └─────────────────────────────────┘   │
-│              │                          │
-│  ┌───────────▼───────────────────┐     │
-│  │    wallet-hub-api (3005)      │     │
-│  │    - Fastify API server       │     │
-│  └───────────────────────────────┘     │
-│              │                          │
-│  ┌───────────▼───────────────────┐     │
-│  │    PostgreSQL (5432)          │     │
-│  │    - Database                 │     │
-│  └───────────────────────────────┘     │
-└─────────────────────────────────────────┘
-```
-
-## Commands
-
-```bash
-# View logs
-docker-compose logs -f
-
-# View specific service logs
-docker-compose logs -f api
-
-# Restart services
-docker-compose restart
-
-# Stop all services
-docker-compose down
-
-# Rebuild and restart
-docker-compose up -d --build
-
-# Run database migrations
-docker-compose exec api npm run migrate
-```
-
-## Updating the Application
-
-```bash
-# Pull latest code (if using git)
-cd /opt/wallet-hub
-git pull
-
-# Or copy updated files
-scp -i YOUR_KEY.pem -r . ec2-user@YOUR_EC2_IP:/opt/wallet-hub/
-
-# Rebuild and restart
-cd deploy
-docker-compose up -d --build
-```
-
-## Security Notes
-
-- The default setup uses HTTP. For production, configure HTTPS with Let's Encrypt
-- Restrict SSH access to your IP in the security group
-- Use strong passwords for database and API keys
-- Consider using AWS Secrets Manager for sensitive values
-
-## Troubleshooting
-
-**Container not starting:**
-```bash
-docker-compose logs api  # Check API logs
-docker-compose logs postgres  # Check DB logs
-```
-
-**Database connection issues:**
-```bash
-docker-compose exec postgres psql -U wallet_hub -d wallet_hub
-```
-
-**Frontend not loading:**
-```bash
-docker-compose logs frontend
-docker-compose exec frontend cat /etc/nginx/conf.d/default.conf
-```
+- Frontend: http://localhost
+- API: http://localhost:3005/v1

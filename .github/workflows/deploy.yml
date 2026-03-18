@@ -1,0 +1,90 @@
+name: Deploy to ECS Fargate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 590184001652.dkr.ecr.us-east-1.amazonaws.com
+  API_REPO: wallet-hub-api
+  FRONTEND_REPO: wallet-hub-frontend
+  ECS_CLUSTER: wallet-hub
+  API_SERVICE: wallet-hub-api
+  FRONTEND_SERVICE: wallet-hub-frontend
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push API image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            -t $ECR_REGISTRY/$API_REPO:${{ github.sha }} \
+            -t $ECR_REGISTRY/$API_REPO:latest \
+            -f deploy/Dockerfile.api .
+          docker push $ECR_REGISTRY/$API_REPO:${{ github.sha }}
+          docker push $ECR_REGISTRY/$API_REPO:latest
+
+      - name: Build and push Frontend image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --build-arg VITE_WALLET_HUB_BASE_URL=/v1 \
+            --build-arg NGINX_CONF=deploy/nginx-fargate.conf.template \
+            -t $ECR_REGISTRY/$FRONTEND_REPO:${{ github.sha }} \
+            -t $ECR_REGISTRY/$FRONTEND_REPO:latest \
+            -f deploy/Dockerfile.frontend .
+          docker push $ECR_REGISTRY/$FRONTEND_REPO:${{ github.sha }}
+          docker push $ECR_REGISTRY/$FRONTEND_REPO:latest
+
+      - name: Deploy API service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $API_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Deploy Frontend service
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $FRONTEND_SERVICE \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      - name: Wait for API service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $API_SERVICE \
+            --region $AWS_REGION
+        timeout-minutes: 10
+
+      - name: Wait for Frontend service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $FRONTEND_SERVICE \
+            --region $AWS_REGION
+        timeout-minutes: 10

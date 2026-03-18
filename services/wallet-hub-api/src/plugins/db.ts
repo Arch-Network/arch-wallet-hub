@@ -15,7 +15,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const registerDb: FastifyPluginAsync = async (server) => {
-  const pool = new Pool({ connectionString: server.config.DATABASE_URL });
+  const rawConnStr = server.config.DATABASE_URL;
+  const needsSsl = /sslmode=(require|verify)/i.test(rawConnStr);
+  const connStr = needsSsl
+    ? rawConnStr.replace(/[?&]sslmode=(require|verify-ca|verify-full|no-verify)[^&]*/gi, "")
+    : rawConnStr;
+  const pool = new Pool({
+    connectionString: connStr,
+    ...(needsSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+  });
   server.decorate("db", pool);
   
   // Also store globally for routes that can't access server.db in scoped plugins
