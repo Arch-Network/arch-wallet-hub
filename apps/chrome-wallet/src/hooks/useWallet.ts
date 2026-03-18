@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { walletStore } from "../state/wallet-store";
+import { invalidateClientCache } from "../utils/sdk";
 import type { AppState, WalletAccount, NetworkId } from "../state/types";
 import { DEFAULT_STATE } from "../state/types";
 
@@ -34,6 +35,7 @@ export function useWallet() {
     refresh,
     setNetwork: async (n: NetworkId) => {
       await walletStore.setNetwork(n);
+      invalidateClientCache();
       await refresh();
     },
     lock: async () => {

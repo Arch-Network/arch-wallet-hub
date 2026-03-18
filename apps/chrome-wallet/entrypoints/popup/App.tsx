@@ -1,4 +1,5 @@
-import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useWallet } from "../../src/hooks/useWallet";
 import Header from "../../src/components/Header";
 import NavBar from "../../src/components/NavBar";
@@ -11,6 +12,34 @@ import History from "../../src/pages/History/History";
 import TokenList from "../../src/pages/TokenList/TokenList";
 import Approve from "../../src/pages/Approve/Approve";
 import Settings from "../../src/pages/Settings/Settings";
+
+const ROUTE_STORAGE_KEY = "arch_wallet_last_route";
+const VALID_ROUTES = ["/dashboard", "/send", "/receive", "/history", "/tokens", "/settings"];
+
+function RouteRestorer() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const restored = useRef(false);
+
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    chrome.storage.local.get(ROUTE_STORAGE_KEY).then((result) => {
+      const saved = result[ROUTE_STORAGE_KEY];
+      if (saved && VALID_ROUTES.includes(saved) && saved !== location.pathname) {
+        navigate(saved, { replace: true });
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (VALID_ROUTES.includes(location.pathname)) {
+      chrome.storage.local.set({ [ROUTE_STORAGE_KEY]: location.pathname });
+    }
+  }, [location.pathname]);
+
+  return null;
+}
 
 function AppRoutes() {
   const { state, activeAccount, loading, lock, unlock, refresh } = useWallet();
@@ -35,6 +64,7 @@ function AppRoutes() {
     <div className="app-container">
       <Header account={activeAccount} network={state.network} onLock={lock} />
       <div className="app-body">
+        <RouteRestorer />
         <Routes>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/send" element={<Send />} />

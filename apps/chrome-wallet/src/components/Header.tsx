@@ -1,4 +1,6 @@
+import { useMemo } from "react";
 import { truncateAddress } from "../utils/format";
+import { reEncodeTaprootAddress } from "../utils/addressNetwork";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
 
@@ -18,6 +20,11 @@ function LockIcon() {
 }
 
 export default function Header({ account, network, onLock }: HeaderProps) {
+  const displayAddress = useMemo(
+    () => account ? reEncodeTaprootAddress(account.btcAddress, network) : "",
+    [account, network]
+  );
+
   return (
     <header className="app-header">
       <div className="header-inner">
@@ -32,10 +39,10 @@ export default function Header({ account, network, onLock }: HeaderProps) {
             {network === "testnet4" ? "TESTNET" : "MAINNET"}
           </span>
 
-          {account && (
+          {account && displayAddress && (
             <span className="address-chip">
-              {truncateAddress(account.btcAddress, 4)}
-              <CopyButton text={account.btcAddress} />
+              {truncateAddress(displayAddress, 4)}
+              <CopyButton text={displayAddress} />
             </span>
           )}
 

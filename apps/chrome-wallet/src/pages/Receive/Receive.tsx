@@ -1,15 +1,21 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import CopyButton from "../../components/CopyButton";
 
 type Tab = "btc" | "arch";
 
 export default function Receive() {
-  const { activeAccount } = useWallet();
+  const { activeAccount, state } = useWallet();
   const [tab, setTab] = useState<Tab>("btc");
   const [archAddress, setArchAddress] = useState<string>("");
+
+  const btcAddress = useMemo(
+    () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
+    [activeAccount, state.network]
+  );
 
   useEffect(() => {
     if (!activeAccount) return;
@@ -26,7 +32,7 @@ export default function Receive() {
 
   if (!activeAccount) return null;
 
-  const address = tab === "btc" ? activeAccount.btcAddress : archAddress;
+  const address = tab === "btc" ? btcAddress : archAddress;
   const label = tab === "btc" ? "Bitcoin Address" : "Arch Address";
 
   return (

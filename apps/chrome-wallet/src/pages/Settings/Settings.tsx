@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { walletStore } from "../../state/wallet-store";
 import { invalidateClientCache } from "../../utils/sdk";
 import { truncateAddress } from "../../utils/format";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import CopyButton from "../../components/CopyButton";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
 
@@ -20,6 +21,10 @@ export default function Settings() {
   const [apiBaseUrl, setApiBaseUrl] = useState(state.apiBaseUrl || "http://localhost:3005");
   const [apiKey, setApiKey] = useState(state.apiKey || "");
   const [apiSaved, setApiSaved] = useState(false);
+  const displayBtcAddress = useMemo(
+    () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
+    [activeAccount, state.network]
+  );
 
   useEffect(() => {
     setConnectedSites(state.connectedSites);
@@ -229,9 +234,9 @@ export default function Settings() {
               <div className="input-label">Bitcoin Address</div>
               <div className="address-chip" style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <span className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>
-                  {activeAccount.btcAddress}
+                  {displayBtcAddress}
                 </span>
-                <CopyButton text={activeAccount.btcAddress} />
+                <CopyButton text={displayBtcAddress} />
               </div>
             </div>
             <div>
