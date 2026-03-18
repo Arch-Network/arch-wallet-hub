@@ -68,3 +68,26 @@ export function archAccountFromInternalKey(publicKeyHex: string): {
     archAccountAddress: bs58.encode(buf),
   };
 }
+
+/**
+ * Re-encode a taproot (bech32m v1) address for a different network.
+ * tb1p... → bc1p... (mainnet) or bc1p... → tb1p... (testnet).
+ * Returns the original address unchanged if it already matches the target
+ * or is not a recognised taproot address.
+ */
+export function reEncodeTaprootForNetwork(
+  address: string,
+  targetNetwork: "mainnet" | "testnet"
+): string {
+  const isTestnet = address.startsWith("tb1p");
+  const isMainnet = address.startsWith("bc1p");
+  if (!isTestnet && !isMainnet) return address;
+  if (targetNetwork === "mainnet" && isMainnet) return address;
+  if (targetNetwork === "testnet" && isTestnet) return address;
+
+  const decoded = btcAddress.fromBech32(address);
+  if (decoded.version !== 1 || decoded.data.length !== 32) return address;
+
+  const prefix = targetNetwork === "mainnet" ? "bc" : "tb";
+  return btcAddress.toBech32(decoded.data, decoded.version, prefix);
+}

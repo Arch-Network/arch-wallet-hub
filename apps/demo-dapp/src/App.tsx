@@ -1,6 +1,7 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "./types";
 import AppShell from "./components/layout/AppShell";
 import ConnectView from "./views/ConnectView";
@@ -11,9 +12,15 @@ import HistoryView from "./views/HistoryView";
 import SettingsView from "./views/SettingsView";
 
 const WALLET_STORAGE_KEY = "arch-wallet-hub:connected-wallet";
+const NETWORK_STORAGE_KEY = "arch-wallet-hub:network";
 
 function defaultEnv(key: string, fallback = ""): string {
   return (import.meta as any).env?.[key] ?? fallback;
+}
+
+function storedNetworkToArch(stored: string | null): ArchNetwork {
+  if (stored === "Mainnet" || stored === "mainnet") return "mainnet";
+  return "testnet";
 }
 
 export default function App() {
@@ -26,6 +33,9 @@ export default function App() {
   );
 
   const [connectedWallet, setConnectedWallet] = useState<ConnectedWallet | null>(null);
+  const [network, setNetwork] = useState<ArchNetwork>(
+    () => storedNetworkToArch(localStorage.getItem(NETWORK_STORAGE_KEY))
+  );
 
   const apiKey = useMemo(
     () => defaultEnv("VITE_WALLET_HUB_API_KEY", ""),
@@ -33,8 +43,8 @@ export default function App() {
   );
 
   const client = useMemo(
-    () => new WalletHubClient({ baseUrl, ...(apiKey ? { apiKey } : {}) }),
-    [baseUrl, apiKey]
+    () => new WalletHubClient({ baseUrl, network, ...(apiKey ? { apiKey } : {}) }),
+    [baseUrl, apiKey, network]
   );
 
   useEffect(() => {
@@ -48,6 +58,11 @@ export default function App() {
     }
   }, []);
 
+  const handleNetworkChange = useCallback((n: ArchNetwork) => {
+    setNetwork(n);
+    localStorage.setItem(NETWORK_STORAGE_KEY, n === "mainnet" ? "Mainnet" : "Testnet4");
+  }, []);
+
   const handleConnect = useCallback((wallet: ConnectedWallet) => {
     setConnectedWallet(wallet);
     localStorage.setItem(WALLET_STORAGE_KEY, JSON.stringify(wallet));
@@ -59,7 +74,12 @@ export default function App() {
   }, []);
 
   const authenticatedLayout = connectedWallet ? (
-    <AppShell wallet={connectedWallet} onDisconnect={handleDisconnect}>
+    <AppShell
+      wallet={connectedWallet}
+      network={network}
+      onNetworkChange={handleNetworkChange}
+      onDisconnect={handleDisconnect}
+    >
       <Outlet />
     </AppShell>
   ) : (
@@ -78,6 +98,8 @@ export default function App() {
               <ConnectView
                 client={client}
                 externalUserId={externalUserId}
+                network={network}
+                onNetworkChange={handleNetworkChange}
                 onConnect={handleConnect}
               />
             )
@@ -91,6 +113,7 @@ export default function App() {
               <DashboardView
                 client={client}
                 wallet={connectedWallet!}
+                network={network}
                 externalUserId={externalUserId}
               />
             }
@@ -101,6 +124,7 @@ export default function App() {
               <SendView
                 client={client}
                 wallet={connectedWallet!}
+                network={network}
                 externalUserId={externalUserId}
               />
             }
@@ -111,6 +135,7 @@ export default function App() {
               <ReceiveView
                 client={client}
                 wallet={connectedWallet!}
+                network={network}
                 externalUserId={externalUserId}
               />
             }
@@ -121,6 +146,7 @@ export default function App() {
               <HistoryView
                 client={client}
                 wallet={connectedWallet!}
+                network={network}
                 externalUserId={externalUserId}
               />
             }
@@ -130,6 +156,7 @@ export default function App() {
             element={
               <SettingsView
                 wallet={connectedWallet!}
+                network={network}
                 onDisconnect={handleDisconnect}
               />
             }

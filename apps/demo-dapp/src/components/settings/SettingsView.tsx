@@ -1,22 +1,17 @@
+import type { ArchNetwork } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 
 type Props = {
   wallet: ConnectedWallet;
+  network: ArchNetwork;
   onDisconnect: () => void;
 };
 
-function detectNetwork(address: string): "testnet" | "mainnet" {
-  const testnetPrefixes = ["tb1", "bcrt1", "m", "n", "2"];
-  return testnetPrefixes.some((p) => address.startsWith(p))
-    ? "testnet"
-    : "mainnet";
-}
-
 export default function SettingsView({
   wallet,
+  network,
   onDisconnect,
 }: Props) {
-  const network = detectNetwork(wallet.address);
 
   return (
     <div className="settings-view">

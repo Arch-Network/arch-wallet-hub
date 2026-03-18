@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { WalletOverviewResponse } from "@arch/wallet-hub-sdk";
+import type { ArchNetwork, WalletOverviewResponse } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import AddressDisplay from "../shared/AddressDisplay";
 import TokenList from "./TokenList";
@@ -25,6 +25,7 @@ type RawTx = {
 type DashboardViewProps = {
   client: WalletHubClient;
   wallet: ConnectedWallet;
+  network: ArchNetwork;
   externalUserId: string;
 };
 
@@ -61,6 +62,7 @@ function BalanceSkeleton() {
 export default function DashboardView({
   client,
   wallet,
+  network,
   externalUserId,
 }: DashboardViewProps) {
   const [overview, setOverview] = useState<WalletOverviewResponse | null>(null);
@@ -215,6 +217,10 @@ export default function DashboardView({
             <div className="tx-skeleton-row" />
             <div className="tx-skeleton-row" />
           </div>
+        ) : overview?.arch?.recentTransactionsTimedOut ? (
+          <p className="recent-transactions-empty" style={{ color: "var(--color-warning, #b5890a)" }}>
+            Transaction history is temporarily unavailable (upstream timeout). Balances are up to date.
+          </p>
         ) : recentTxs.length === 0 ? (
           <p className="recent-transactions-empty">No transactions yet.</p>
         ) : (

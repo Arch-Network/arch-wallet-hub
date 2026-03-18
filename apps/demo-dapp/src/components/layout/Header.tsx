@@ -1,8 +1,13 @@
+import { useMemo } from "react";
+import type { ArchNetwork } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 
 type HeaderProps = {
   wallet: ConnectedWallet;
+  network: ArchNetwork;
+  onNetworkChange: (n: ArchNetwork) => void;
   onDisconnect: () => void;
 };
 
@@ -15,30 +20,38 @@ function walletLabel(type: ConnectedWallet["type"]): string {
   return labels[type];
 }
 
-function detectNetwork(address: string): "testnet" | "mainnet" {
-  return address.startsWith("tb1") || address.startsWith("bcrt1") || address.startsWith("m") || address.startsWith("n")
-    ? "testnet"
-    : "mainnet";
-}
-
 function truncateAddress(addr: string): string {
   if (addr.length <= 16) return addr;
   return `${addr.slice(0, 8)}...${addr.slice(-6)}`;
 }
 
-export default function Header({ wallet, onDisconnect }: HeaderProps) {
-  const network = detectNetwork(wallet.address);
+export default function Header({ wallet, network, onNetworkChange, onDisconnect }: HeaderProps) {
+  const displayAddress = useMemo(
+    () => reEncodeTaprootAddress(wallet.address, network),
+    [wallet.address, network]
+  );
+
+  const toggleNetwork = () => {
+    onNetworkChange(network === "mainnet" ? "testnet" : "mainnet");
+  };
 
   return (
     <header className="app-header">
       <span className={`header-wallet-badge ${wallet.type}`}>
         {walletLabel(wallet.type)}
       </span>
-      <span className="header-address" title={wallet.address}>
-        {truncateAddress(wallet.address)}
+      <span className="header-address" title={displayAddress}>
+        {truncateAddress(displayAddress)}
       </span>
-      <CopyButton text={wallet.address} />
-      <span className={`header-network-badge ${network}`}>{network}</span>
+      <CopyButton text={displayAddress} />
+      <button
+        className={`header-network-toggle ${network}`}
+        onClick={toggleNetwork}
+        type="button"
+        title="Click to switch network"
+      >
+        {network}
+      </button>
       <button className="header-disconnect-btn" onClick={onDisconnect} type="button">
         Disconnect
       </button>

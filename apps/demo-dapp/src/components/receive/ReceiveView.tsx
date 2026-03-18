@@ -1,17 +1,24 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import type { WalletHubClient } from "@arch/wallet-hub-sdk";
+import type { WalletHubClient, ArchNetwork } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
 import { formatArchId } from "../../utils/archFormat";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 
 type Props = {
   client: WalletHubClient;
   wallet: ConnectedWallet;
+  network: ArchNetwork;
   externalUserId: string;
 };
 
-export default function ReceiveView({ client, wallet }: Props) {
+export default function ReceiveView({ client, wallet, network }: Props) {
+  const btcAddress = useMemo(
+    () => reEncodeTaprootAddress(wallet.address, network),
+    [wallet.address, network]
+  );
+
   const [archAddress, setArchAddress] = useState(wallet.archAddress || "");
   const [airdropLoading, setAirdropLoading] = useState(false);
   const [airdropResult, setAirdropResult] = useState<string | null>(null);
@@ -45,6 +52,8 @@ export default function ReceiveView({ client, wallet }: Props) {
     }
   }, [client, archAddress]);
 
+  const isTestnet = network === "testnet";
+
   return (
     <div className="receive-view">
       <h1 className="receive-title">Receive</h1>
@@ -54,7 +63,7 @@ export default function ReceiveView({ client, wallet }: Props) {
           <h2 className="receive-section-title">Receive BTC</h2>
           <div className="qr-container">
             <QRCodeSVG
-              value={wallet.address}
+              value={btcAddress}
               size={200}
               bgColor="transparent"
               fgColor="#ffffff"
@@ -62,8 +71,8 @@ export default function ReceiveView({ client, wallet }: Props) {
             />
           </div>
           <div className="receive-address">
-            <code className="receive-address-text">{wallet.address}</code>
-            <CopyButton text={wallet.address} />
+            <code className="receive-address-text">{btcAddress}</code>
+            <CopyButton text={btcAddress} />
           </div>
           {wallet.type === "turnkey" && (
             <p className="receive-note">
@@ -94,50 +103,56 @@ export default function ReceiveView({ client, wallet }: Props) {
             <>
               <p className="receive-note">
                 Your Arch account address is derived from your BTC Taproot address.
-                Use the airdrop button below to fund it, or send ARCH tokens to:
+                {isTestnet
+                  ? " Use the airdrop button below to fund it, or send ARCH tokens to:"
+                  : " Send ARCH tokens to:"}
               </p>
               <div className="receive-address">
-                <code className="receive-address-text">{wallet.address}</code>
-                <CopyButton text={wallet.address} />
+                <code className="receive-address-text">{btcAddress}</code>
+                <CopyButton text={btcAddress} />
               </div>
             </>
           )}
-          <p className="receive-note">
-            Use the testnet faucet below to get free ARCH tokens for testing.
-          </p>
+          {isTestnet && (
+            <p className="receive-note">
+              Use the testnet faucet below to get free ARCH tokens for testing.
+            </p>
+          )}
         </div>
       </div>
 
-      <div className="receive-airdrop">
-        <button
-          className="btn-primary"
-          onClick={handleAirdrop}
-          disabled={airdropLoading}
-          type="button"
-        >
-          {airdropLoading ? (
-            <>
-              <span className="spinner small" /> Requesting…
-            </>
-          ) : (
-            "Request Testnet Airdrop"
+      {isTestnet && (
+        <div className="receive-airdrop">
+          <button
+            className="btn-primary"
+            onClick={handleAirdrop}
+            disabled={airdropLoading}
+            type="button"
+          >
+            {airdropLoading ? (
+              <>
+                <span className="spinner small" /> Requesting…
+              </>
+            ) : (
+              "Request Testnet Airdrop"
+            )}
+          </button>
+
+          {airdropResult && (
+            <div className="statusMessage success">
+              <span className="statusIcon">✓</span>
+              <span>Airdrop sent! TX: {airdropResult.slice(0, 16)}…</span>
+            </div>
           )}
-        </button>
 
-        {airdropResult && (
-          <div className="statusMessage success">
-            <span className="statusIcon">✓</span>
-            <span>Airdrop sent! TX: {airdropResult.slice(0, 16)}…</span>
-          </div>
-        )}
-
-        {airdropError && (
-          <div className="statusMessage error">
-            <span className="statusIcon">✗</span>
-            <span>{airdropError}</span>
-          </div>
-        )}
-      </div>
+          {airdropError && (
+            <div className="statusMessage error">
+              <span className="statusIcon">✗</span>
+              <span>{airdropError}</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

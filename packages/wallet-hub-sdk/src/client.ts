@@ -44,20 +44,14 @@ import type {
 export class WalletHubClient {
   private baseUrl: string;
   private apiKey: string | undefined;
+  private network: string;
   private fetchImpl: typeof fetch;
 
   constructor(opts: WalletHubClientOptions) {
-    // The Wallet Hub API is versioned under `/v1`. Make the SDK resilient by accepting:
-    // - baseUrl = http://localhost:3005
-    // - baseUrl = http://localhost:3005/v1
-    // and always normalizing to a `/v1` base.
     const trimmed = opts.baseUrl.replace(/\/+$/, "");
     this.baseUrl = /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
     this.apiKey = opts.apiKey;
-    // In some environments, calling a captured `window.fetch` with a different `this`
-    // (e.g. as `this.fetchImpl(...)`) can throw "Illegal invocation".
-    // Binding to globalThis keeps the native implementation happy while still allowing
-    // callers to override fetchImpl for testing.
+    this.network = opts.network ?? "testnet";
     const f = (opts.fetchImpl ?? fetch) as any;
     this.fetchImpl = typeof f?.bind === "function" ? f.bind(globalThis) : f;
   }
@@ -65,6 +59,7 @@ export class WalletHubClient {
   private async requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     if (this.apiKey) headers.set("x-api-key", this.apiKey);
+    if (this.network) headers.set("x-network", this.network);
     if (!headers.has("content-type") && init.body) headers.set("content-type", "application/json");
 
     const res = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });

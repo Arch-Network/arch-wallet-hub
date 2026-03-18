@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { BtcTransaction } from "@arch/wallet-hub-sdk";
+import type { ArchNetwork, BtcTransaction } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
 import { formatArchId } from "../../utils/archFormat";
@@ -35,6 +35,7 @@ type UnifiedTx = {
 type Props = {
   client: WalletHubClient;
   wallet: ConnectedWallet;
+  network: ArchNetwork;
   externalUserId: string;
 };
 
@@ -42,17 +43,12 @@ type FilterType = "all" | "arch" | "btc";
 
 // ── Helpers ──
 
-function isTestnetAddress(addr: string): boolean {
-  return addr.startsWith("tb1") || addr.startsWith("bcrt1") || addr.startsWith("m") || addr.startsWith("n");
+function archExplorerUrl(txid: string, network: ArchNetwork): string {
+  return `https://explorer.arch.network/${network}/tx/${txid}`;
 }
 
-function archExplorerUrl(txid: string, walletAddress: string): string {
-  const seg = isTestnetAddress(walletAddress) ? "testnet" : "mainnet";
-  return `https://explorer.arch.network/${seg}/tx/${txid}`;
-}
-
-function btcExplorerUrl(txid: string, walletAddress: string): string {
-  const host = isTestnetAddress(walletAddress) ? "mempool.space/testnet4" : "mempool.space";
+function btcExplorerUrl(txid: string, network: ArchNetwork): string {
+  const host = network === "testnet" ? "mempool.space/testnet4" : "mempool.space";
   return `https://${host}/tx/${txid}`;
 }
 
@@ -404,7 +400,7 @@ function enrichArchDetails(
 
 // ── Component ──
 
-export default function HistoryView({ client, wallet }: Props) {
+export default function HistoryView({ client, wallet, network }: Props) {
   const [archTxs, setArchTxs] = useState<UnifiedTx[]>([]);
   const [btcTxs, setBtcTxs] = useState<UnifiedTx[]>([]);
   const [archLoading, setArchLoading] = useState(true);
@@ -448,7 +444,11 @@ export default function HistoryView({ client, wallet }: Props) {
         enrichArchDetails(client, initial, archAddress, setArchTxs);
       }
     } else {
-      setArchError(archResult.reason?.message || "Failed to load Arch transactions");
+      const msg = archResult.reason?.message || "Failed to load Arch transactions";
+      const isTimeout = /timeout|UpstreamTimeout|504/i.test(msg);
+      setArchError(isTimeout
+        ? "Transaction history is temporarily unavailable (upstream timeout)."
+        : `Arch: ${msg}`);
     }
     setArchLoading(false);
 
@@ -760,8 +760,8 @@ export default function HistoryView({ client, wallet }: Props) {
                       <a
                         href={
                           tx.type === "arch"
-                            ? archExplorerUrl(tx.rawId, wallet.address)
-                            : btcExplorerUrl(tx.rawId, wallet.address)
+                            ? archExplorerUrl(tx.rawId, network)
+                            : btcExplorerUrl(tx.rawId, network)
                         }
                         target="_blank"
                         rel="noopener noreferrer"

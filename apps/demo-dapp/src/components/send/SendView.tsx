@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import type { WalletHubClient } from "@arch/wallet-hub-sdk";
+import type { WalletHubClient, ArchNetwork } from "@arch/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
 import { formatArchId } from "../../utils/archFormat";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 
 type AssetType = "btc" | "arch" | "apl";
 
@@ -62,6 +63,7 @@ function extractSchnorrSigFromPsbt(psbtBytes: Uint8Array): string {
 type Props = {
   client: WalletHubClient;
   wallet: ConnectedWallet;
+  network: ArchNetwork;
   externalUserId: string;
 };
 
@@ -81,7 +83,7 @@ function formatLamports(lamports: string): string {
   return `${(parseInt(lamports, 10) / 1e9).toFixed(6)} ARCH`;
 }
 
-export default function SendView({ client, wallet, externalUserId }: Props) {
+export default function SendView({ client, wallet, network, externalUserId }: Props) {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [asset, setAsset] = useState<AssetType | null>(null);
@@ -405,11 +407,14 @@ export default function SendView({ client, wallet, externalUserId }: Props) {
     setTxResult(null);
   }, []);
 
-  const isTestnet = wallet.address.startsWith("tb1") || wallet.address.startsWith("bcrt1");
+  const displayAddress = useMemo(
+    () => reEncodeTaprootAddress(wallet.address, network),
+    [wallet.address, network]
+  );
   const explorerUrl =
     asset === "btc"
-      ? `https://mempool.space/${isTestnet ? "testnet/" : ""}tx/${txResult?.rawTxid}`
-      : `https://explorer.arch.network/${isTestnet ? "testnet" : "mainnet"}/tx/${txResult?.rawTxid}`;
+      ? `https://mempool.space/${network === "testnet" ? "testnet4/" : ""}tx/${txResult?.rawTxid}`
+      : `https://explorer.arch.network/${network}/tx/${txResult?.rawTxid}`;
 
   return (
     <div className="send-view">
@@ -577,7 +582,7 @@ export default function SendView({ client, wallet, externalUserId }: Props) {
             <div className="send-review-row">
               <span className="send-review-label">From</span>
               <span className="send-review-value mono">
-                {wallet.address.slice(0, 12)}…{wallet.address.slice(-8)}
+                {displayAddress.slice(0, 12)}…{displayAddress.slice(-8)}
               </span>
             </div>
             <div className="send-review-row">

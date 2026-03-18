@@ -141,8 +141,12 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       const userId = (consumed as { userId: string }).userId;
       const externalUserId = (body as any).externalUserId;
       const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
-      const addressFormat = (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
-      const derivationPath = (body as any).derivationPath ?? "m/86'/1'/0'/0/0";
+      const networkHint = (request.headers["x-network"] as string)?.toLowerCase();
+      const isMainnet = networkHint === "mainnet";
+      const addressFormat = (body as any).addressFormat ??
+        (isMainnet ? "ADDRESS_FORMAT_BITCOIN_MAINNET_P2TR" : "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR");
+      const derivationPath = (body as any).derivationPath ??
+        (isMainnet ? "m/86'/0'/0'/0/0" : "m/86'/1'/0'/0/0");
 
       await withDbTransaction(db, async (client) => {
         await auditEvent({
@@ -327,9 +331,13 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       const userId = (consumed as { userId: string }).userId;
       const externalUserId = (body as any).externalUserId;
       const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
+      const networkHintCustodial = (request.headers["x-network"] as string)?.toLowerCase();
+      const isMainnetCustodial = networkHintCustodial === "mainnet";
       const addressFormat =
-        (body as any).addressFormat ?? "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
-      const derivationPath = (body as any).derivationPath ?? "m/86'/1'/0'/0/0";
+        (body as any).addressFormat ??
+        (isMainnetCustodial ? "ADDRESS_FORMAT_BITCOIN_MAINNET_P2TR" : "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR");
+      const derivationPath = (body as any).derivationPath ??
+        (isMainnetCustodial ? "m/86'/0'/0'/0/0" : "m/86'/1'/0'/0/0");
 
       await withDbTransaction(db, async (client) => {
         await auditEvent({

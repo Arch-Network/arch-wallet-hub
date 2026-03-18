@@ -36,8 +36,8 @@ export type IndexerClient = {
   getBtcChainTip(): Promise<unknown>;
 };
 
-export function createIndexerClient(server: FastifyInstance): IndexerClient | null {
-  const baseUrl = server.config.INDEXER_BASE_URL;
+export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: string): IndexerClient | null {
+  const baseUrl = baseUrlOverride ?? server.config.INDEXER_BASE_URL;
   if (!baseUrl) return null;
   const baseUrlValue = baseUrl;
   const apiKey = server.config.INDEXER_API_KEY;

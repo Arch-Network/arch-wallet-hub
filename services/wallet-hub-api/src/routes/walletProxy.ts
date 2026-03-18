@@ -1,13 +1,21 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { Type } from "@sinclair/typebox";
-import { getIndexerClient } from "../indexer/store.js";
-import { resolveArchAccountAddress } from "../arch/address.js";
+import { getIndexerClient, getNetworkIndexerClient } from "../indexer/store.js";
+import { resolveArchAccountAddress, reEncodeTaprootForNetwork } from "../arch/address.js";
 
 const AddressParams = Type.Object({ address: Type.String({ minLength: 1 }) });
 const TxidParams = Type.Object({ txid: Type.String({ minLength: 1 }) });
 const MintParams = Type.Object({ mint: Type.String({ minLength: 1 }) });
 
-function indexerOrFail(reply: any) {
+function requestNetwork(request: FastifyRequest): "mainnet" | "testnet" {
+  const h = (request.headers["x-network"] as string)?.toLowerCase();
+  return h === "mainnet" ? "mainnet" : "testnet";
+}
+
+function indexerForRequest(request: FastifyRequest, reply: any) {
+  const network = requestNetwork(request);
+  const client = getNetworkIndexerClient(network);
+  if (client) return client;
   const indexer = getIndexerClient();
   if (!indexer) {
     reply.notImplemented("Indexer not configured (INDEXER_BASE_URL missing)");
@@ -16,8 +24,29 @@ function indexerOrFail(reply: any) {
   return indexer;
 }
 
+/**
+ * Re-encode a BTC taproot address so it matches the network the caller selected.
+ * e.g. tb1p... → bc1p... when X-Network: mainnet.
+ */
+function btcAddressForRequest(address: string, request: FastifyRequest): string {
+  return reEncodeTaprootForNetwork(address, requestNetwork(request));
+}
+
 const OVERVIEW_TTL_MS = 30_000;
-const overviewCache = new Map<string, { ts: number; data: unknown }>();
+const OVERVIEW_PARTIAL_TTL_MS = 10_000;
+const OVERVIEW_FAST_TIMEOUT_MS = 5_000;
+const overviewCache = new Map<string, { ts: number; ttl: number; data: unknown }>();
+
+function raceWithTimeout<T>(promise: Promise<T>, ms: number, _label?: string): Promise<{ value: T; timedOut: false } | { value: null; timedOut: true }> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<{ value: null; timedOut: true }>((resolve) => {
+    timer = setTimeout(() => resolve({ value: null, timedOut: true }), ms);
+  });
+  return Promise.race([
+    promise.then((value) => ({ value, timedOut: false as const })),
+    timeout,
+  ]).finally(() => clearTimeout(timer));
+}
 
 export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
   // ── Wallet Overview (aggregated dashboard data) ──
@@ -32,31 +61,35 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { address } = request.params as any;
+
+      const networkHeader = (request.headers["x-network"] as string)?.toLowerCase() || "testnet";
+      const cacheKey = `${networkHeader}:${address}`;
 
       const noCache =
         (request.query as any)?.nocache !== undefined ||
         request.headers["cache-control"]?.includes("no-cache");
 
-      const cached = overviewCache.get(address);
-      if (!noCache && cached && Date.now() - cached.ts < OVERVIEW_TTL_MS) {
+      const cached = overviewCache.get(cacheKey);
+      if (!noCache && cached && Date.now() - cached.ts < cached.ttl) {
         return cached.data;
       }
 
       const resolved = resolveArchAccountAddress(address);
-      const btcAddress = resolved.kind === "taproot" ? resolved.taprootAddress : address;
+      const rawBtcAddr = resolved.kind === "taproot" ? resolved.taprootAddress : address;
+      const btcAddress = btcAddressForRequest(rawBtcAddr, request);
       const archAddressOverride = (request.query as any)?.archAddress;
       const queryAddr = archAddressOverride || resolved.archAccountAddress;
 
-      const [archAccount, archTxs, btcSummary] = await Promise.allSettled([
-        indexer.getAccountSummary(queryAddr),
-        indexer.getAccountTransactions(queryAddr, 10),
-        indexer.getBtcAddressSummary(btcAddress)
+      const [archAccount, archTxs, btcSummary] = await Promise.all([
+        raceWithTimeout(indexer.getAccountSummary(queryAddr), OVERVIEW_FAST_TIMEOUT_MS, "getAccountSummary"),
+        raceWithTimeout(indexer.getAccountTransactions(queryAddr, 10), OVERVIEW_FAST_TIMEOUT_MS, "getAccountTransactions"),
+        raceWithTimeout(indexer.getBtcAddressSummary(btcAddress), OVERVIEW_FAST_TIMEOUT_MS, "getBtcAddressSummary"),
       ]);
 
-      const archAccountData = archAccount.status === "fulfilled" ? archAccount.value as any : null;
+      const archAccountData = archAccount.timedOut ? null : archAccount.value as any;
       const displayAddress =
         archAccountData?.address ||
         archAccountData?.address_hex ||
@@ -68,14 +101,19 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
         btcAddress,
         arch: {
           account: archAccountData,
-          recentTransactions: archTxs.status === "fulfilled" ? archTxs.value : null
+          accountTimedOut: archAccount.timedOut,
+          recentTransactions: archTxs.timedOut ? null : archTxs.value,
+          recentTransactionsTimedOut: archTxs.timedOut,
         },
         btc: {
-          summary: btcSummary.status === "fulfilled" ? btcSummary.value : null
+          summary: btcSummary.timedOut ? null : btcSummary.value,
+          summaryTimedOut: btcSummary.timedOut,
         }
       };
 
-      overviewCache.set(address, { ts: Date.now(), data });
+      const anyTimedOut = archAccount.timedOut || archTxs.timedOut || btcSummary.timedOut;
+      const ttl = anyTimedOut ? OVERVIEW_PARTIAL_TTL_MS : OVERVIEW_TTL_MS;
+      overviewCache.set(cacheKey, { ts: Date.now(), ttl, data });
       if (overviewCache.size > 500) {
         const oldest = overviewCache.keys().next().value!;
         overviewCache.delete(oldest);
@@ -97,7 +135,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { address } = request.params as any;
       const resolved = resolveArchAccountAddress(address);
@@ -121,7 +159,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { address } = request.params as any;
       const resolved = resolveArchAccountAddress(address);
@@ -149,17 +187,23 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { address } = request.params as any;
       const query = request.query as any;
       const resolved = resolveArchAccountAddress(address);
       try {
-        return await indexer.getAccountTransactions(
-          resolved.archAccountAddress,
-          query.limit,
-          query.page
+        const result = await raceWithTimeout(
+          indexer.getAccountTransactions(resolved.archAccountAddress, query.limit, query.page),
+          OVERVIEW_FAST_TIMEOUT_MS,
         );
+        if (result.timedOut) {
+          return reply.code(504).send({
+            error: "UpstreamTimeout",
+            message: "Transaction history is temporarily unavailable — the upstream explorer is not responding. Balances and other data are unaffected.",
+          });
+        }
+        return result.value;
       } catch (err: any) {
         return reply.code(502).send({ error: "IndexerError", message: err.message });
       }
@@ -176,7 +220,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { txid } = request.params as any;
       try {
@@ -203,7 +247,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const query = request.query as any;
       try {
@@ -224,7 +268,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { mint } = request.params as any;
       try {
@@ -242,8 +286,8 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
     {
       schema: { summary: "Arch network statistics", tags: ["wallet"] }
     },
-    async (_request, reply) => {
-      const indexer = indexerOrFail(reply);
+    async (request, reply) => {
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       try {
         return await indexer.getNetworkStats();
@@ -265,7 +309,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { address } = request.body as any;
       try {
@@ -288,11 +332,11 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
-      const { address } = request.params as any;
+      const addr = btcAddressForRequest((request.params as any).address, request);
       try {
-        return await indexer.getBtcAddressSummary(address);
+        return await indexer.getBtcAddressSummary(addr);
       } catch (err: any) {
         return reply.code(502).send({ error: "IndexerError", message: err.message });
       }
@@ -309,11 +353,11 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
-      const { address } = request.params as any;
+      const addr = btcAddressForRequest((request.params as any).address, request);
       try {
-        return await indexer.getBtcAddressUtxos(address);
+        return await indexer.getBtcAddressUtxos(addr);
       } catch (err: any) {
         return reply.code(502).send({ error: "IndexerError", message: err.message });
       }
@@ -333,12 +377,12 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
-      const { address } = request.params as any;
+      const addr = btcAddressForRequest((request.params as any).address, request);
       const { after_txid } = request.query as any;
       try {
-        return await indexer.getBtcAddressTxs(address, after_txid);
+        return await indexer.getBtcAddressTxs(addr, after_txid);
       } catch (err: any) {
         return reply.code(502).send({ error: "IndexerError", message: err.message });
       }
@@ -355,7 +399,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { txid } = request.params as any;
       try {
@@ -371,8 +415,8 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
     {
       schema: { summary: "Bitcoin fee rate estimates (sat/vB)", tags: ["wallet", "bitcoin"] }
     },
-    async (_request, reply) => {
-      const indexer = indexerOrFail(reply);
+    async (request, reply) => {
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       try {
         return await indexer.getBtcFeeEstimates();
@@ -387,8 +431,8 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
     {
       schema: { summary: "Bitcoin chain tip (height + hash)", tags: ["wallet", "bitcoin"] }
     },
-    async (_request, reply) => {
-      const indexer = indexerOrFail(reply);
+    async (request, reply) => {
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       try {
         return await indexer.getBtcChainTip();
@@ -408,7 +452,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { rawTxHex } = request.body as any;
       try {
@@ -432,7 +476,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       }
     },
     async (request, reply) => {
-      const indexer = indexerOrFail(reply);
+      const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { q } = request.query as any;
       try {

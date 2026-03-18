@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 // @ts-ignore - sats-connect types
 import { getAddress, AddressPurpose } from "sats-connect";
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 
 declare global {
@@ -20,6 +21,8 @@ declare global {
 type ConnectViewProps = {
   client: WalletHubClient;
   externalUserId: string;
+  network: ArchNetwork;
+  onNetworkChange: (n: ArchNetwork) => void;
   onConnect: (wallet: ConnectedWallet) => void;
 };
 
@@ -39,12 +42,14 @@ type TurnkeyWalletEntry = {
 export default function ConnectView({
   client,
   externalUserId,
+  network,
+  onNetworkChange,
   onConnect,
 }: ConnectViewProps) {
-  const NETWORKS = ["Testnet4", "Mainnet"] as const;
-  const [network, setNetwork] = useState<string>(
-    () => localStorage.getItem("arch-wallet-hub:network") || "Testnet4"
-  );
+  const NETWORKS: { label: string; value: ArchNetwork }[] = [
+    { label: "Testnet", value: "testnet" },
+    { label: "Mainnet", value: "mainnet" },
+  ];
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [turnkeyMode, setTurnkeyMode] = useState<
@@ -55,23 +60,19 @@ export default function ConnectView({
   );
   const [turnkeyListLoading, setTurnkeyListLoading] = useState(false);
 
-  const handleNetworkChange = useCallback((n: string) => {
-    setNetwork(n);
-    localStorage.setItem("arch-wallet-hub:network", n);
-  }, []);
-
   const clearError = useCallback(() => setError(null), []);
 
   const connectXverse = useCallback(async () => {
     setLoading(true);
     clearError();
     try {
+      const xverseNetwork = network === "mainnet" ? "Mainnet" : "Testnet";
       const response: any = await new Promise((resolve, reject) => {
         getAddress({
           payload: {
             purposes: [AddressPurpose.Payment, AddressPurpose.Ordinals],
             message: "Connect to Arch Wallet Hub",
-            network: { type: network as any },
+            network: { type: xverseNetwork as any },
           },
           onFinish: (res: any) => resolve(res),
           onCancel: () => reject(new Error("User cancelled connection")),
@@ -134,9 +135,15 @@ export default function ConnectView({
     setLoading(true);
     clearError();
     try {
+      const addressFormat = network === "mainnet"
+        ? "ADDRESS_FORMAT_BITCOIN_MAINNET_P2TR"
+        : "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR";
+      const derivationPath = network === "mainnet"
+        ? "m/86'/0'/0'/0/0"
+        : "m/86'/1'/0'/0/0";
       const result = await client.createTurnkeyWallet({
         idempotencyKey: self.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        body: { externalUserId },
+        body: { externalUserId, addressFormat, derivationPath },
       });
 
       onConnect({
@@ -152,7 +159,7 @@ export default function ConnectView({
     } finally {
       setLoading(false);
     }
-  }, [client, externalUserId, clearError, onConnect]);
+  }, [client, externalUserId, network, clearError, onConnect]);
 
   const loadTurnkeyWallets = useCallback(async () => {
     setTurnkeyListLoading(true);
@@ -224,12 +231,12 @@ export default function ConnectView({
       <div className="network-selector">
         {NETWORKS.map((n) => (
           <button
-            key={n}
-            className={`network-option${network === n ? " active" : ""}`}
-            onClick={() => handleNetworkChange(n)}
+            key={n.value}
+            className={`network-option${network === n.value ? " active" : ""}`}
+            onClick={() => onNetworkChange(n.value)}
             type="button"
           >
-            {n}
+            {n.label}
           </button>
         ))}
       </div>

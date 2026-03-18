@@ -3489,6 +3489,42 @@ button:disabled {
   color: var(--success-light);
 }
 
+.header-network-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.header-network-toggle.testnet {
+  background: var(--warning-bg);
+  color: var(--warning-light);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+.header-network-toggle.testnet:hover {
+  background: rgba(251, 191, 36, 0.25);
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
+.header-network-toggle.mainnet {
+  background: var(--success-bg);
+  color: var(--success-light);
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.header-network-toggle.mainnet:hover {
+  background: rgba(52, 211, 153, 0.25);
+  border-color: rgba(52, 211, 153, 0.5);
+}
+
 .header-disconnect-btn {
   background: none;
   border: 1px solid var(--border-default);

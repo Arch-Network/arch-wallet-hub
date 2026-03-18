@@ -1,10 +1,13 @@
 import { type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
+import type { ArchNetwork } from "@arch/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import Header from "./Header";
 
 type AppShellProps = {
   wallet: ConnectedWallet;
+  network: ArchNetwork;
+  onNetworkChange: (n: ArchNetwork) => void;
   onDisconnect: () => void;
   children: ReactNode;
 };
@@ -17,7 +20,7 @@ const navItems = [
   { to: "/settings", label: "Settings", icon: "⚙" },
 ];
 
-export default function AppShell({ wallet, onDisconnect, children }: AppShellProps) {
+export default function AppShell({ wallet, network, onNetworkChange, onDisconnect, children }: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
@@ -41,7 +44,7 @@ export default function AppShell({ wallet, onDisconnect, children }: AppShellPro
         </nav>
       </aside>
       <div className="app-main">
-        <Header wallet={wallet} onDisconnect={onDisconnect} />
+        <Header wallet={wallet} network={network} onNetworkChange={onNetworkChange} onDisconnect={onDisconnect} />
         <main className="app-content">{children}</main>
       </div>
     </div>

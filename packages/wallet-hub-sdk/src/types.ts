@@ -1,6 +1,9 @@
+export type ArchNetwork = "testnet" | "mainnet";
+
 export type WalletHubClientOptions = {
   baseUrl: string; // e.g. https://wallet-hub.arch.network/v1
   apiKey?: string; // optional when nginx injects it server-side
+  network?: ArchNetwork;
   fetchImpl?: typeof fetch;
 };
 
@@ -202,12 +205,15 @@ export type WalletOverviewResponse = {
       first_seen_at: string;
       last_seen_at: string;
     } | null;
+    accountTimedOut?: boolean;
     recentTransactions: {
       transactions: ArchTransaction[];
     } | null;
+    recentTransactionsTimedOut?: boolean;
   };
   btc: {
     summary: BtcAddressSummary | null;
+    summaryTimedOut?: boolean;
   };
 };
 
