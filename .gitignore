@@ -10,3 +10,10 @@ yarn-debug.log*
 yarn-error.log*
 .env.*
 !.env.example
+
+# External SDK checkout (not a proper submodule)
+arch-typescript-sdk/
+
+# CDK
+infra/cdk/cdk.out/
+infra/cdk/node_modules/

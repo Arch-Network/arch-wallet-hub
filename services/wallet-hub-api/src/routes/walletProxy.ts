@@ -47,7 +47,8 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
 
       const resolved = resolveArchAccountAddress(address);
       const btcAddress = resolved.kind === "taproot" ? resolved.taprootAddress : address;
-      const queryAddr = resolved.archAccountAddress;
+      const archAddressOverride = (request.query as any)?.archAddress;
+      const queryAddr = archAddressOverride || resolved.archAccountAddress;
 
       const [archAccount, archTxs, btcSummary] = await Promise.allSettled([
         indexer.getAccountSummary(queryAddr),

@@ -1,4 +1,5 @@
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import bs58 from "bs58";
 import { walletStore } from "../state/wallet-store";
 
 let cachedClient: WalletHubClient | null = null;
@@ -31,4 +32,17 @@ export function invalidateClientCache(): void {
 
 export function getExternalUserId(): string {
   return "arch-chrome-wallet-user";
+}
+
+/**
+ * Derive the Arch account address (base58) from a compressed (33-byte hex) or
+ * x-only (32-byte hex) public key. The Arch node treats account_keys as BIP-86
+ * internal keys, so the identity MUST be the untweaked x-only key.
+ */
+export function deriveArchAccountAddress(publicKeyHex: string): string {
+  const xOnlyHex = publicKeyHex.length === 66
+    ? publicKeyHex.slice(2)
+    : publicKeyHex;
+  const buf = new Uint8Array(xOnlyHex.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
+  return bs58.encode(buf);
 }

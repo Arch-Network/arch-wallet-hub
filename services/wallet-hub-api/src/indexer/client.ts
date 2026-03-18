@@ -41,7 +41,7 @@ export function createIndexerClient(server: FastifyInstance): IndexerClient | nu
   if (!baseUrl) return null;
   const baseUrlValue = baseUrl;
   const apiKey = server.config.INDEXER_API_KEY;
-  const timeoutMs = (server.config as any).INDEXER_TIMEOUT_MS ?? 10_000;
+  const timeoutMs = (server.config as any).INDEXER_TIMEOUT_MS ?? 30_000;
 
   function joinUrl(path: string) {
     const left = baseUrlValue.endsWith("/") ? baseUrlValue.slice(0, -1) : baseUrlValue;

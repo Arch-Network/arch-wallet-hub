@@ -688,4 +688,26 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       }
     }
   );
+
+  server.get(
+    "/turnkey/config",
+    {
+      schema: {
+        summary: "Return public Turnkey configuration needed by client-side passkey flows",
+        tags: ["turnkey"],
+        response: {
+          200: Type.Object({
+            organizationId: Type.String(),
+            apiBaseUrl: Type.String(),
+          })
+        }
+      }
+    },
+    async () => {
+      return {
+        organizationId: server.config.TURNKEY_ORGANIZATION_ID,
+        apiBaseUrl: "https://api.turnkey.com",
+      };
+    }
+  );
 };

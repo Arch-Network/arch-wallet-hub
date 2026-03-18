@@ -43,6 +43,7 @@ function AppRoutes() {
           <Route path="/tokens" element={<TokenList />} />
           <Route path="/approve/:requestId" element={<Approve />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/add-wallet" element={<Onboarding onComplete={refresh} addMode />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
       </div>

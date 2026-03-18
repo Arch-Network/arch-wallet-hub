@@ -8,6 +8,7 @@ export interface WalletAccount {
   archAddress?: string;
   turnkeyResourceId: string;
   organizationId: string;
+  isCustodial: boolean;
   createdAt: number;
 }
 

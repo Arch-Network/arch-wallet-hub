@@ -39,6 +39,11 @@ export type PortfolioResponse = {
   arch: { accountAddress: string; summary: unknown | null; transactions: unknown | null };
 };
 
+export type TurnkeyConfigResponse = {
+  organizationId: string;
+  apiBaseUrl: string;
+};
+
 export type CreateTurnkeyWalletRequest = {
   externalUserId: string;
   walletName?: string;
@@ -356,6 +361,39 @@ export type SendBtcResponse = {
   amountSats: number;
   feeSats: number;
   feeRate: number;
+};
+
+// ── BTC Prepare Send (unsigned PSBT) ──
+
+export type PrepareBtcSendRequest = {
+  fromAddress: string;
+  toAddress: string;
+  amountSats: number;
+  feeRate?: number;
+};
+
+export type PrepareBtcSendResponse = {
+  psbtBase64: string;
+  psbtHex: string;
+  fromAddress: string;
+  toAddress: string;
+  amountSats: number;
+  feeSats: number;
+  feeRate: number;
+  changeSats: number;
+  inputCount: number;
+};
+
+// ── BTC Finalize + Broadcast ──
+
+export type FinalizeBtcRequest = {
+  signedPsbtBase64: string;
+  network?: "testnet" | "mainnet";
+};
+
+export type FinalizeBtcResponse = {
+  txid: string;
+  rawTxHex: string;
 };
 
 // ── BTC Fee Estimates ──

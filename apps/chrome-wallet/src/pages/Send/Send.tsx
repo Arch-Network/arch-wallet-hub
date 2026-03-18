@@ -15,9 +15,18 @@ interface TokenHolding {
   name?: string;
 }
 
+interface BtcPrepareResult {
+  psbtHex: string;
+  psbtBase64: string;
+  feeSats: number;
+  feeRate: number;
+  changeSats: number;
+  inputCount: number;
+}
+
 const ASSET_META: Record<AssetType, { icon: string; label: string; unit: string }> = {
   btc: { icon: "₿", label: "Bitcoin", unit: "BTC" },
-  arch: { icon: "⟠", label: "ARCH", unit: "lamports" },
+  arch: { icon: "⟠", label: "ARCH", unit: "ARCH" },
   apl: { icon: "◈", label: "APL Token", unit: "tokens" },
 };
 
@@ -39,6 +48,9 @@ export default function Send() {
   const [archBalance, setArchBalance] = useState<string | null>(null);
   const [tokensHeld, setTokensHeld] = useState<TokenHolding[]>([]);
 
+  const [btcPrepare, setBtcPrepare] = useState<BtcPrepareResult | null>(null);
+  const [preparing, setPreparing] = useState(false);
+
   useEffect(() => {
     if (!activeAccount) return;
     const timeout = setTimeout(() => {
@@ -50,7 +62,7 @@ export default function Send() {
       const client = await getClient();
 
       try {
-        const o = await client.getWalletOverview(activeAccount.btcAddress);
+        const o = await client.getWalletOverview(activeAccount.btcAddress, { archAddress: activeAccount.archAddress });
         const btcSummary = (o as any)?.btc?.summary;
         let confirmed = 0;
         let pending = 0;
@@ -131,8 +143,97 @@ export default function Send() {
     [activeAccount]
   );
 
+  const handlePrepareBtc = useCallback(async () => {
+    if (!activeAccount || !recipient || !amount) return;
+    setPreparing(true);
+    setError("");
+    setBtcPrepare(null);
+    try {
+      const client = await getClient();
+      const amountSats = Math.round((Number(amount) || 0) * 1e8);
+      if (amountSats < 546) throw new Error("Amount too small (minimum 546 sats)");
+
+      const result = await client.prepareBtcSend({
+        fromAddress: activeAccount.btcAddress,
+        toAddress: recipient,
+        amountSats,
+      });
+
+      setBtcPrepare({
+        psbtHex: result.psbtHex,
+        psbtBase64: result.psbtBase64,
+        feeSats: result.feeSats,
+        feeRate: result.feeRate,
+        changeSats: result.changeSats,
+        inputCount: result.inputCount,
+      });
+      setStep(3);
+    } catch (err: any) {
+      setError(err.message || "Failed to prepare transaction");
+    } finally {
+      setPreparing(false);
+    }
+  }, [activeAccount, recipient, amount]);
+
+  const handleBtcSign = useCallback(async () => {
+    if (!activeAccount || !btcPrepare) return;
+    setLoading(true);
+    setError("");
+    try {
+      const client = await getClient();
+      const externalUserId = getExternalUserId();
+      const amountSats = Math.round((Number(amount) || 0) * 1e8);
+
+      if (activeAccount.isCustodial) {
+        const result = await client.sendBitcoin({
+          externalUserId,
+          turnkeyResourceId: activeAccount.turnkeyResourceId,
+          toAddress: recipient,
+          amountSats,
+          feeRate: btcPrepare.feeRate,
+        });
+        setTxResult({ txid: result.txid, rawTxid: result.txid });
+      } else {
+        if (!activeAccount.organizationId)
+          throw new Error("Missing organization ID for passkey wallet");
+
+        const tk = new Turnkey({
+          apiBaseUrl: "https://api.turnkey.com",
+          defaultOrganizationId: activeAccount.organizationId,
+          rpId: globalThis.location?.hostname === "localhost" ? "localhost" : globalThis.location?.hostname ?? "localhost",
+        });
+        const signResult = await tk.passkeyClient().signTransaction({
+          signWith: activeAccount.btcAddress,
+          unsignedTransaction: btcPrepare.psbtHex,
+          type: "TRANSACTION_TYPE_BITCOIN",
+        });
+
+        const signedPsbtHex = (signResult as any)?.signedTransaction;
+        if (!signedPsbtHex) throw new Error("Turnkey did not return a signed transaction");
+
+        const isTestnet = state.network === "testnet4";
+        const broadcastResult = await client.finalizeBtcTransaction({
+          signedPsbtBase64: hexToBase64(signedPsbtHex),
+          network: isTestnet ? "testnet" : "mainnet",
+        });
+        setTxResult({ txid: broadcastResult.txid, rawTxid: broadcastResult.txid });
+      }
+
+      setStep(4);
+    } catch (err: any) {
+      setError(err.message || "Transaction signing failed");
+    } finally {
+      setLoading(false);
+    }
+  }, [activeAccount, btcPrepare, state.network, amount, recipient]);
+
   const handleSubmit = useCallback(async () => {
     if (!activeAccount) return;
+
+    if (asset === "btc") {
+      return handleBtcSign();
+    }
+
     setLoading(true);
     setError("");
     try {
@@ -140,36 +241,40 @@ export default function Send() {
       const externalUserId = getExternalUserId();
       let txid: string;
 
-      if (asset === "arch" || asset === "apl") {
-        const action =
-          asset === "apl" && selectedToken
-            ? {
-                type: "arch.token_transfer" as const,
-                mintAddress: selectedToken.mint,
-                toAddress: recipient,
-                amount,
-                decimals: selectedToken.decimals,
-              }
-            : {
-                type: "arch.transfer" as const,
-                toAddress: recipient,
-                lamports: amount,
-              };
+      const archLamports = String(Math.round((Number(amount) || 0) * 1e9));
 
-        const sr = await client.createSigningRequest({
-          externalUserId,
-          signer: { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
-          action,
-        });
+      const action =
+        asset === "apl" && selectedToken
+          ? {
+              type: "arch.token_transfer" as const,
+              mintAddress: selectedToken.mint,
+              toAddress: recipient,
+              amount,
+              decimals: selectedToken.decimals,
+            }
+          : {
+              type: "arch.transfer" as const,
+              toAddress: recipient,
+              lamports: archLamports,
+            };
 
+      const sr = await client.createSigningRequest({
+        externalUserId,
+        signer: { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
+        action,
+      });
+
+      if (activeAccount.isCustodial) {
+        const serverResult = await client.signWithTurnkey(sr.signingRequestId, { externalUserId });
+        const res = (serverResult as any).result ?? serverResult;
+        txid = res?.txid || res?.txidHex || sr.signingRequestId;
+      } else {
         const payloadHex = (sr.payloadToSign as any)?.payloadHex;
         if (!payloadHex) throw new Error("No payload available for signing");
         txid = await signWithPasskey(sr.signingRequestId, payloadHex);
-      } else {
-        throw new Error("BTC sending from Chrome extension requires server-side PSBT construction (coming soon).");
       }
 
-      const displayTxid = asset !== "btc" ? formatArchId(txid) : txid;
+      const displayTxid = formatArchId(txid);
       setTxResult({ txid: displayTxid, rawTxid: txid });
       setStep(4);
     } catch (err: any) {
@@ -177,7 +282,7 @@ export default function Send() {
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey]);
+  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, handleBtcSign]);
 
   const resetFlow = useCallback(() => {
     setStep(1);
@@ -187,12 +292,16 @@ export default function Send() {
     setAmount("");
     setError("");
     setTxResult(null);
+    setBtcPrepare(null);
   }, []);
 
   const isTestnet = state.network === "testnet4";
-  const explorerBase = isTestnet
+  const archExplorerBase = isTestnet
     ? "https://explorer.arch.network/testnet/tx/"
     : "https://explorer.arch.network/mainnet/tx/";
+  const btcExplorerBase = isTestnet
+    ? "https://mempool.space/testnet4/tx/"
+    : "https://mempool.space/tx/";
 
   // Step 1: Choose asset
   if (step === 1) {
@@ -263,6 +372,15 @@ export default function Send() {
   // Step 2: Enter details
   if (step === 2) {
     const meta = asset ? ASSET_META[asset] : ASSET_META.arch;
+    const handleReview = () => {
+      setError("");
+      if (asset === "btc") {
+        handlePrepareBtc();
+      } else {
+        setStep(3);
+      }
+    };
+
     return (
       <>
         <button className="btn btn-sm btn-secondary" onClick={() => setStep(1)} style={{ marginBottom: 12 }}>
@@ -302,7 +420,7 @@ export default function Send() {
             <input
               className="input-field mono"
               type="number"
-              step={asset === "btc" ? "0.00000001" : "1"}
+              step={asset === "btc" ? "0.00000001" : asset === "arch" ? "0.0001" : "1"}
               placeholder="0"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
@@ -312,6 +430,20 @@ export default function Send() {
               <button
                 type="button"
                 onClick={() => setAmount(((btcConfirmed + btcPending) / 1e8).toFixed(8))}
+                style={{
+                  position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                  background: "rgba(193,154,91,0.15)", border: "1px solid rgba(193,154,91,0.3)",
+                  borderRadius: 6, padding: "3px 8px", fontSize: 10, fontWeight: 700,
+                  color: "var(--accent)", cursor: "pointer",
+                }}
+              >
+                MAX
+              </button>
+            )}
+            {asset === "arch" && archBalance && Number(archBalance) > 0 && (
+              <button
+                type="button"
+                onClick={() => setAmount((Number(archBalance) / 1e9).toFixed(4))}
                 style={{
                   position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
                   background: "rgba(193,154,91,0.15)", border: "1px solid rgba(193,154,91,0.3)",
@@ -340,16 +472,15 @@ export default function Send() {
             <span style={{ color: "var(--warning)", fontSize: 14 }}>⏳</span>
             <span>
               Includes <strong style={{ color: "var(--success)" }}>{(btcPending / 1e8).toFixed(8)} BTC</strong> unconfirmed.
-              Spending unconfirmed funds is supported.
             </span>
           </div>
         )}
         <button
           className="btn btn-primary btn-full"
-          disabled={!recipient || !amount}
-          onClick={() => { setError(""); setStep(3); }}
+          disabled={!recipient || !amount || preparing}
+          onClick={handleReview}
         >
-          Review
+          {preparing ? "Preparing..." : "Review"}
         </button>
       </>
     );
@@ -358,9 +489,11 @@ export default function Send() {
   // Step 3: Review & confirm
   if (step === 3) {
     const meta = asset ? ASSET_META[asset] : ASSET_META.arch;
+    const amountSats = asset === "btc" ? Math.round((Number(amount) || 0) * 1e8) : 0;
+
     return (
       <>
-        <button className="btn btn-sm btn-secondary" onClick={() => setStep(2)} style={{ marginBottom: 12 }}>
+        <button className="btn btn-sm btn-secondary" onClick={() => { setStep(2); setBtcPrepare(null); }} style={{ marginBottom: 12 }}>
           ← Back
         </button>
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Review Transaction</h2>
@@ -378,13 +511,18 @@ export default function Send() {
             <div className="input-label">Amount</div>
             <div style={{ fontWeight: 600 }}>
               {asset === "btc" ? `${Number(amount) || 0} BTC`
-                : asset === "arch" ? formatArch(amount)
+                : asset === "arch" ? `${Number(amount) || 0} ARCH`
                 : selectedToken ? `${formatTokenAmount(Number(amount) || 0, selectedToken.decimals)} ${selectedToken.symbol || "APL"}`
                 : amount}
             </div>
-            {asset === "btc" && Number(amount) > 0 && (
+            {asset === "arch" && Number(amount) > 0 && (
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                {Math.round((Number(amount) || 0) * 1e8).toLocaleString()} sats
+                {Math.round((Number(amount) || 0) * 1e9).toLocaleString()} lamports
+              </div>
+            )}
+            {asset === "btc" && amountSats > 0 && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
+                {amountSats.toLocaleString()} sats
               </div>
             )}
           </div>
@@ -394,34 +532,67 @@ export default function Send() {
               <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{selectedToken.mint}</div>
             </div>
           )}
+
+          {asset === "btc" && btcPrepare && (
+            <div style={{
+              marginTop: 10,
+              paddingTop: 10,
+              borderTop: "1px solid rgba(193,154,91,0.12)",
+            }}>
+              <div className="input-label" style={{ marginBottom: 6 }}>Network Fee</div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: "var(--text-muted)" }}>Fee</span>
+                <span className="mono" style={{ color: "var(--text-primary)" }}>
+                  {btcPrepare.feeSats.toLocaleString()} sats ({(btcPrepare.feeSats / 1e8).toFixed(8)} BTC)
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: "var(--text-muted)" }}>Fee Rate</span>
+                <span className="mono" style={{ color: "var(--text-primary)" }}>
+                  {btcPrepare.feeRate.toFixed(1)} sat/vB
+                </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                <span style={{ color: "var(--text-muted)" }}>Inputs</span>
+                <span className="mono" style={{ color: "var(--text-primary)" }}>{btcPrepare.inputCount}</span>
+              </div>
+              {btcPrepare.changeSats > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
+                  <span style={{ color: "var(--text-muted)" }}>Change</span>
+                  <span className="mono" style={{ color: "var(--text-primary)" }}>
+                    {btcPrepare.changeSats.toLocaleString()} sats
+                  </span>
+                </div>
+              )}
+              <div style={{
+                display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700,
+                marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(193,154,91,0.12)",
+              }}>
+                <span style={{ color: "var(--accent)" }}>Total</span>
+                <span className="mono" style={{ color: "var(--accent)" }}>
+                  {((amountSats + btcPrepare.feeSats) / 1e8).toFixed(8)} BTC
+                </span>
+              </div>
+            </div>
+          )}
         </div>
-        {asset === "btc" ? (
-          <div style={{
-            fontSize: 12,
-            color: "var(--warning)",
-            background: "rgba(230,168,23,0.08)",
-            border: "1px solid rgba(230,168,23,0.2)",
-            borderRadius: 8,
-            padding: "10px 12px",
-            textAlign: "center",
-          }}>
-            Native BTC sending requires PSBT construction and is coming soon.
-            You can send ARCH and APL tokens now.
-          </div>
-        ) : (
-          <button
-            className="btn btn-primary btn-full"
-            onClick={handleSubmit}
-            disabled={loading}
-          >
-            {loading ? "Signing..." : "🔑 Confirm & Sign"}
-          </button>
-        )}
+
+        <button
+          className="btn btn-primary btn-full"
+          onClick={handleSubmit}
+          disabled={loading}
+        >
+          {loading ? "Signing..." : "Confirm & Sign"}
+        </button>
       </>
     );
   }
 
   // Step 4: Complete
+  const explorerUrl = asset === "btc"
+    ? `${btcExplorerBase}${txResult?.rawTxid}`
+    : `${archExplorerBase}${txResult?.rawTxid}`;
+
   return (
     <>
       <div style={{ textAlign: "center", padding: "24px 0" }}>
@@ -430,15 +601,15 @@ export default function Send() {
         <div className="mono" style={{ wordBreak: "break-all", fontSize: 11, marginBottom: 16 }}>
           {txResult?.txid}
         </div>
-        {asset !== "btc" && txResult?.rawTxid && (
+        {txResult?.rawTxid && (
           <a
-            href={`${explorerBase}${txResult.rawTxid}`}
+            href={explorerUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-sm btn-secondary"
             style={{ marginBottom: 8, display: "inline-block" }}
           >
-            View on Explorer →
+            View on {asset === "btc" ? "Mempool" : "Explorer"} →
           </a>
         )}
       </div>
@@ -452,4 +623,17 @@ export default function Send() {
       </div>
     </>
   );
+}
+
+function hexToBase64(hex: string): string {
+  const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  }
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
 }

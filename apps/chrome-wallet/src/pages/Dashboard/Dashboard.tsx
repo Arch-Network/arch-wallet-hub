@@ -90,7 +90,7 @@ export default function Dashboard() {
     const client = await getClient();
     const addr = activeAccount.btcAddress;
 
-    const overviewPromise = client.getWalletOverview(addr, { noCache: opts?.noCache }).then((overview: any) => {
+    const overviewPromise = client.getWalletOverview(addr, { noCache: opts?.noCache, archAddress: activeAccount.archAddress }).then((overview: any) => {
       const btcSummary = overview?.btc?.summary;
       let confirmedSats = 0;
       let pendingSats = 0;
@@ -113,7 +113,7 @@ export default function Dashboard() {
       }
 
       const lamports = overview?.arch?.account?.lamports_balance ?? 0;
-      const archAddr = overview?.archAccountAddress ?? activeAccount.archAddress ?? "";
+      const archAddr = activeAccount.archAddress ?? overview?.archAccountAddress ?? "";
       setBtcBalance(confirmedSats);
       setBtcPending(pendingSats);
       setArchLamports(lamports);

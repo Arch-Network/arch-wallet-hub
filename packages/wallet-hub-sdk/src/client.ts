@@ -33,6 +33,11 @@ import type {
   BtcFeeEstimates,
   SendBtcRequest,
   SendBtcResponse,
+  PrepareBtcSendRequest,
+  PrepareBtcSendResponse,
+  FinalizeBtcRequest,
+  FinalizeBtcResponse,
+  TurnkeyConfigResponse,
   AccountTokensResponse
 } from "./types.js";
 
@@ -86,6 +91,10 @@ export class WalletHubClient {
 
   async getPortfolio(address: string): Promise<PortfolioResponse> {
     return await this.requestJson(`/portfolio/${encodeURIComponent(address)}`);
+  }
+
+  async getTurnkeyConfig(): Promise<TurnkeyConfigResponse> {
+    return await this.requestJson(`/turnkey/config`);
   }
 
   async createTurnkeyWallet(params: {
@@ -168,8 +177,11 @@ export class WalletHubClient {
 
   // ── Wallet Overview (aggregated dashboard) ──
 
-  async getWalletOverview(address: string, opts?: { noCache?: boolean }): Promise<WalletOverviewResponse> {
-    const qs = opts?.noCache ? "?nocache" : "";
+  async getWalletOverview(address: string, opts?: { noCache?: boolean; archAddress?: string }): Promise<WalletOverviewResponse> {
+    const params = new URLSearchParams();
+    if (opts?.noCache) params.set("nocache", "");
+    if (opts?.archAddress) params.set("archAddress", opts.archAddress);
+    const qs = params.toString() ? `?${params.toString()}` : "";
     return await this.requestJson(`/wallet/${encodeURIComponent(address)}/overview${qs}`);
   }
 
@@ -252,6 +264,20 @@ export class WalletHubClient {
 
   async sendBitcoin(params: SendBtcRequest): Promise<SendBtcResponse> {
     return await this.requestJson("/btc/send", {
+      method: "POST",
+      body: JSON.stringify(params)
+    });
+  }
+
+  async prepareBtcSend(params: PrepareBtcSendRequest): Promise<PrepareBtcSendResponse> {
+    return await this.requestJson("/btc/prepare-send", {
+      method: "POST",
+      body: JSON.stringify(params)
+    });
+  }
+
+  async finalizeBtcTransaction(params: FinalizeBtcRequest): Promise<FinalizeBtcResponse> {
+    return await this.requestJson("/btc/finalize-and-broadcast", {
       method: "POST",
       body: JSON.stringify(params)
     });

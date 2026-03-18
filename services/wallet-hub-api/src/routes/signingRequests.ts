@@ -14,7 +14,7 @@ import { Buffer } from "node:buffer";
 import bs58 from "bs58";
 import { secp256k1, schnorr } from "@noble/curves/secp256k1";
 import { getBtcPlatformClient } from "../btcPlatform/store.js";
-import { resolveArchAccountAddress } from "../arch/address.js";
+import { resolveArchAccountAddress, archAccountFromInternalKey } from "../arch/address.js";
 import { address as btcAddress } from "bitcoinjs-lib";
 
 const CreateSigningRequestBody = Type.Object({
@@ -488,15 +488,26 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             );
           }
         }
-        // Always derive Arch account from the taproot address (tweaked output key)
-        // to stay consistent with the dashboard, airdrop, and overview endpoints.
-        // The taproot witness program IS the key Arch uses to identify accounts.
-        const resolved = resolveArchAccountAddress(signerTaprootAddress);
-        if (resolved.kind !== "taproot") {
-          return reply.badRequest("Turnkey resource defaultAddress must be Taproot (p2tr)");
+        // The Arch node treats account_keys[0] as a BIP-86 internal key and applies
+        // Address::p2tr(key, None, network) for BIP-322 verification. So we MUST use the
+        // untweaked internal key, NOT the tweaked output key from the taproot address.
+        if (pubkeyHex && pubkeyHex.length >= 64) {
+          const internal = archAccountFromInternalKey(pubkeyHex);
+          signerArchAccountAddress = internal.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = internal.internalXOnlyHex;
+        } else {
+          // Fallback when no public key is available: use output key (may fail verification)
+          const resolved = resolveArchAccountAddress(signerTaprootAddress);
+          if (resolved.kind !== "taproot") {
+            return reply.badRequest("Turnkey resource defaultAddress must be Taproot (p2tr)");
+          }
+          signerArchAccountAddress = resolved.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
+          server.log.warn(
+            { signerTaprootAddress, turnkeyResourceId },
+            "No internal public key available; using output key from address (may cause Arch signature verification failure)"
+          );
         }
-        signerArchAccountAddress = resolved.archAccountAddress;
-        signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
       }
 
       if (!signerArchAccountAddress) {

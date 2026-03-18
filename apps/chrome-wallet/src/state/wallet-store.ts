@@ -1,4 +1,5 @@
 import { AppState, DEFAULT_STATE, WalletAccount, NetworkId, ConnectedSite } from "./types";
+import { deriveArchAccountAddress } from "../utils/sdk";
 
 const STORAGE_KEY = "arch_wallet_state";
 
@@ -13,7 +14,20 @@ async function saveState(state: AppState): Promise<void> {
 
 export const walletStore = {
   async getState(): Promise<AppState> {
-    return loadState();
+    const state = await loadState();
+    let migrated = false;
+    for (const acct of state.accounts) {
+      if ((acct as any).isCustodial === undefined) {
+        (acct as any).isCustodial = true;
+        migrated = true;
+      }
+      if (!acct.archAddress && acct.publicKeyHex && acct.publicKeyHex.length >= 64) {
+        acct.archAddress = deriveArchAccountAddress(acct.publicKeyHex);
+        migrated = true;
+      }
+    }
+    if (migrated) await saveState(state);
+    return state;
   },
 
   async initialize(): Promise<void> {
@@ -27,7 +41,10 @@ export const walletStore = {
     const state = await loadState();
     state.initialized = true;
     state.locked = false;
-    state.accounts = [account];
+    const existing = state.accounts.find((a) => a.id === account.id);
+    if (!existing) {
+      state.accounts.push(account);
+    }
     state.activeAccountId = account.id;
     await saveState(state);
   },

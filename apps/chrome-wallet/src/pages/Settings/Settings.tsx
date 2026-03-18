@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { walletStore } from "../../state/wallet-store";
 import { invalidateClientCache } from "../../utils/sdk";
 import { truncateAddress } from "../../utils/format";
 import CopyButton from "../../components/CopyButton";
-import type { ConnectedSite, NetworkId } from "../../state/types";
+import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
 
 const NETWORKS: { id: NetworkId; label: string }[] = [
   { id: "testnet4", label: "Testnet4" },
@@ -12,7 +13,8 @@ const NETWORKS: { id: NetworkId; label: string }[] = [
 ];
 
 export default function Settings() {
-  const { activeAccount, state, setNetwork, lock } = useWallet();
+  const navigate = useNavigate();
+  const { activeAccount, state, setNetwork, lock, refresh } = useWallet();
   const [connectedSites, setConnectedSites] = useState<Record<string, ConnectedSite>>({});
   const [showReset, setShowReset] = useState(false);
   const [apiBaseUrl, setApiBaseUrl] = useState(state.apiBaseUrl || "http://localhost:3005");
@@ -49,6 +51,11 @@ export default function Settings() {
     window.location.reload();
   }, []);
 
+  const handleSwitchWallet = useCallback(async (accountId: string) => {
+    await walletStore.setActiveAccount(accountId);
+    await refresh();
+  }, [refresh]);
+
   const siteEntries = Object.entries(connectedSites);
 
   return (
@@ -68,6 +75,88 @@ export default function Settings() {
               </button>
             ))}
           </div>
+        </div>
+      </div>
+
+      <div className="section">
+        <div className="section-title">Wallets ({state.accounts.length})</div>
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          {state.accounts.map((acct: WalletAccount) => {
+            const isActive = acct.id === state.activeAccountId;
+            return (
+              <button
+                key={acct.id}
+                onClick={() => handleSwitchWallet(acct.id)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  width: "100%",
+                  padding: "10px 12px",
+                  border: "none",
+                  borderBottom: "1px solid var(--border-primary)",
+                  background: isActive ? "rgba(193,154,91,0.08)" : "transparent",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  color: "inherit",
+                }}
+              >
+                <span
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: isActive ? "var(--success)" : "var(--border-primary)",
+                    flexShrink: 0,
+                  }}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                    {acct.label}
+                    <span
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        padding: "1px 5px",
+                        borderRadius: 4,
+                        background: acct.isCustodial
+                          ? "rgba(123,104,238,0.15)"
+                          : "rgba(46,204,113,0.15)",
+                        color: acct.isCustodial ? "#7b68ee" : "#2ecc71",
+                        letterSpacing: 0.5,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {acct.isCustodial ? "Custodial" : "Passkey"}
+                    </span>
+                  </div>
+                  <div className="mono" style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {truncateAddress(acct.btcAddress, 10)}
+                  </div>
+                </div>
+                {isActive && (
+                  <span style={{ fontSize: 10, color: "var(--accent)", fontWeight: 700 }}>Active</span>
+                )}
+              </button>
+            );
+          })}
+          <button
+            onClick={() => navigate("/add-wallet")}
+            style={{
+              display: "block",
+              width: "100%",
+              padding: "10px 12px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--accent)",
+              fontWeight: 600,
+              fontSize: 13,
+              textAlign: "center",
+            }}
+          >
+            + Add Wallet
+          </button>
         </div>
       </div>
 
@@ -112,11 +201,29 @@ export default function Settings() {
 
       {activeAccount && (
         <div className="section">
-          <div className="section-title">Wallet</div>
+          <div className="section-title">Active Wallet Details</div>
           <div className="card">
             <div style={{ marginBottom: 8 }}>
               <div className="input-label">Label</div>
-              <div style={{ fontWeight: 600 }}>{activeAccount.label}</div>
+              <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                {activeAccount.label}
+                <span
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    padding: "1px 5px",
+                    borderRadius: 4,
+                    background: activeAccount.isCustodial
+                      ? "rgba(123,104,238,0.15)"
+                      : "rgba(46,204,113,0.15)",
+                    color: activeAccount.isCustodial ? "#7b68ee" : "#2ecc71",
+                    letterSpacing: 0.5,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {activeAccount.isCustodial ? "Custodial" : "Passkey"}
+                </span>
+              </div>
             </div>
             <div style={{ marginBottom: 8 }}>
               <div className="input-label">Bitcoin Address</div>

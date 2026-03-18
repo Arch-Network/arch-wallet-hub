@@ -35,24 +35,195 @@ function selectUtxos(utxos: Utxo[], targetSats: number, feeSats: number): { sele
 }
 
 function estimateTxSize(inputCount: number, outputCount: number): number {
-  // Rough vbyte estimate for P2TR inputs/outputs
   return 10.5 + inputCount * 57.5 + outputCount * 43;
 }
 
+type IndexerClient = NonNullable<ReturnType<typeof getIndexerClient>>;
+
+async function buildUnsignedPsbt(params: {
+  indexer: IndexerClient;
+  fromAddress: string;
+  toAddress: string;
+  amountSats: number;
+  feeRate?: number;
+}) {
+  const { indexer, fromAddress, toAddress, amountSats } = params;
+
+  const utxos = (await indexer.getBtcAddressUtxos(fromAddress)) as Utxo[];
+  if (!Array.isArray(utxos) || utxos.length === 0) {
+    throw Object.assign(new Error("No UTXOs available for this address"), { code: "NO_UTXOS" });
+  }
+
+  let feeRate = params.feeRate;
+  if (!feeRate) {
+    try {
+      const estimates = (await indexer.getBtcFeeEstimates()) as Record<string, number>;
+      feeRate = estimates["6"] ?? estimates["3"] ?? 5;
+    } catch {
+      feeRate = 5;
+    }
+  }
+
+  const estimatedFee = Math.ceil(estimateTxSize(1, 2) * feeRate);
+  const { selected, totalInput } = selectUtxos(utxos, amountSats, estimatedFee);
+
+  const actualSize = estimateTxSize(selected.length, 2);
+  const actualFee = Math.ceil(actualSize * feeRate);
+  const changeSats = totalInput - amountSats - actualFee;
+
+  const isTestnet = fromAddress.startsWith("tb1") || fromAddress.startsWith("bcrt1");
+  const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+  const psbt = new bitcoin.Psbt({ network });
+
+  for (const utxo of selected) {
+    psbt.addInput({
+      hash: utxo.txid,
+      index: utxo.vout,
+      witnessUtxo: {
+        script: bitcoin.address.toOutputScript(fromAddress, network),
+        value: utxo.value
+      }
+    });
+  }
+
+  psbt.addOutput({ address: toAddress, value: amountSats });
+
+  if (changeSats > 546) {
+    psbt.addOutput({ address: fromAddress, value: changeSats });
+  }
+
+  return {
+    psbt,
+    network,
+    fromAddress,
+    toAddress,
+    amountSats,
+    feeSats: actualFee,
+    feeRate,
+    changeSats: changeSats > 546 ? changeSats : 0,
+    inputCount: selected.length,
+  };
+}
+
+const PrepareSendBody = Type.Object({
+  fromAddress: Type.String({ minLength: 1 }),
+  toAddress: Type.String({ minLength: 1 }),
+  amountSats: Type.Integer({ minimum: 546 }),
+  feeRate: Type.Optional(Type.Number({ minimum: 1 }))
+});
+
+const FinalizeBroadcastBody = Type.Object({
+  signedPsbtBase64: Type.String({ minLength: 1 }),
+  network: Type.Optional(Type.Union([Type.Literal("testnet"), Type.Literal("mainnet")]))
+});
+
+const SendBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
+  turnkeyResourceId: Type.String({ minLength: 1 }),
+  toAddress: Type.String({ minLength: 1 }),
+  amountSats: Type.Integer({ minimum: 546 }),
+  feeRate: Type.Optional(Type.Number({ minimum: 1 }))
+});
+
 export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) => {
+
+  // ── Prepare: build unsigned PSBT without signing ──────────────────────
+  server.post(
+    "/btc/prepare-send",
+    {
+      schema: {
+        summary: "Build an unsigned PSBT for a BTC send (client signs separately)",
+        tags: ["btc"],
+        body: PrepareSendBody
+      }
+    },
+    async (request, reply) => {
+      const indexer = getIndexerClient();
+      if (!indexer) return reply.notImplemented("Indexer not configured");
+
+      const body = request.body as typeof PrepareSendBody.static;
+
+      try {
+        const result = await buildUnsignedPsbt({
+          indexer,
+          fromAddress: body.fromAddress,
+          toAddress: body.toAddress,
+          amountSats: body.amountSats,
+          feeRate: body.feeRate,
+        });
+
+        return {
+          psbtBase64: result.psbt.toBase64(),
+          psbtHex: result.psbt.toHex(),
+          fromAddress: result.fromAddress,
+          toAddress: result.toAddress,
+          amountSats: result.amountSats,
+          feeSats: result.feeSats,
+          feeRate: result.feeRate,
+          changeSats: result.changeSats,
+          inputCount: result.inputCount,
+        };
+      } catch (err: any) {
+        if (err.code === "NO_UTXOS") {
+          return reply.code(409).send({ error: "NoUtxos", message: err.message });
+        }
+        if (err.message?.includes("Insufficient BTC balance")) {
+          return reply.code(409).send({ error: "InsufficientBalance", message: err.message });
+        }
+        request.log.error({ err }, "btc.prepare-send.failed");
+        return reply.code(502).send({ error: "PsbtBuildFailed", message: err.message });
+      }
+    }
+  );
+
+  // ── Finalize + Broadcast: accept signed PSBT, finalize, broadcast ─────
+  server.post(
+    "/btc/finalize-and-broadcast",
+    {
+      schema: {
+        summary: "Finalize a signed PSBT and broadcast the transaction",
+        tags: ["btc"],
+        body: FinalizeBroadcastBody
+      }
+    },
+    async (request, reply) => {
+      const indexer = getIndexerClient();
+      if (!indexer) return reply.notImplemented("Indexer not configured");
+
+      const body = request.body as typeof FinalizeBroadcastBody.static;
+
+      let signedTxHex: string;
+      try {
+        const networkName = body.network ?? "testnet";
+        const network = networkName === "mainnet" ? bitcoin.networks.bitcoin : bitcoin.networks.testnet;
+        const signedPsbt = bitcoin.Psbt.fromBase64(body.signedPsbtBase64, { network });
+        signedPsbt.finalizeAllInputs();
+        signedTxHex = signedPsbt.extractTransaction().toHex();
+      } catch (err: any) {
+        request.log.error({ err }, "btc.finalize.failed");
+        return reply.code(400).send({ error: "FinalizeFailed", message: `Could not finalize PSBT: ${err.message}` });
+      }
+
+      let txid: string;
+      try {
+        txid = (await indexer.broadcastBtcTransaction(signedTxHex)) as string;
+      } catch (err: any) {
+        request.log.error({ err }, "btc.broadcast.failed");
+        return reply.code(502).send({ error: "BroadcastFailed", message: err.message });
+      }
+
+      return { txid, rawTxHex: signedTxHex };
+    }
+  );
+
+  // ── Full send: server-side construction + signing (custodial only) ────
   server.post(
     "/btc/send",
     {
       schema: {
         summary: "Send BTC from a Turnkey wallet (server-side construction + signing)",
         tags: ["btc"],
-        body: Type.Object({
-          externalUserId: Type.String({ minLength: 1 }),
-          turnkeyResourceId: Type.String({ minLength: 1 }),
-          toAddress: Type.String({ minLength: 1 }),
-          amountSats: Type.Integer({ minimum: 546 }),
-          feeRate: Type.Optional(Type.Number({ minimum: 1 }))
-        })
+        body: SendBody
       }
     },
     async (request, reply) => {
@@ -63,7 +234,7 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
       if (!indexer) return reply.notImplemented("Indexer not configured");
 
       const db = getDbPool();
-      const body = request.body as any;
+      const body = request.body as typeof SendBody.static;
 
       const user = await withDbTransaction(db, (client) =>
         getOrCreateUserByExternalId(client, { appId, externalUserId: body.externalUserId })
@@ -81,85 +252,40 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
         return reply.code(400).send({
           statusCode: 400,
           error: "PasskeyWalletNotSupported",
-          message: "BTC sending from passkey wallets requires client-side signing."
+          message: "BTC sending from passkey wallets requires client-side signing. Use /btc/prepare-send instead."
         });
       }
 
       const fromAddress = resource.default_address;
 
-      // 1. Fetch UTXOs
-      let utxos: Utxo[];
+      let result;
       try {
-        utxos = (await indexer.getBtcAddressUtxos(fromAddress)) as Utxo[];
+        result = await buildUnsignedPsbt({
+          indexer,
+          fromAddress,
+          toAddress: body.toAddress,
+          amountSats: body.amountSats,
+          feeRate: body.feeRate,
+        });
       } catch (err: any) {
-        return reply.code(502).send({ error: "IndexerError", message: `Failed to fetch UTXOs: ${err.message}` });
-      }
-
-      if (!Array.isArray(utxos) || utxos.length === 0) {
-        return reply.code(409).send({ error: "NoUtxos", message: "No UTXOs available for this address" });
-      }
-
-      // 2. Get fee estimate
-      let feeRate = body.feeRate;
-      if (!feeRate) {
-        try {
-          const estimates = (await indexer.getBtcFeeEstimates()) as Record<string, number>;
-          feeRate = estimates["6"] ?? estimates["3"] ?? 5;
-        } catch {
-          feeRate = 5;
+        if (err.code === "NO_UTXOS") {
+          return reply.code(409).send({ error: "NoUtxos", message: err.message });
         }
+        return reply.code(502).send({ error: "PsbtBuildFailed", message: err.message });
       }
 
-      // 3. Estimate fee and select UTXOs
-      const estimatedSize = estimateTxSize(1, 2);
-      const estimatedFee = Math.ceil(estimatedSize * feeRate);
-      const { selected, totalInput } = selectUtxos(utxos, body.amountSats, estimatedFee);
-
-      const actualSize = estimateTxSize(selected.length, 2);
-      const actualFee = Math.ceil(actualSize * feeRate);
-      const changeSats = totalInput - body.amountSats - actualFee;
-
-      // 4. Build PSBT
-      const isTestnet = fromAddress.startsWith("tb1") || fromAddress.startsWith("bcrt1");
-      const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
-      const psbt = new bitcoin.Psbt({ network });
-
-      for (const utxo of selected) {
-        psbt.addInput({
-          hash: utxo.txid,
-          index: utxo.vout,
-          witnessUtxo: {
-            script: bitcoin.address.toOutputScript(fromAddress, network),
-            value: utxo.value
-          }
-        });
-      }
-
-      psbt.addOutput({
-        address: body.toAddress,
-        value: body.amountSats
-      });
-
-      if (changeSats > 546) {
-        psbt.addOutput({
-          address: fromAddress,
-          value: changeSats
-        });
-      }
-
-      // 5. Sign with Turnkey
       const turnkey = getTurnkeyClient();
       if (!turnkey) return reply.notImplemented("Turnkey not configured");
 
       let signedTxHex: string;
       try {
-        const psbtBase64 = psbt.toBase64();
-        const result = await turnkey.signBitcoinTransaction({
+        const psbtBase64 = result.psbt.toBase64();
+        const signResult = await turnkey.signBitcoinTransaction({
           signWith: fromAddress,
           unsignedTransaction: psbtBase64
         });
 
-        const signedPsbt = bitcoin.Psbt.fromBase64(result.signedTransaction, { network });
+        const signedPsbt = bitcoin.Psbt.fromBase64(signResult.signedTransaction, { network: result.network });
         signedPsbt.finalizeAllInputs();
         signedTxHex = signedPsbt.extractTransaction().toHex();
       } catch (err: any) {
@@ -167,7 +293,6 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
         return reply.internalServerError(`Turnkey signing failed: ${err.message}`);
       }
 
-      // 6. Broadcast
       let txid: string;
       try {
         txid = (await indexer.broadcastBtcTransaction(signedTxHex)) as string;
@@ -181,8 +306,8 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
         fromAddress,
         toAddress: body.toAddress,
         amountSats: body.amountSats,
-        feeSats: actualFee,
-        feeRate
+        feeSats: result.feeSats,
+        feeRate: result.feeRate
       };
     }
   );

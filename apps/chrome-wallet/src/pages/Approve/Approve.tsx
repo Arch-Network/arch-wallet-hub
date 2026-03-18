@@ -11,6 +11,44 @@ interface RequestDetails {
   payload?: any;
 }
 
+async function signAndSubmit(
+  activeAccount: { btcAddress: string; organizationId: string; turnkeyResourceId: string; isCustodial: boolean },
+  signingRequestId: string,
+  payloadToSign: any,
+  externalUserId: string,
+): Promise<string> {
+  const client = await getClient();
+
+  if (activeAccount.isCustodial) {
+    const serverResult = await client.signWithTurnkey(signingRequestId, { externalUserId });
+    const res = (serverResult as any).result ?? serverResult;
+    return res?.txid || res?.txidHex || signingRequestId;
+  }
+
+  const payloadHex = payloadToSign?.payloadHex;
+  if (!payloadHex) throw new Error("No payload available for signing");
+
+  const tk = new Turnkey({
+    apiBaseUrl: "https://api.turnkey.com",
+    defaultOrganizationId: activeAccount.organizationId,
+    rpId: globalThis.location?.hostname === "localhost" ? "localhost" : globalThis.location?.hostname ?? "localhost",
+  });
+  const signResult = await tk.passkeyClient().signRawPayload({
+    signWith: activeAccount.btcAddress,
+    payload: payloadHex,
+    encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+    hashFunction: "HASH_FUNCTION_NO_OP",
+  });
+
+  const signature64Hex = `${signResult.r}${signResult.s}`;
+  const submitRes = await client.submitSigningRequest(signingRequestId, {
+    externalUserId,
+    signature64Hex,
+  });
+  const res = (submitRes as any).result ?? submitRes;
+  return res?.txid || res?.txidHex || signingRequestId;
+}
+
 export default function Approve() {
   const { requestId } = useParams<{ requestId: string }>();
   const navigate = useNavigate();
@@ -68,30 +106,7 @@ export default function Approve() {
           },
         });
 
-        const payloadHex = (sr.payloadToSign as any)?.payloadHex;
-        if (!payloadHex) throw new Error("No payload available for signing");
-
-        const tk = new Turnkey({
-          apiBaseUrl: "https://api.turnkey.com",
-          defaultOrganizationId: activeAccount.organizationId,
-          rpId: globalThis.location?.hostname ?? "localhost",
-        });
-        const pc = tk.passkeyClient();
-        const signResult = await pc.signRawPayload({
-          signWith: activeAccount.btcAddress,
-          payload: payloadHex,
-          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-          hashFunction: "HASH_FUNCTION_NO_OP",
-        });
-
-        const signature64Hex = `${signResult.r}${signResult.s}`;
-        const submitRes = await client.submitSigningRequest(sr.signingRequestId, {
-          externalUserId,
-          signature64Hex,
-        });
-
-        const res = (submitRes as any).result ?? submitRes;
-        const txid = res?.txid || res?.txidHex || sr.signingRequestId;
+        const txid = await signAndSubmit(activeAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
 
         chrome.runtime.sendMessage({
           type: "APPROVE_REQUEST",
@@ -116,30 +131,7 @@ export default function Approve() {
           },
         });
 
-        const payloadHex = (sr.payloadToSign as any)?.payloadHex;
-        if (!payloadHex) throw new Error("No payload available for signing");
-
-        const tk = new Turnkey({
-          apiBaseUrl: "https://api.turnkey.com",
-          defaultOrganizationId: activeAccount.organizationId,
-          rpId: globalThis.location?.hostname ?? "localhost",
-        });
-        const pc = tk.passkeyClient();
-        const signResult = await pc.signRawPayload({
-          signWith: activeAccount.btcAddress,
-          payload: payloadHex,
-          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-          hashFunction: "HASH_FUNCTION_NO_OP",
-        });
-
-        const signature64Hex = `${signResult.r}${signResult.s}`;
-        const submitRes = await client.submitSigningRequest(sr.signingRequestId, {
-          externalUserId,
-          signature64Hex,
-        });
-
-        const res = (submitRes as any).result ?? submitRes;
-        const txid = res?.txid || res?.txidHex || sr.signingRequestId;
+        const txid = await signAndSubmit(activeAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
 
         chrome.runtime.sendMessage({
           type: "APPROVE_REQUEST",
