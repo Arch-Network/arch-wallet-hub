@@ -26,9 +26,7 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          cache-dependency-path: |
-            packages/wallet-hub-sdk/package-lock.json
-            apps/chrome-wallet/package-lock.json
+          cache-dependency-path: apps/chrome-wallet/package-lock.json
 
       - name: Determine version
         id: version
@@ -44,7 +42,7 @@ jobs:
       - name: Build wallet-hub-sdk
         working-directory: packages/wallet-hub-sdk
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: Install chrome-wallet dependencies
