@@ -1,0 +1,100 @@
+name: Release Chrome Wallet
+
+on:
+  push:
+    tags:
+      - "wallet-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            packages/wallet-hub-sdk/package-lock.json
+            apps/chrome-wallet/package-lock.json
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#wallet-v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=wallet-v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build wallet-hub-sdk
+        working-directory: packages/wallet-hub-sdk
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install chrome-wallet dependencies
+        working-directory: apps/chrome-wallet
+        run: npm ci
+
+      - name: Stamp version into manifest
+        working-directory: apps/chrome-wallet
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/version: \".*\"/version: \"$VERSION\"/" wxt.config.ts
+
+      - name: Build extension
+        working-directory: apps/chrome-wallet
+        run: npm run build
+
+      - name: Create zip archive
+        working-directory: apps/chrome-wallet
+        run: npm run zip
+
+      - name: Locate zip file
+        id: zip
+        working-directory: apps/chrome-wallet
+        run: |
+          ZIP_PATH=$(find .output -name '*.zip' | head -n 1)
+          ZIP_NAME=$(basename "$ZIP_PATH")
+          echo "path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+          echo "name=arch-wallet-${{ steps.version.outputs.version }}.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Arch Wallet v${{ steps.version.outputs.version }}"
+          body: |
+            ## Arch Wallet v${{ steps.version.outputs.version }}
+
+            ### Installation
+
+            1. Download **arch-wallet-${{ steps.version.outputs.version }}.zip** below
+            2. Unzip the file
+            3. Open Chrome and navigate to `chrome://extensions`
+            4. Enable **Developer mode** (toggle in top-right corner)
+            5. Click **Load unpacked**
+            6. Select the unzipped folder
+            7. The Arch Wallet icon will appear in your extensions toolbar
+          draft: false
+          prerelease: false
+          files: |
+            apps/chrome-wallet/${{ steps.zip.outputs.path }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
