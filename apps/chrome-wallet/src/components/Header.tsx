@@ -3,12 +3,12 @@ import { truncateAddress } from "../utils/format";
 import { reEncodeTaprootAddress } from "../utils/addressNetwork";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
-import type { ApiStatus } from "../hooks/useApiStatus";
+import type { NetworkStatus } from "../hooks/useApiStatus";
 
 interface HeaderProps {
   account: WalletAccount | null;
   network: NetworkId;
-  apiStatus: ApiStatus;
+  networkStatus: NetworkStatus;
   onLock: () => void;
 }
 
@@ -21,14 +21,26 @@ function LockIcon() {
   );
 }
 
-export default function Header({ account, network, apiStatus, onLock }: HeaderProps) {
+function dotClass(ns: NetworkStatus): string {
+  if (ns.api === "checking") return "network-dot-checking";
+  if (ns.api === "disconnected") return "network-dot-disconnected";
+  if (ns.bitcoin === "disconnected" && ns.arch === "disconnected") return "network-dot-disconnected";
+  if (ns.bitcoin === "disconnected" || ns.arch === "disconnected") return "network-dot-degraded";
+  return "";
+}
+
+function pillClass(ns: NetworkStatus): string {
+  if (ns.api === "disconnected") return "network-pill-disconnected";
+  if (ns.bitcoin === "disconnected" && ns.arch === "disconnected") return "network-pill-disconnected";
+  if (ns.bitcoin === "disconnected" || ns.arch === "disconnected") return "network-pill-degraded";
+  return "";
+}
+
+export default function Header({ account, network, networkStatus, onLock }: HeaderProps) {
   const displayAddress = useMemo(
     () => account ? reEncodeTaprootAddress(account.btcAddress, network) : "",
     [account, network]
   );
-
-  const isConnected = apiStatus === "connected";
-  const isChecking = apiStatus === "checking";
 
   return (
     <header className="app-header">
@@ -39,8 +51,8 @@ export default function Header({ account, network, apiStatus, onLock }: HeaderPr
         </div>
 
         <div className="header-controls">
-          <span className={`network-pill ${!isConnected && !isChecking ? "network-pill-disconnected" : ""}`}>
-            <span className={`network-dot ${!isConnected && !isChecking ? "network-dot-disconnected" : isChecking ? "network-dot-checking" : ""}`} />
+          <span className={`network-pill ${pillClass(networkStatus)}`}>
+            <span className={`network-dot ${dotClass(networkStatus)}`} />
             {network === "testnet4" ? "TESTNET" : "MAINNET"}
           </span>
 

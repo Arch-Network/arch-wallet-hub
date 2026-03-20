@@ -1,26 +1,38 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getClient } from "../utils/sdk";
 
-export type ApiStatus = "connected" | "disconnected" | "checking";
+type StatusValue = "connected" | "disconnected" | "checking";
+
+export interface NetworkStatus {
+  api: StatusValue;
+  bitcoin: StatusValue;
+  arch: StatusValue;
+}
+
+const INITIAL_STATUS: NetworkStatus = {
+  api: "checking",
+  bitcoin: "checking",
+  arch: "checking",
+};
 
 const POLL_INTERVAL_MS = 30_000;
-const TIMEOUT_MS = 8_000;
 
 export function useApiStatus() {
-  const [status, setStatus] = useState<ApiStatus>("checking");
+  const [status, setStatus] = useState<NetworkStatus>(INITIAL_STATUS);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const check = useCallback(async () => {
     try {
       const client = await getClient();
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+      const res = await client.getHealthStatus();
 
-      await client.getNetworkStats();
-      clearTimeout(timer);
-      setStatus("connected");
+      setStatus({
+        api: "connected",
+        bitcoin: res.networks.bitcoin.available ? "connected" : "disconnected",
+        arch: res.networks.arch.available ? "connected" : "disconnected",
+      });
     } catch {
-      setStatus("disconnected");
+      setStatus({ api: "disconnected", bitcoin: "disconnected", arch: "disconnected" });
     }
   }, []);
 

@@ -759,8 +759,17 @@ a {
   animation: pulse-pending 1.5s ease-in-out infinite;
 }
 
+.network-dot-degraded {
+  background: var(--warning);
+  box-shadow: 0 0 6px var(--warning);
+}
+
 .network-pill-disconnected {
   border-color: rgba(217, 83, 79, 0.25);
+}
+
+.network-pill-degraded {
+  border-color: rgba(230, 168, 23, 0.25);
 }
 
 /* ═══════════════════ QR Container ═══════════════════ */
@@ -1125,6 +1134,30 @@ a {
 .connection-banner-retry:hover {
   background: rgba(217, 83, 79, 0.2);
   border-color: rgba(217, 83, 79, 0.4);
+}
+
+.connection-banner-warning {
+  background: rgba(230, 168, 23, 0.08);
+  border-bottom-color: rgba(230, 168, 23, 0.2);
+}
+
+.connection-banner-warning .connection-banner-content {
+  color: var(--warning);
+}
+
+.connection-banner-warning .connection-banner-title {
+  color: var(--warning);
+}
+
+.connection-banner-retry-warning {
+  color: var(--warning);
+  background: rgba(230, 168, 23, 0.1);
+  border-color: rgba(230, 168, 23, 0.25);
+}
+
+.connection-banner-retry-warning:hover {
+  background: rgba(230, 168, 23, 0.2);
+  border-color: rgba(230, 168, 23, 0.4);
 }
 
 /* ═══════════════════ Error / Success ═══════════════════ */

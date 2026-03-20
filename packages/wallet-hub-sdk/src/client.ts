@@ -38,7 +38,8 @@ import type {
   FinalizeBtcRequest,
   FinalizeBtcResponse,
   TurnkeyConfigResponse,
-  AccountTokensResponse
+  AccountTokensResponse,
+  HealthStatusResponse
 } from "./types.js";
 
 export class WalletHubClient {
@@ -282,5 +283,11 @@ export class WalletHubClient {
 
   async getAccountTokens(address: string): Promise<AccountTokensResponse> {
     return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held`);
+  }
+
+  // ── Health Status ──
+
+  async getHealthStatus(): Promise<HealthStatusResponse> {
+    return await this.requestJson("/health/status");
   }
 }

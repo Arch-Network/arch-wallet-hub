@@ -425,3 +425,20 @@ export type AccountTokensResponse = {
   owner: string;
   tokens: AccountTokenBalance[];
 };
+
+// ── Health Status ──
+
+export type NetworkAvailability = {
+  available: boolean;
+  latencyMs?: number;
+  error?: string;
+};
+
+export type HealthStatusResponse = {
+  ok: boolean;
+  service: string;
+  networks: {
+    bitcoin: NetworkAvailability;
+    arch: NetworkAvailability;
+  };
+};

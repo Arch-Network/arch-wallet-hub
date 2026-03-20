@@ -45,7 +45,7 @@ function RouteRestorer() {
 
 function AppRoutes() {
   const { state, activeAccount, loading, lock, unlock, refresh } = useWallet();
-  const { status: apiStatus, retry: retryApi } = useApiStatus();
+  const { status: networkStatus, retry: retryApi } = useApiStatus();
 
   if (loading) {
     return (
@@ -65,8 +65,8 @@ function AppRoutes() {
 
   return (
     <div className="app-container">
-      <Header account={activeAccount} network={state.network} apiStatus={apiStatus} onLock={lock} />
-      <ConnectionBanner status={apiStatus} onRetry={retryApi} />
+      <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} />
+      <ConnectionBanner status={networkStatus} onRetry={retryApi} />
       <div className="app-body">
         <RouteRestorer />
         <Routes>
