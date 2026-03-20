@@ -3,10 +3,12 @@ import { truncateAddress } from "../utils/format";
 import { reEncodeTaprootAddress } from "../utils/addressNetwork";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
+import type { ApiStatus } from "../hooks/useApiStatus";
 
 interface HeaderProps {
   account: WalletAccount | null;
   network: NetworkId;
+  apiStatus: ApiStatus;
   onLock: () => void;
 }
 
@@ -19,11 +21,14 @@ function LockIcon() {
   );
 }
 
-export default function Header({ account, network, onLock }: HeaderProps) {
+export default function Header({ account, network, apiStatus, onLock }: HeaderProps) {
   const displayAddress = useMemo(
     () => account ? reEncodeTaprootAddress(account.btcAddress, network) : "",
     [account, network]
   );
+
+  const isConnected = apiStatus === "connected";
+  const isChecking = apiStatus === "checking";
 
   return (
     <header className="app-header">
@@ -34,8 +39,8 @@ export default function Header({ account, network, onLock }: HeaderProps) {
         </div>
 
         <div className="header-controls">
-          <span className="network-pill">
-            <span className="network-dot" />
+          <span className={`network-pill ${!isConnected && !isChecking ? "network-pill-disconnected" : ""}`}>
+            <span className={`network-dot ${!isConnected && !isChecking ? "network-dot-disconnected" : isChecking ? "network-dot-checking" : ""}`} />
             {network === "testnet4" ? "TESTNET" : "MAINNET"}
           </span>
 

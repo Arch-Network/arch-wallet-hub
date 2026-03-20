@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useWallet } from "../../src/hooks/useWallet";
 import Header from "../../src/components/Header";
+import ConnectionBanner from "../../src/components/ConnectionBanner";
 import NavBar from "../../src/components/NavBar";
+import { useApiStatus } from "../../src/hooks/useApiStatus";
 import Onboarding from "../../src/pages/Onboarding/Onboarding";
 import Unlock from "../../src/pages/Unlock/Unlock";
 import Dashboard from "../../src/pages/Dashboard/Dashboard";
@@ -43,6 +45,7 @@ function RouteRestorer() {
 
 function AppRoutes() {
   const { state, activeAccount, loading, lock, unlock, refresh } = useWallet();
+  const { status: apiStatus, retry: retryApi } = useApiStatus();
 
   if (loading) {
     return (
@@ -62,7 +65,8 @@ function AppRoutes() {
 
   return (
     <div className="app-container">
-      <Header account={activeAccount} network={state.network} onLock={lock} />
+      <Header account={activeAccount} network={state.network} apiStatus={apiStatus} onLock={lock} />
+      <ConnectionBanner status={apiStatus} onRetry={retryApi} />
       <div className="app-body">
         <RouteRestorer />
         <Routes>

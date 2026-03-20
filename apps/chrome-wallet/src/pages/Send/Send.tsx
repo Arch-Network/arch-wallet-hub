@@ -4,6 +4,7 @@ import { Turnkey } from "@turnkey/sdk-browser";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient, getExternalUserId } from "../../utils/sdk";
 import { formatBtc, formatArch, formatTokenAmount, formatArchId } from "../../utils/format";
+import ArchIcon from "../../components/ArchIcon";
 
 type AssetType = "btc" | "arch" | "apl";
 
@@ -24,10 +25,10 @@ interface BtcPrepareResult {
   inputCount: number;
 }
 
-const ASSET_META: Record<AssetType, { icon: string; label: string; unit: string }> = {
+const ASSET_META: Record<AssetType, { icon: React.ReactNode; label: string; unit: string }> = {
   btc: { icon: "₿", label: "Bitcoin", unit: "BTC" },
-  arch: { icon: "⟠", label: "ARCH", unit: "ARCH" },
-  apl: { icon: "◈", label: "APL Token", unit: "tokens" },
+  arch: { icon: <ArchIcon size={14} />, label: "ARCH", unit: "ARCH" },
+  apl: { icon: <ArchIcon size={14} color="#7b68ee" />, label: "APL Token", unit: "tokens" },
 };
 
 export default function Send() {
@@ -330,7 +331,7 @@ export default function Send() {
           </button>
           <button className="card" style={{ cursor: "pointer", textAlign: "left" }} onClick={() => { setAsset("arch"); setStep(2); }}>
             <div className="asset-row" style={{ border: "none", padding: 0 }}>
-              <div className="asset-icon arch">⟠</div>
+              <div className="asset-icon arch"><ArchIcon size={18} /></div>
               <div className="asset-info">
                 <div className="asset-name">ARCH</div>
                 <div className="asset-sub">{archBalance !== null ? formatArch(archBalance) : "Loading..."}</div>
@@ -345,7 +346,7 @@ export default function Send() {
               onClick={() => { setSelectedToken(tk); setAsset("apl"); setStep(2); }}
             >
               <div className="asset-row" style={{ border: "none", padding: 0 }}>
-                <div className="asset-icon apl">◈</div>
+                <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
                 <div className="asset-info">
                   <div className="asset-name">{tk.symbol || "APL Token"}</div>
                   <div className="asset-sub">{formatTokenAmount(tk.balance, tk.decimals)}</div>
@@ -356,7 +357,7 @@ export default function Send() {
           {tokensHeld.length === 0 && (
             <div className="card" style={{ opacity: 0.5 }}>
               <div className="asset-row" style={{ border: "none", padding: 0 }}>
-                <div className="asset-icon apl">◈</div>
+                <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
                 <div className="asset-info">
                   <div className="asset-name">APL Tokens</div>
                   <div className="asset-sub">No tokens held</div>
@@ -501,7 +502,7 @@ export default function Send() {
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ marginBottom: 8 }}>
             <div className="input-label">Asset</div>
-            <div style={{ fontWeight: 600 }}>{meta.icon} {meta.label}</div>
+            <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>{meta.icon} {meta.label}</div>
           </div>
           <div style={{ marginBottom: 8 }}>
             <div className="input-label">To</div>

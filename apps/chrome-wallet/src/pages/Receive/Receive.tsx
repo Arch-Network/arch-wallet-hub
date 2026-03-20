@@ -4,6 +4,7 @@ import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import CopyButton from "../../components/CopyButton";
+import ArchIcon from "../../components/ArchIcon";
 
 type Tab = "btc" | "arch";
 
@@ -42,7 +43,7 @@ export default function Receive() {
           ₿ Bitcoin
         </button>
         <button className={`tab ${tab === "arch" ? "active" : ""}`} onClick={() => setTab("arch")}>
-          ⟠ ARCH
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><ArchIcon size={12} color={tab === "arch" ? "#c19a5b" : "#888"} /> ARCH</span>
         </button>
       </div>
 

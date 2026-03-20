@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
 import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp } from "../../utils/format";
+import ArchIcon from "../../components/ArchIcon";
 
 interface TokenBalance {
   mint: string;
@@ -120,7 +121,9 @@ export default function Dashboard() {
       setArchAddress(archAddr);
       setOverviewLoaded(true);
     }).catch((e: any) => {
-      setError(e?.message || "Failed to load balances");
+      const msg = e?.message || "Failed to load balances";
+      const isNetworkError = /fetch|network|ECONNREFUSED|abort/i.test(msg);
+      if (!isNetworkError) setError(msg);
       setOverviewLoaded(true);
     });
 
@@ -314,7 +317,7 @@ export default function Dashboard() {
 
           {balancesReady ? (
             <div className="asset-row">
-              <div className="asset-icon arch">⟠</div>
+              <div className="asset-icon arch"><ArchIcon size={18} /></div>
               <div className="asset-info">
                 <div className="asset-name">Arch</div>
                 <div className="asset-sub">ARCH</div>
@@ -328,7 +331,7 @@ export default function Dashboard() {
           {tokensLoaded
             ? (tokens ?? []).map((tk) => (
                 <div className="asset-row" key={tk.mint}>
-                  <div className="asset-icon apl">◈</div>
+                  <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
                   <div className="asset-info">
                     <div className="asset-name">{tk.symbol}</div>
                     <div className="asset-sub">{tk.name}</div>

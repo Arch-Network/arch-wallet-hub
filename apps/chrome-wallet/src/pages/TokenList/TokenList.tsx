@@ -3,6 +3,7 @@ import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
 import { formatTokenAmount, truncateAddress } from "../../utils/format";
 import CopyButton from "../../components/CopyButton";
+import ArchIcon from "../../components/ArchIcon";
 
 interface TokenHolding {
   mint: string;
@@ -54,7 +55,7 @@ export default function TokenList() {
   if (tokens.length === 0) {
     return (
       <div className="empty-state">
-        <div className="empty-state-icon">◈</div>
+        <div className="empty-state-icon"><ArchIcon size={32} color="#7b68ee" /></div>
         <div>No APL tokens found</div>
         <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
           Tokens on the Arch network will appear here once you receive them.
@@ -73,7 +74,7 @@ export default function TokenList() {
               {tk.image ? (
                 <img src={tk.image} alt={tk.symbol} style={{ width: 24, height: 24, borderRadius: "50%" }} />
               ) : (
-                "◈"
+                <ArchIcon size={18} color="#7b68ee" />
               )}
             </div>
             <div className="asset-info">
