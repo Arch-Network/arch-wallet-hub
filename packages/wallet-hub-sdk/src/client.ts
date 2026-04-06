@@ -187,10 +187,11 @@ export class WalletHubClient {
 
   // ── Arch Transactions ──
 
-  async getTransactionHistory(address: string, params?: TransactionListParams): Promise<TransactionListResponse> {
+  async getTransactionHistory(address: string, params?: TransactionListParams & { archAddress?: string }): Promise<TransactionListResponse> {
     const qs = new URLSearchParams();
     if (params?.limit !== undefined) qs.set("limit", String(params.limit));
     if (params?.page !== undefined) qs.set("page", String(params.page));
+    if (params?.archAddress) qs.set("archAddress", params.archAddress);
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return await this.requestJson(`/wallet/${encodeURIComponent(address)}/transactions${suffix}`);
   }
@@ -231,8 +232,11 @@ export class WalletHubClient {
 
   // ── Token Holdings ──
 
-  async getTokensHeld(address: string): Promise<unknown> {
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held`);
+  async getTokensHeld(address: string, opts?: { archAddress?: string }): Promise<unknown> {
+    const qs = new URLSearchParams();
+    if (opts?.archAddress) qs.set("archAddress", opts.archAddress);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held${suffix}`);
   }
 
   // ── Bitcoin ──
@@ -281,8 +285,11 @@ export class WalletHubClient {
 
   // ── Account Token Holdings ──
 
-  async getAccountTokens(address: string): Promise<AccountTokensResponse> {
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held`);
+  async getAccountTokens(address: string, opts?: { archAddress?: string }): Promise<AccountTokensResponse> {
+    const qs = new URLSearchParams();
+    if (opts?.archAddress) qs.set("archAddress", opts.archAddress);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held${suffix}`);
   }
 
   // ── Health Status ──

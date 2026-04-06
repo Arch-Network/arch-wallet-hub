@@ -14,6 +14,7 @@ interface TokenHolding {
   decimals: number;
   symbol?: string;
   name?: string;
+  uiAmount: string;
 }
 
 interface BtcPrepareResult {
@@ -97,14 +98,16 @@ export default function Send() {
       }
 
       try {
-        const tokens = await client.getAccountTokens(activeAccount.btcAddress);
+        const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
+        const tokens = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
         setTokensHeld(
           ((tokens as any)?.tokens ?? []).map((t: any) => ({
             mint: t.mint_address,
-            balance: t.amount ?? 0,
+            balance: Number(t.amount) || 0,
             decimals: t.decimals ?? 0,
             symbol: t.symbol,
-            name: t.name,
+            name: t.name || "APL Token",
+            uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
           }))
         );
       } catch {
@@ -348,8 +351,8 @@ export default function Send() {
               <div className="asset-row" style={{ border: "none", padding: 0 }}>
                 <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
                 <div className="asset-info">
-                  <div className="asset-name">{tk.symbol || "APL Token"}</div>
-                  <div className="asset-sub">{formatTokenAmount(tk.balance, tk.decimals)}</div>
+                  <div className="asset-name">{tk.name || "APL Token"}</div>
+                  <div className="asset-sub">{tk.uiAmount} {tk.symbol ? tk.symbol : ""}</div>
                 </div>
               </div>
             </button>
@@ -413,7 +416,7 @@ export default function Send() {
             )}
             {asset === "apl" && selectedToken && (
               <span style={{ float: "right", color: "var(--text-muted)" }}>
-                Available: {formatTokenAmount(selectedToken.balance, selectedToken.decimals)}
+                Available: {selectedToken.uiAmount}
               </span>
             )}
           </label>

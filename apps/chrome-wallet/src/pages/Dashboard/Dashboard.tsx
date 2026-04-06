@@ -11,6 +11,8 @@ interface TokenBalance {
   name: string;
   balance: number;
   decimals: number;
+  uiAmount: string;
+  image?: string;
 }
 
 interface RecentTx {
@@ -120,46 +122,85 @@ export default function Dashboard() {
       setArchLamports(lamports);
       setArchAddress(archAddr);
       setOverviewLoaded(true);
+
+      const btcTxItems: RecentTx[] = [];
+      const outputs = Array.isArray(btcSummary?.outputs) ? btcSummary.outputs : [];
+      const seen = new Set<string>();
+      for (const o of outputs) {
+        const txid = o?.txid;
+        if (!txid || seen.has(txid)) continue;
+        seen.add(txid);
+        const isConfirmed = o?.status?.confirmed === true;
+        btcTxItems.push({
+          txid,
+          type: "btc",
+          direction: "in",
+          amount: typeof o.value === "number" ? formatBtc(o.value) : undefined,
+          timestamp: o.status?.block_time ? String(o.status.block_time * 1000) : undefined,
+          status: isConfirmed ? "confirmed" : "pending",
+        });
+      }
+
+      const archTxItems: RecentTx[] = (overview?.arch?.recentTransactions?.transactions ?? [])
+        .slice(0, 5)
+        .map((tx: any) => {
+          let statusStr = "confirmed";
+          const st = tx.status;
+          if (typeof st === "string") {
+            statusStr = st;
+          } else if (typeof st === "object" && st !== null) {
+            const keys = Object.keys(st);
+            if (keys.includes("Processing") || keys.includes("Pending")) statusStr = "pending";
+            else if (keys.includes("Failed") || keys.includes("Rejected")) statusStr = "failed";
+          } else if (!tx.block_height) {
+            statusStr = "pending";
+          }
+          return {
+            txid: tx.txid,
+            type: "arch" as const,
+            direction: "unknown" as const,
+            timestamp: tx.created_at,
+            status: statusStr,
+          };
+        });
+
+      const merged = [...archTxItems, ...btcTxItems];
+      merged.sort((a, b) => {
+        const ta = a.timestamp ? new Date(Number(a.timestamp) || a.timestamp).getTime() : 0;
+        const tb = b.timestamp ? new Date(Number(b.timestamp) || b.timestamp).getTime() : 0;
+        return tb - ta;
+      });
+      setRecentTxs(merged.slice(0, 5));
+      setTxsLoaded(true);
     }).catch((e: any) => {
       const msg = e?.message || "Failed to load balances";
       const isNetworkError = /fetch|network|ECONNREFUSED|abort/i.test(msg);
       if (!isNetworkError) setError(msg);
       setOverviewLoaded(true);
+      setTxsLoaded(true);
     });
 
-    const tokensPromise = client.getAccountTokens(addr).then((res: any) => {
+    const tokenAddr = activeAccount.archAddress || addr;
+    const tokensPromise = client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress }).then((res: any) => {
       setTokens(
         (res?.tokens ?? []).map((t: any) => ({
           mint: t.mint_address,
-          symbol: t.symbol || "APL",
-          name: t.name || "Token",
-          balance: t.amount ?? 0,
+          symbol: t.symbol || truncateAddress(t.mint_address, 4),
+          name: t.name || "APL Token",
+          balance: Number(t.amount) || 0,
           decimals: t.decimals ?? 0,
+          uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
+          image: t.image,
         }))
       );
       setTokensLoaded(true);
-    }).catch(() => {
+    }).catch((e: any) => {
+      console.warn("[Dashboard] getAccountTokens failed:", e?.message);
       setTokens([]);
       setTokensLoaded(true);
     });
 
-    const txsPromise = client.getTransactionHistory(addr, { limit: 3 }).then((res: any) => {
-      setRecentTxs(
-        (res?.transactions ?? []).map((tx: any) => ({
-          txid: tx.txid,
-          type: "arch" as const,
-          direction: "unknown" as const,
-          timestamp: tx.created_at,
-          status: tx.status?.type ?? (tx.block_height ? "confirmed" : "pending"),
-        }))
-      );
-      setTxsLoaded(true);
-    }).catch(() => {
-      setRecentTxs([]);
-      setTxsLoaded(true);
-    });
-
-    await Promise.allSettled([overviewPromise, tokensPromise, txsPromise]);
+    await Promise.allSettled([overviewPromise, tokensPromise]);
   }, [activeAccount]);
 
   useEffect(() => {
@@ -330,15 +371,17 @@ export default function Dashboard() {
 
           {tokensLoaded
             ? (tokens ?? []).map((tk) => (
-                <div className="asset-row" key={tk.mint}>
-                  <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
+                <div className="asset-row" key={tk.mint} onClick={() => navigate("/tokens")} style={{ cursor: "pointer" }}>
+                  <div className="asset-icon apl">
+                    {tk.image
+                      ? <img src={tk.image} alt={tk.symbol} style={{ width: 24, height: 24, borderRadius: "50%" }} />
+                      : <ArchIcon size={18} color="#7b68ee" />}
+                  </div>
                   <div className="asset-info">
-                    <div className="asset-name">{tk.symbol}</div>
-                    <div className="asset-sub">{tk.name}</div>
+                    <div className="asset-name">{tk.name}</div>
+                    <div className="asset-sub">{tk.symbol}</div>
                   </div>
-                  <div className="asset-balance">
-                    {formatTokenAmount(tk.balance, tk.decimals)}
-                  </div>
+                  <div className="asset-balance">{tk.uiAmount}</div>
                 </div>
               ))
             : <SkeletonAssetRow />
@@ -358,12 +401,17 @@ export default function Dashboard() {
           {txsLoaded ? (
             (recentTxs ?? []).length > 0 ? (
               recentTxs!.map((tx) => (
-                <div className="tx-row" key={tx.txid}>
-                  <div className={`tx-dir ${tx.direction === "in" ? "inbound" : "outbound"}`}>
-                    {tx.direction === "in" ? "↓" : tx.direction === "out" ? "↑" : "↔"}
+                <div className="tx-row" key={`${tx.type}-${tx.txid}`}>
+                  <div className={`tx-dir ${tx.type === "btc" ? (tx.direction === "in" ? "inbound" : "outbound") : "arch"}`}>
+                    {tx.type === "btc" ? "₿" : <ArchIcon size={14} />}
                   </div>
                   <div className="tx-info">
-                    <div className="tx-label">{truncateAddress(formatArchId(tx.txid), 8)}</div>
+                    <div className="tx-label">
+                      {tx.type === "btc" && tx.amount && (
+                        <span className="tx-direction-tag">{tx.direction === "in" ? "+" : ""}{tx.amount}{" "}</span>
+                      )}
+                      {truncateAddress(tx.type === "arch" ? formatArchId(tx.txid) : tx.txid, 8)}
+                    </div>
                     <div className="tx-time">{tx.timestamp ? formatTimestamp(tx.timestamp) : "Just now"}</div>
                   </div>
                   <span className={`badge ${tx.status === "confirmed" || tx.status === "processed" ? "badge-success" : tx.status === "failed" ? "badge-failed" : "badge-pending"}`}>

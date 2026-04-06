@@ -15,7 +15,7 @@ function networkIdToArch(n: NetworkId): ArchNetwork {
 
 export async function getClient(): Promise<WalletHubClient> {
   const state = await walletStore.getState();
-  const baseUrl = state.apiBaseUrl || "http://localhost:3005";
+  const baseUrl = state.apiBaseUrl || "http://44.222.123.237:3005";
   const apiKey = state.apiKey || "";
   const network = networkIdToArch(state.network);
 

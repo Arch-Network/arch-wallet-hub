@@ -11,11 +11,13 @@ interface TokenHolding {
   name: string;
   balance: number;
   decimals: number;
+  uiAmount: string;
   image?: string;
+  tokenAccount: string;
 }
 
 export default function TokenList() {
-  const { activeAccount } = useWallet();
+  const { activeAccount, state } = useWallet();
   const [tokens, setTokens] = useState<TokenHolding[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -25,15 +27,18 @@ export default function TokenList() {
       setLoading(true);
       try {
         const client = await getClient();
-        const res = await client.getAccountTokens(activeAccount.btcAddress);
+        const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
+        const res = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
         setTokens(
           ((res as any)?.tokens ?? []).map((t: any) => ({
             mint: t.mint_address,
-            symbol: t.symbol || "APL",
-            name: t.name || "Unknown Token",
-            balance: t.amount ?? 0,
+            symbol: t.symbol || truncateAddress(t.mint_address, 4),
+            name: t.name || "APL Token",
+            balance: Number(t.amount) || 0,
             decimals: t.decimals ?? 0,
+            uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
             image: t.image,
+            tokenAccount: t.token_account_address || "",
           }))
         );
       } catch {
@@ -64,27 +69,59 @@ export default function TokenList() {
     );
   }
 
+  const isTestnet = state.network === "testnet4";
+  const explorerBase = isTestnet
+    ? "https://explorer.arch.network/testnet"
+    : "https://explorer.arch.network/mainnet";
+
   return (
     <>
       <div className="section-title">APL Tokens</div>
       <div className="card">
         {tokens.map((tk) => (
-          <div className="asset-row" key={tk.mint}>
-            <div className="asset-icon apl">
-              {tk.image ? (
-                <img src={tk.image} alt={tk.symbol} style={{ width: 24, height: 24, borderRadius: "50%" }} />
-              ) : (
-                <ArchIcon size={18} color="#7b68ee" />
-              )}
+          <div className="asset-row" key={tk.mint} style={{ flexDirection: "column", alignItems: "stretch", gap: 10, padding: "14px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div className="asset-icon apl" style={{ flexShrink: 0 }}>
+                {tk.image ? (
+                  <img src={tk.image} alt={tk.symbol} style={{ width: 28, height: 28, borderRadius: "50%" }} />
+                ) : (
+                  <ArchIcon size={18} color="#7b68ee" />
+                )}
+              </div>
+              <div className="asset-info" style={{ flex: 1, minWidth: 0 }}>
+                <div className="asset-name">{tk.name}</div>
+                <div className="asset-sub">{tk.symbol}</div>
+              </div>
+              <div className="asset-balance" style={{ fontWeight: 600, fontSize: 16 }}>{tk.uiAmount}</div>
             </div>
-            <div className="asset-info">
-              <div className="asset-name">{tk.symbol}</div>
-              <div className="asset-sub" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                {truncateAddress(tk.mint, 6)}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11, color: "var(--text-muted)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ opacity: 0.6, flexShrink: 0, width: 52 }}>Mint</span>
+                <a
+                  href={`${explorerBase}/tokens/${tk.mint}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "#7b68ee", textDecoration: "none", wordBreak: "break-all", lineHeight: 1.3 }}
+                >
+                  {tk.mint}
+                </a>
                 <CopyButton text={tk.mint} />
               </div>
+              {tk.tokenAccount && (
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ opacity: 0.6, flexShrink: 0, width: 52 }}>Account</span>
+                  <a
+                    href={`${explorerBase}/accounts/${tk.tokenAccount}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "#7b68ee", textDecoration: "none", wordBreak: "break-all", lineHeight: 1.3 }}
+                  >
+                    {tk.tokenAccount}
+                  </a>
+                  <CopyButton text={tk.tokenAccount} />
+                </div>
+              )}
             </div>
-            <div className="asset-balance">{formatTokenAmount(tk.balance, tk.decimals)}</div>
           </div>
         ))}
       </div>

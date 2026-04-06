@@ -10,13 +10,23 @@ on:
         description: "Release version (e.g. 0.2.0)"
         required: true
         type: string
+      skip_cws:
+        description: "Skip Chrome Web Store upload"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      zip-path: ${{ steps.zip.outputs.path }}
+      zip-name: ${{ steps.zip.outputs.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,17 +82,34 @@ jobs:
           echo "path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
           echo "name=arch-wallet-${{ steps.version.outputs.version }}.zip" >> "$GITHUB_OUTPUT"
 
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-zip
+          path: apps/chrome-wallet/${{ steps.zip.outputs.path }}
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download zip artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-zip
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "Arch Wallet v${{ steps.version.outputs.version }}"
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: "Arch Wallet v${{ needs.build.outputs.version }}"
           body: |
-            ## Arch Wallet v${{ steps.version.outputs.version }}
+            ## Arch Wallet v${{ needs.build.outputs.version }}
 
-            ### Installation
+            ### Install from Chrome Web Store
+            If published: install directly from the [Chrome Web Store listing](https://chrome.google.com/webstore/detail/${{ secrets.CWS_EXTENSION_ID }}).
 
-            1. Download **arch-wallet-${{ steps.version.outputs.version }}.zip** below
+            ### Manual Installation
+            1. Download **arch-wallet-${{ needs.build.outputs.version }}.zip** below
             2. Unzip the file
             3. Open Chrome and navigate to `chrome://extensions`
             4. Enable **Developer mode** (toggle in top-right corner)
@@ -91,8 +118,56 @@ jobs:
             7. The Arch Wallet icon will appear in your extensions toolbar
           draft: false
           prerelease: false
-          files: |
-            apps/chrome-wallet/${{ steps.zip.outputs.path }}
+          files: "*.zip"
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  chrome-web-store:
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_cws }}
+    steps:
+      - name: Check CWS secrets are configured
+        run: |
+          if [ -z "$CWS_EXTENSION_ID" ]; then
+            echo "::warning::CWS_EXTENSION_ID secret not set — skipping Chrome Web Store upload."
+            echo "::warning::Complete the first manual upload, then add CWS_EXTENSION_ID, CWS_CLIENT_ID, CWS_CLIENT_SECRET, and CWS_REFRESH_TOKEN as repository secrets."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        id: check
+        env:
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+
+      - name: Download zip artifact
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-zip
+
+      - name: Setup Node.js
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install chrome-webstore-upload-cli
+        if: steps.check.outputs.skip != 'true'
+        run: npm install -g chrome-webstore-upload-cli
+
+      - name: Upload to Chrome Web Store
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          ZIP_FILE=$(find . -name '*.zip' | head -n 1)
+          echo "Uploading $ZIP_FILE to Chrome Web Store..."
+          chrome-webstore-upload upload \
+            --source "$ZIP_FILE" \
+            --extension-id "$CWS_EXTENSION_ID" \
+            --auto-publish
+        env:
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}

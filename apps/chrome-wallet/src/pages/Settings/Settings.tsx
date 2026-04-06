@@ -18,7 +18,7 @@ export default function Settings() {
   const { activeAccount, state, setNetwork, lock, refresh } = useWallet();
   const [connectedSites, setConnectedSites] = useState<Record<string, ConnectedSite>>({});
   const [showReset, setShowReset] = useState(false);
-  const [apiBaseUrl, setApiBaseUrl] = useState(state.apiBaseUrl || "http://localhost:3005");
+  const [apiBaseUrl, setApiBaseUrl] = useState(state.apiBaseUrl || "http://44.222.123.237:3005");
   const [apiKey, setApiKey] = useState(state.apiKey || "");
   const [apiSaved, setApiSaved] = useState(false);
   const displayBtcAddress = useMemo(
@@ -31,7 +31,7 @@ export default function Settings() {
   }, [state.connectedSites]);
 
   useEffect(() => {
-    setApiBaseUrl(state.apiBaseUrl || "http://localhost:3005");
+    setApiBaseUrl(state.apiBaseUrl || "http://44.222.123.237:3005");
     setApiKey(state.apiKey || "");
   }, [state.apiBaseUrl, state.apiKey]);
 
@@ -177,7 +177,7 @@ export default function Settings() {
               type="text"
               value={apiBaseUrl}
               onChange={(e) => setApiBaseUrl(e.target.value)}
-              placeholder="http://localhost:3005"
+              placeholder="http://44.222.123.237:3005"
               style={{ width: "100%", boxSizing: "border-box" }}
             />
           </div>

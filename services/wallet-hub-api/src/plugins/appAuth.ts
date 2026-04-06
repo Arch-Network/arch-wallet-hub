@@ -32,6 +32,7 @@ function extractApiKey(req: { headers: Record<string, unknown> }): string | null
 function isPublicPath(url: string): boolean {
   // Allow health + OpenAPI docs without auth.
   if (url === "/v1/health") return true;
+  if (url.startsWith("/v1/health/")) return true;
   if (url.startsWith("/v1/docs")) return true;
   if (url.startsWith("/v1/platform")) return true; // bootstrapped via admin key
   if (url.startsWith("/documentation")) return true; // swagger default

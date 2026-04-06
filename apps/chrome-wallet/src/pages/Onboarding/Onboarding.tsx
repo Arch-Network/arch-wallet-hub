@@ -14,7 +14,7 @@ interface OnboardingProps {
 
 type Step = "welcome" | "creating";
 
-const DEFAULT_BASE_URL = "http://localhost:3005";
+const DEFAULT_BASE_URL = "http://44.222.123.237:3005";
 
 export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
   const navigate = useNavigate();
@@ -261,7 +261,7 @@ export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
               type="text"
               value={apiBaseUrl}
               onChange={(e) => setApiBaseUrl(e.target.value)}
-              placeholder="http://localhost:3005"
+              placeholder="http://44.222.123.237:3005"
               style={{ width: "100%", boxSizing: "border-box" }}
             />
           </div>

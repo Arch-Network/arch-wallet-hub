@@ -25,16 +25,30 @@ function BtcIcon() {
 function parseBtcTx(tx: any, walletAddress: string): { direction: "in" | "out" | "self" | "unknown"; amountSats: number } {
   let sentSats = 0;
   let receivedSats = 0;
+
   const vin = Array.isArray(tx.vin) ? tx.vin : [];
   const vout = Array.isArray(tx.vout) ? tx.vout : [];
+  const inputs = Array.isArray(tx.input) ? tx.input : [];
+  const outputs = Array.isArray(tx.output) ? tx.output : [];
 
   for (const inp of vin) {
     if (inp.prevout?.scriptpubkey_address === walletAddress) {
       sentSats += inp.prevout.value ?? 0;
     }
   }
+  for (const inp of inputs) {
+    if (inp.previous_output_data?.script_pubkey_address === walletAddress) {
+      sentSats += inp.previous_output_data.value ?? 0;
+    }
+  }
+
   for (const out of vout) {
     if (out.scriptpubkey_address === walletAddress) {
+      receivedSats += out.value ?? 0;
+    }
+  }
+  for (const out of outputs) {
+    if (out.script_pubkey_address === walletAddress) {
       receivedSats += out.value ?? 0;
     }
   }
@@ -89,41 +103,100 @@ export default function History() {
       const client = await getClient();
       const items: TxItem[] = [];
 
+      const tokenTxIds = new Set<string>();
       try {
-        const archRes = await client.getTransactionHistory(activeAccount.btcAddress, {
+        const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
+        const tokensRes = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
+        const tokenAccounts: string[] = ((tokensRes as any)?.tokens ?? [])
+          .map((t: any) => t.token_account_address)
+          .filter(Boolean);
+
+        const tokenTxResults = await Promise.allSettled(
+          tokenAccounts.map((acct: string) =>
+            client.getTransactionHistory(acct, { limit: 50, archAddress: acct })
+          )
+        );
+        for (const r of tokenTxResults) {
+          if (r.status === "fulfilled") {
+            for (const tx of ((r.value as any)?.transactions ?? [])) {
+              if (tx.txid) tokenTxIds.add(tx.txid);
+            }
+          }
+        }
+      } catch {
+        // token enrichment is best-effort
+      }
+
+      try {
+        const archAddr = activeAccount.archAddress || activeAccount.btcAddress;
+        const archRes = await client.getTransactionHistory(archAddr, {
           limit: 20,
           page: archPage,
+          archAddress: activeAccount.archAddress,
         });
         const archTxs = (archRes as any)?.transactions ?? [];
         setHasMoreArch(archTxs.length >= 20);
 
         for (const tx of archTxs) {
-          const kind: TxKind = isAplTransaction(tx) ? "apl" : "arch";
+          const isToken = isAplTransaction(tx) || tokenTxIds.has(tx.txid);
+          const kind: TxKind = isToken ? "apl" : "arch";
+          let statusStr = "confirmed";
+          const st = tx.status;
+          if (typeof st === "string") {
+            statusStr = st;
+          } else if (typeof st === "object" && st !== null) {
+            const keys = Object.keys(st);
+            if (keys.includes("Processing") || keys.includes("Pending")) statusStr = "pending";
+            else if (keys.includes("Failed") || keys.includes("Rejected")) statusStr = "failed";
+          } else if (!tx.block_height) {
+            statusStr = "pending";
+          }
           items.push({
             txid: tx.txid,
             displayTxid: truncateAddress(formatArchId(tx.txid), 8),
             type: kind,
             direction: "unknown",
             timestamp: tx.created_at || "",
-            status: tx.status?.type ?? (tx.block_height ? "confirmed" : "pending"),
+            status: statusStr,
             explorerUrl: `${archExplorer}${tx.txid}`,
           });
         }
-      } catch {
-        // arch txs may not be available
+      } catch (e: any) {
+        console.warn("[History] Arch transaction fetch failed:", e?.message);
       }
 
       try {
         const btcTxs = await client.getBtcTransactions(activeAccount.btcAddress);
-        for (const tx of (btcTxs as any[]) ?? []) {
-          const txid = typeof tx === "string" ? tx : tx.txid;
+        const rawList = (btcTxs as any[]) ?? [];
+
+        const fullTxs = await Promise.all(
+          rawList.map(async (entry) => {
+            if (typeof entry === "object" && entry.txid) return entry;
+            const txid = typeof entry === "string" ? entry : null;
+            if (!txid) return null;
+            try {
+              return await client.getBtcTransaction(txid);
+            } catch {
+              return { txid };
+            }
+          })
+        );
+
+        for (const tx of fullTxs) {
+          if (!tx) continue;
+          const txid = tx.txid;
           if (!txid) continue;
 
-          const { direction, amountSats } = typeof tx === "object"
+          const { direction, amountSats } = tx.input || tx.vin
             ? parseBtcTx(tx, activeAccount.btcAddress)
             : { direction: "unknown" as const, amountSats: 0 };
 
-          const blockTime = tx?.status?.block_time;
+          const statusObj = tx.status;
+          const isConfirmed =
+            typeof statusObj === "object" && statusObj !== null
+              ? Boolean(statusObj.confirmed)
+              : false;
+          const blockTime = statusObj?.block_time;
 
           items.push({
             txid,
@@ -132,7 +205,7 @@ export default function History() {
             direction,
             amount: amountSats > 0 ? formatBtc(amountSats) : undefined,
             timestamp: blockTime ? String(blockTime * 1000) : "",
-            status: tx?.status?.confirmed ? "confirmed" : "pending",
+            status: isConfirmed ? "confirmed" : "pending",
             explorerUrl: `${btcExplorer}${txid}`,
           });
         }
@@ -220,7 +293,7 @@ export default function History() {
                           {tx.direction === "in" ? "Received" : tx.direction === "out" ? "Sent" : "Self"}{" "}
                         </span>
                       )}
-                      {tx.type === "apl" && <span className="tx-direction-tag">Token{" "}</span>}
+                      {tx.type === "apl" && <span className="tx-direction-tag" style={{ color: "#7b68ee" }}>APL Token{" "}</span>}
                       {tx.displayTxid}
                     </div>
                     <div className="tx-time">

@@ -19,15 +19,15 @@ function isOriginAllowed(origin: string, allowed: string[] | "*"): boolean {
 
 const corsPlugin: FastifyPluginAsync = async (server) => {
   const envAllowed = parseAllowedOrigins((server.config as any).CORS_ALLOW_ORIGINS);
-  const defaults =
-    server.config.NODE_ENV === "development"
-      ? ["http://localhost:5173", "http://127.0.0.1:5173"]
-      : [];
-  const allowed = envAllowed === "*" ? "*" : [...new Set([...defaults, ...(envAllowed as string[])])];
+  const isDev = server.config.NODE_ENV === "development";
+
+  // In development, allow all origins to avoid CORS headaches.
+  const allowed = isDev ? "*" : (envAllowed === "*" ? "*" : [...new Set([...(envAllowed as string[])])]);
 
   const allowHeaders = [
     "content-type",
     "x-api-key",
+    "x-network",
     "idempotency-key",
     "authorization",
     "x-admin-api-key",
@@ -38,25 +38,29 @@ const corsPlugin: FastifyPluginAsync = async (server) => {
 
   server.addHook("onRequest", async (request, reply) => {
     const origin = request.headers.origin;
-    if (typeof origin === "string" && origin) {
-      if (isOriginAllowed(origin, allowed)) {
-        reply.header("access-control-allow-origin", origin);
-        reply.header("vary", "origin");
+
+    if (typeof origin === "string" && origin && isOriginAllowed(origin, allowed)) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("vary", "origin");
+      reply.header("access-control-allow-headers", allowHeaders);
+      reply.header("access-control-allow-methods", allowMethods);
+      reply.header("access-control-max-age", "600");
+    }
+
+    if (request.method === "OPTIONS") {
+      // If no origin was matched but it's a preflight, still set wildcard in dev
+      // so the browser doesn't block the subsequent actual request.
+      if (isDev && !reply.getHeader("access-control-allow-origin")) {
+        reply.header("access-control-allow-origin", origin || "*");
         reply.header("access-control-allow-headers", allowHeaders);
         reply.header("access-control-allow-methods", allowMethods);
         reply.header("access-control-max-age", "600");
       }
-    }
-
-    // Always short-circuit preflight BEFORE auth hooks.
-    if (request.method === "OPTIONS") {
       reply.code(204).send();
-      // Ensure Fastify stops processing additional hooks (like auth).
       reply.hijack();
       return;
     }
   });
 };
 
-// Disable encapsulation so the onRequest hook applies to all routes registered after this plugin.
 export const registerCors = fp(corsPlugin, { name: "cors" });

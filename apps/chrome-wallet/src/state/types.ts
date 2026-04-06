@@ -38,6 +38,6 @@ export const DEFAULT_STATE: AppState = {
   activeAccountId: null,
   accounts: [],
   connectedSites: {},
-  apiBaseUrl: "http://localhost:3005",
-  apiKey: "",
+  apiBaseUrl: "http://44.222.123.237:3005",
+  apiKey: "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog",
 };

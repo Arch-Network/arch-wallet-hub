@@ -26,6 +26,7 @@ function RouteRestorer() {
   useEffect(() => {
     if (restored.current) return;
     restored.current = true;
+    if (location.pathname.startsWith("/approve/")) return;
     chrome.storage.local.get(ROUTE_STORAGE_KEY).then((result) => {
       const saved = result[ROUTE_STORAGE_KEY];
       if (saved && VALID_ROUTES.includes(saved) && saved !== location.pathname) {

@@ -26,6 +26,16 @@ export const walletStore = {
         migrated = true;
       }
     }
+
+    if (!state.apiBaseUrl || state.apiBaseUrl === "http://localhost:3005") {
+      state.apiBaseUrl = DEFAULT_STATE.apiBaseUrl;
+      migrated = true;
+    }
+    if (!state.apiKey || state.apiKey === "") {
+      state.apiKey = DEFAULT_STATE.apiKey;
+      migrated = true;
+    }
+
     if (migrated) await saveState(state);
     return state;
   },

@@ -35,6 +35,9 @@ function btcAddressForRequest(address: string, request: FastifyRequest): string 
 const OVERVIEW_TTL_MS = 30_000;
 const OVERVIEW_PARTIAL_TTL_MS = 10_000;
 const OVERVIEW_FAST_TIMEOUT_MS = 5_000;
+const TX_HISTORY_TIMEOUT_MS = 15_000;
+
+const EMPTY_TX_RESPONSE = { total_count: 0, next_cursor: null, page: null, limit: null, transactions: [] };
 const overviewCache = new Map<string, { ts: number; ttl: number; data: unknown }>();
 
 function raceWithTimeout<T>(promise: Promise<T>, ms: number, _label?: string): Promise<{ value: T; timedOut: false } | { value: null; timedOut: true }> {
@@ -83,13 +86,17 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       const archAddressOverride = (request.query as any)?.archAddress;
       const queryAddr = archAddressOverride || resolved.archAccountAddress;
 
-      const [archAccount, archTxs, btcSummary] = await Promise.all([
+      const [archAccount, btcSummary] = await Promise.all([
         raceWithTimeout(indexer.getAccountSummary(queryAddr), OVERVIEW_FAST_TIMEOUT_MS, "getAccountSummary"),
-        raceWithTimeout(indexer.getAccountTransactions(queryAddr, 10), OVERVIEW_FAST_TIMEOUT_MS, "getAccountTransactions"),
         raceWithTimeout(indexer.getBtcAddressSummary(btcAddress), OVERVIEW_FAST_TIMEOUT_MS, "getBtcAddressSummary"),
       ]);
 
       const archAccountData = archAccount.timedOut ? null : archAccount.value as any;
+
+      const hasTxs = archAccountData?.transaction_count > 0;
+      const archTxs = hasTxs
+        ? await raceWithTimeout(indexer.getAccountTransactions(queryAddr, 10), OVERVIEW_FAST_TIMEOUT_MS, "getAccountTransactions")
+        : { value: EMPTY_TX_RESPONSE, timedOut: false as const };
       const displayAddress =
         archAccountData?.address ||
         archAccountData?.address_hex ||
@@ -155,16 +162,21 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       schema: {
         summary: "APL tokens held by an address (balances, metadata)",
         tags: ["wallet"],
-        params: AddressParams
+        params: AddressParams,
+        querystring: Type.Object({
+          archAddress: Type.Optional(Type.String())
+        })
       }
     },
     async (request, reply) => {
       const indexer = indexerForRequest(request, reply);
       if (!indexer) return;
       const { address } = request.params as any;
+      const query = request.query as any;
       const resolved = resolveArchAccountAddress(address);
+      const archAddr = query.archAddress || resolved.archAccountAddress;
       try {
-        return await indexer.getAccountTokens(resolved.archAccountAddress);
+        return await indexer.getAccountTokens(archAddr);
       } catch (err: any) {
         return reply.code(502).send({ error: "IndexerError", message: err.message });
       }
@@ -182,7 +194,8 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
         params: AddressParams,
         querystring: Type.Object({
           limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200, default: 50 })),
-          page: Type.Optional(Type.Integer({ minimum: 1 }))
+          page: Type.Optional(Type.Integer({ minimum: 1 })),
+          archAddress: Type.Optional(Type.String())
         })
       }
     },
@@ -192,10 +205,20 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       const { address } = request.params as any;
       const query = request.query as any;
       const resolved = resolveArchAccountAddress(address);
+      const archAddr = query.archAddress || resolved.archAccountAddress;
       try {
-        const result = await raceWithTimeout(
-          indexer.getAccountTransactions(resolved.archAccountAddress, query.limit, query.page),
+        const summary = await raceWithTimeout(
+          indexer.getAccountSummary(archAddr),
           OVERVIEW_FAST_TIMEOUT_MS,
+          "getAccountSummary-txPage",
+        );
+        if (!summary.timedOut && (summary.value as any)?.transaction_count === 0) {
+          return EMPTY_TX_RESPONSE;
+        }
+
+        const result = await raceWithTimeout(
+          indexer.getAccountTransactions(archAddr, query.limit, query.page),
+          TX_HISTORY_TIMEOUT_MS,
         );
         if (result.timedOut) {
           return reply.code(504).send({
