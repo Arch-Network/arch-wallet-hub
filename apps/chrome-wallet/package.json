@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@arch/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1",
     "@turnkey/sdk-browser": "^5.2.1",
     "bs58": "^6.0.0",
     "qrcode.react": "^4.2.0",
@@ -22,8 +24,8 @@
     "@types/chrome": "^0.0.287",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
+    "@wxt-dev/module-react": "^1.1.2",
     "typescript": "^5.7.3",
-    "wxt": "^0.20.20",
-    "@wxt-dev/module-react": "^1.1.2"
+    "wxt": "^0.20.20"
   }
 }

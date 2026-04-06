@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
 import { formatTokenAmount, truncateAddress } from "../../utils/format";
+import { enrichTokenFromRpc, getArchRpcUrl } from "../../utils/arch-rpc";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 
@@ -28,19 +29,35 @@ export default function TokenList() {
       try {
         const client = await getClient();
         const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
+        const rpcUrl = getArchRpcUrl(state.network);
         const res = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
-        setTokens(
-          ((res as any)?.tokens ?? []).map((t: any) => ({
-            mint: t.mint_address,
-            symbol: t.symbol || truncateAddress(t.mint_address, 4),
-            name: t.name || "APL Token",
-            balance: Number(t.amount) || 0,
-            decimals: t.decimals ?? 0,
-            uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
-            image: t.image,
-            tokenAccount: t.token_account_address || "",
-          }))
+        const rawTokens = (res as any)?.tokens ?? [];
+        const enriched = await Promise.all(
+          rawTokens.map(async (t: any) => {
+            const base = {
+              mint: t.mint_address as string,
+              symbol: t.symbol || truncateAddress(t.mint_address, 4),
+              name: t.name || "APL Token",
+              balance: Number(t.amount) || 0,
+              decimals: t.decimals ?? 0,
+              uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
+              image: t.image as string | undefined,
+              tokenAccount: (t.token_account_address || "") as string,
+            };
+            const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
+            if (!needsEnrich) return base;
+            try {
+              const rpc = await enrichTokenFromRpc(rpcUrl, t);
+              if (rpc.name) base.name = rpc.name;
+              if (rpc.symbol) base.symbol = rpc.symbol;
+              if (rpc.image) base.image = rpc.image;
+              if (rpc.decimals != null) base.decimals = rpc.decimals;
+              if (rpc.uiAmount) base.uiAmount = rpc.uiAmount;
+            } catch { /* best-effort */ }
+            return base;
+          }),
         );
+        setTokens(enriched);
       } catch {
         setTokens([]);
       } finally {

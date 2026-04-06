@@ -4,6 +4,7 @@ import { Turnkey } from "@turnkey/sdk-browser";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient, getExternalUserId } from "../../utils/sdk";
 import { formatBtc, formatArch, formatTokenAmount, formatArchId } from "../../utils/format";
+import { enrichTokenFromRpc, getArchRpcUrl } from "../../utils/arch-rpc";
 import ArchIcon from "../../components/ArchIcon";
 
 type AssetType = "btc" | "arch" | "apl";
@@ -99,17 +100,32 @@ export default function Send() {
 
       try {
         const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
+        const rpcUrl = getArchRpcUrl(state.network);
         const tokens = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
-        setTokensHeld(
-          ((tokens as any)?.tokens ?? []).map((t: any) => ({
-            mint: t.mint_address,
-            balance: Number(t.amount) || 0,
-            decimals: t.decimals ?? 0,
-            symbol: t.symbol,
-            name: t.name || "APL Token",
-            uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
-          }))
+        const rawTokens = (tokens as any)?.tokens ?? [];
+        const enriched = await Promise.all(
+          rawTokens.map(async (t: any) => {
+            const base = {
+              mint: t.mint_address as string,
+              balance: Number(t.amount) || 0,
+              decimals: t.decimals ?? 0,
+              symbol: t.symbol as string | undefined,
+              name: (t.name || "APL Token") as string,
+              uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
+            };
+            const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
+            if (!needsEnrich) return base;
+            try {
+              const rpc = await enrichTokenFromRpc(rpcUrl, t);
+              if (rpc.name) base.name = rpc.name;
+              if (rpc.symbol) base.symbol = rpc.symbol;
+              if (rpc.decimals != null) base.decimals = rpc.decimals;
+              if (rpc.uiAmount) base.uiAmount = rpc.uiAmount;
+            } catch { /* best-effort */ }
+            return base;
+          }),
         );
+        setTokensHeld(enriched);
       } catch {
         setTokensHeld([]);
       }

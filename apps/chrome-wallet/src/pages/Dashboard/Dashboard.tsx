@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp } from "../../utils/format";
+import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, btcTxTimestampMs } from "../../utils/format";
+import { enrichTokenFromRpc, getArchRpcUrl } from "../../utils/arch-rpc";
 import ArchIcon from "../../components/ArchIcon";
 
 interface TokenBalance {
@@ -131,12 +132,13 @@ export default function Dashboard() {
         if (!txid || seen.has(txid)) continue;
         seen.add(txid);
         const isConfirmed = o?.status?.confirmed === true;
+        const oTime = btcTxTimestampMs(o);
         btcTxItems.push({
           txid,
           type: "btc",
           direction: "in",
           amount: typeof o.value === "number" ? formatBtc(o.value) : undefined,
-          timestamp: o.status?.block_time ? String(o.status.block_time * 1000) : undefined,
+          timestamp: oTime != null ? String(oTime) : undefined,
           status: isConfirmed ? "confirmed" : "pending",
         });
       }
@@ -181,18 +183,34 @@ export default function Dashboard() {
     });
 
     const tokenAddr = activeAccount.archAddress || addr;
-    const tokensPromise = client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress }).then((res: any) => {
-      setTokens(
-        (res?.tokens ?? []).map((t: any) => ({
-          mint: t.mint_address,
-          symbol: t.symbol || truncateAddress(t.mint_address, 4),
-          name: t.name || "APL Token",
-          balance: Number(t.amount) || 0,
-          decimals: t.decimals ?? 0,
-          uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
-          image: t.image,
-        }))
+    const rpcUrl = getArchRpcUrl(state.network);
+    const tokensPromise = client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress }).then(async (res: any) => {
+      const rawTokens = res?.tokens ?? [];
+      const enriched = await Promise.all(
+        rawTokens.map(async (t: any) => {
+          const base = {
+            mint: t.mint_address as string,
+            symbol: t.symbol || truncateAddress(t.mint_address, 4),
+            name: t.name || "APL Token",
+            balance: Number(t.amount) || 0,
+            decimals: t.decimals ?? 0,
+            uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
+            image: t.image as string | undefined,
+          };
+          const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
+          if (!needsEnrich) return base;
+          try {
+            const rpc = await enrichTokenFromRpc(rpcUrl, t);
+            if (rpc.name) base.name = rpc.name;
+            if (rpc.symbol) base.symbol = rpc.symbol;
+            if (rpc.image) base.image = rpc.image;
+            if (rpc.decimals != null) base.decimals = rpc.decimals;
+            if (rpc.uiAmount) base.uiAmount = rpc.uiAmount;
+          } catch { /* best-effort */ }
+          return base;
+        }),
       );
+      setTokens(enriched);
       setTokensLoaded(true);
     }).catch((e: any) => {
       console.warn("[Dashboard] getAccountTokens failed:", e?.message);
