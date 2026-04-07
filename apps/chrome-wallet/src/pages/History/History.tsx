@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
-import { formatArchId, truncateAddress, formatTimestamp, formatBtc } from "../../utils/format";
+import { formatArchId, truncateAddress, formatTimestamp, formatBtc, btcTxTimestampMs } from "../../utils/format";
 import ArchIcon from "../../components/ArchIcon";
 
 type Tab = "all" | "arch" | "btc";
@@ -196,7 +196,7 @@ export default function History() {
             typeof statusObj === "object" && statusObj !== null
               ? Boolean(statusObj.confirmed)
               : false;
-          const blockTime = statusObj?.block_time;
+          const timeMs = btcTxTimestampMs(tx);
 
           items.push({
             txid,
@@ -204,7 +204,7 @@ export default function History() {
             type: "btc",
             direction,
             amount: amountSats > 0 ? formatBtc(amountSats) : undefined,
-            timestamp: blockTime ? String(blockTime * 1000) : "",
+            timestamp: timeMs != null ? String(timeMs) : "",
             status: isConfirmed ? "confirmed" : "pending",
             explorerUrl: `${btcExplorer}${txid}`,
           });

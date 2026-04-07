@@ -55,3 +55,27 @@ export function formatTimestamp(ts: string | number): string {
     minute: "2-digit",
   });
 }
+
+/** UNIX milliseconds for sorting/display; handles Esplora/Titan variants and ms-vs-seconds. */
+export function btcTxTimestampMs(tx: unknown): number | null {
+  const t = tx as Record<string, unknown> | null;
+  if (!t || typeof t !== "object") return null;
+
+  const secondsFrom = (v: unknown): number | null => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
+    return v < 1e12 ? v : Math.floor(v / 1000);
+  };
+
+  const status = t.status;
+  if (status && typeof status === "object") {
+    const s = status as Record<string, unknown>;
+    const sec = secondsFrom(s.block_time) ?? secondsFrom(s.blockTime);
+    if (sec !== null) return sec * 1000;
+  }
+
+  const rootSec =
+    secondsFrom(t.block_time) ?? secondsFrom(t.blockTime) ?? secondsFrom(t.timestamp);
+  if (rootSec !== null) return rootSec * 1000;
+
+  return null;
+}

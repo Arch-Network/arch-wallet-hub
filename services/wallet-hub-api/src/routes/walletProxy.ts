@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { getIndexerClient, getNetworkIndexerClient } from "../indexer/store.js";
 import { resolveArchAccountAddress, reEncodeTaprootForNetwork } from "../arch/address.js";
+import type { IndexerClient } from "../indexer/client.js";
 
 const AddressParams = Type.Object({ address: Type.String({ minLength: 1 }) });
 const TxidParams = Type.Object({ txid: Type.String({ minLength: 1 }) });
@@ -30,6 +31,37 @@ function indexerForRequest(request: FastifyRequest, reply: any) {
  */
 function btcAddressForRequest(address: string, request: FastifyRequest): string {
   return reEncodeTaprootForNetwork(address, requestNetwork(request));
+}
+
+/**
+ * Full Bitcoin tx payloads (e.g. from Esplora/Titan) sometimes omit `status.block_time`
+ * even when confirmed. The `/tx/:id/status` resource usually includes it — merge so clients
+ * can show real confirmation times.
+ */
+async function getBtcTransactionWithMergedStatus(indexer: IndexerClient, txid: string): Promise<unknown> {
+  const tx = (await indexer.getBtcTransaction(txid)) as Record<string, unknown> | null;
+  if (!tx || typeof tx !== "object") return tx;
+
+  const status = tx.status;
+  if (!status || typeof status !== "object") return tx;
+
+  const st = status as Record<string, unknown>;
+  const confirmed = st.confirmed === true;
+  const blockTime = st.block_time ?? st.blockTime;
+  const hasBlockTime = typeof blockTime === "number" && blockTime > 0;
+
+  if (!confirmed || hasBlockTime) return tx;
+
+  try {
+    const extra = (await indexer.getBtcTransactionStatus(txid)) as Record<string, unknown> | null;
+    if (extra && typeof extra === "object") {
+      tx.status = { ...st, ...extra };
+    }
+  } catch {
+    /* status sub-resource is best-effort */
+  }
+
+  return tx;
 }
 
 const OVERVIEW_TTL_MS = 30_000;
@@ -426,7 +458,7 @@ export const registerWalletProxyRoutes: FastifyPluginAsync = async (server) => {
       if (!indexer) return;
       const { txid } = request.params as any;
       try {
-        return await indexer.getBtcTransaction(txid);
+        return await getBtcTransactionWithMergedStatus(indexer, txid);
       } catch (err: any) {
         return reply.code(502).send({ error: "IndexerError", message: err.message });
       }
