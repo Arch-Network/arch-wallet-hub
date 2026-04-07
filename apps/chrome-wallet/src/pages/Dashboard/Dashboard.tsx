@@ -388,20 +388,43 @@ export default function Dashboard() {
           )}
 
           {tokensLoaded
-            ? (tokens ?? []).map((tk) => (
-                <div className="asset-row" key={tk.mint} onClick={() => navigate("/tokens")} style={{ cursor: "pointer" }}>
-                  <div className="asset-icon apl">
-                    {tk.image
-                      ? <img src={tk.image} alt={tk.symbol} style={{ width: 24, height: 24, borderRadius: "50%" }} />
-                      : <ArchIcon size={18} color="#7b68ee" />}
-                  </div>
-                  <div className="asset-info">
-                    <div className="asset-name">{tk.name}</div>
-                    <div className="asset-sub">{tk.symbol}</div>
-                  </div>
-                  <div className="asset-balance">{tk.uiAmount}</div>
-                </div>
-              ))
+            ? (() => {
+                const MAX_INLINE_TOKENS = 2;
+                const allTokens = tokens ?? [];
+                const visible = allTokens.slice(0, MAX_INLINE_TOKENS);
+                const hiddenCount = allTokens.length - visible.length;
+                return (
+                  <>
+                    {visible.map((tk) => (
+                      <div className="asset-row" key={tk.mint} onClick={() => navigate("/tokens")} style={{ cursor: "pointer" }}>
+                        <div className="asset-icon apl">
+                          {tk.image
+                            ? <img src={tk.image} alt={tk.symbol} style={{ width: 24, height: 24, borderRadius: "50%" }} />
+                            : <ArchIcon size={18} color="#7b68ee" />}
+                        </div>
+                        <div className="asset-info">
+                          <div className="asset-name">{tk.name}</div>
+                          <div className="asset-sub">{tk.symbol}</div>
+                        </div>
+                        <div className="asset-balance">{tk.uiAmount}</div>
+                      </div>
+                    ))}
+                    {hiddenCount > 0 && (
+                      <div className="token-more-row" onClick={() => navigate("/tokens")}>
+                        <div className="asset-icon apl">
+                          <ArchIcon size={18} color="#7b68ee" />
+                        </div>
+                        <div className="token-more-label">
+                          + {hiddenCount} more token{hiddenCount !== 1 ? "s" : ""}
+                        </div>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="9 18 15 12 9 6" />
+                        </svg>
+                      </div>
+                    )}
+                  </>
+                );
+              })()
             : <SkeletonAssetRow />
           }
         </div>

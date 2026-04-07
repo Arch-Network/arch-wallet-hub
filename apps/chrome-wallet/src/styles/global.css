@@ -197,10 +197,23 @@ a {
   font-size: 10px;
   font-weight: 500;
   transition: color 0.2s;
+  position: relative;
 }
 
 .app-nav button.active {
   color: var(--accent);
+}
+
+.app-nav button.active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 16px;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--accent);
 }
 
 .app-nav button:hover {
@@ -214,6 +227,11 @@ a {
   align-items: center;
   justify-content: center;
   height: 22px;
+  transition: transform 0.15s ease;
+}
+
+.app-nav button:active .nav-icon {
+  transform: scale(0.9);
 }
 
 /* ═══════════════════ Cards ═══════════════════ */
@@ -1183,6 +1201,77 @@ a {
 }
 
 /* ═══════════════════ Token List ═══════════════════ */
+
+.token-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.back-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 0;
+  cursor: pointer;
+  transition: color 0.2s;
+  min-width: 60px;
+}
+
+.back-btn:hover {
+  color: var(--accent-hover);
+}
+
+.back-btn svg {
+  stroke: var(--accent);
+  transition: stroke 0.2s;
+}
+
+.back-btn:hover svg {
+  stroke: var(--accent-hover);
+}
+
+.token-more-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  cursor: pointer;
+  transition: background 0.15s;
+  color: var(--text-muted);
+  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+}
+
+.token-more-row:last-child {
+  border-bottom: none;
+}
+
+.token-more-row:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+
+.token-more-row svg {
+  flex-shrink: 0;
+  stroke: var(--text-muted);
+  transition: stroke 0.15s;
+}
+
+.token-more-row:hover svg {
+  stroke: var(--accent);
+}
+
+.token-more-label {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+}
 
 .token-search-wrap {
   position: relative;

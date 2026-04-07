@@ -47,6 +47,9 @@ function RouteRestorer() {
 function AppRoutes() {
   const { state, activeAccount, loading, lock, unlock, refresh } = useWallet();
   const { status: networkStatus, retry: retryApi } = useApiStatus();
+  const location = useLocation();
+
+  const isApproveRoute = location.pathname.startsWith("/approve/");
 
   if (loading) {
     return (
@@ -62,6 +65,19 @@ function AppRoutes() {
 
   if (state.locked) {
     return <Unlock onUnlock={unlock} />;
+  }
+
+  if (isApproveRoute) {
+    return (
+      <div className="app-container">
+        <div className="app-body" style={{ paddingTop: 8 }}>
+          <Routes>
+            <Route path="/approve/:requestId" element={<Approve />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </div>
+      </div>
+    );
   }
 
   return (

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getClient } from "../../utils/sdk";
 import { formatTokenAmount, truncateAddress } from "../../utils/format";
@@ -46,7 +47,17 @@ function ExplorerLink({ href }: { href: string }) {
   );
 }
 
+function BackArrow() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M19 12H5" />
+      <polyline points="12 19 5 12 12 5" />
+    </svg>
+  );
+}
+
 export default function TokenList() {
+  const navigate = useNavigate();
   const { activeAccount, state } = useWallet();
   const [tokens, setTokens] = useState<TokenHolding[]>([]);
   const [loading, setLoading] = useState(true);
@@ -110,21 +121,41 @@ export default function TokenList() {
 
   if (loading) {
     return (
-      <div className="spinner-center">
-        <div className="spinner" />
-      </div>
+      <>
+        <div className="token-list-header">
+          <button className="back-btn" onClick={() => navigate("/dashboard")}>
+            <BackArrow />
+            <span>Home</span>
+          </button>
+          <div className="section-title" style={{ margin: 0 }}>APL Tokens</div>
+          <div style={{ width: 60 }} />
+        </div>
+        <div className="spinner-center">
+          <div className="spinner" />
+        </div>
+      </>
     );
   }
 
   if (tokens.length === 0) {
     return (
-      <div className="empty-state">
-        <div className="empty-state-icon"><ArchIcon size={32} color="#7b68ee" /></div>
-        <div>No APL tokens found</div>
-        <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          Tokens on the Arch network will appear here once you receive them.
-        </p>
-      </div>
+      <>
+        <div className="token-list-header">
+          <button className="back-btn" onClick={() => navigate("/dashboard")}>
+            <BackArrow />
+            <span>Home</span>
+          </button>
+          <div className="section-title" style={{ margin: 0 }}>APL Tokens</div>
+          <div style={{ width: 60 }} />
+        </div>
+        <div className="empty-state">
+          <div className="empty-state-icon"><ArchIcon size={32} color="#7b68ee" /></div>
+          <div>No APL tokens found</div>
+          <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            Tokens on the Arch network will appear here once you receive them.
+          </p>
+        </div>
+      </>
     );
   }
 
@@ -140,7 +171,14 @@ export default function TokenList() {
 
   return (
     <>
-      <div className="section-title">APL Tokens</div>
+      <div className="token-list-header">
+        <button className="back-btn" onClick={() => navigate("/dashboard")}>
+          <BackArrow />
+          <span>Home</span>
+        </button>
+        <div className="section-title" style={{ margin: 0 }}>APL Tokens</div>
+        <div style={{ width: 60 }} />
+      </div>
       <div className="token-count">{countLabel}</div>
 
       {showSearch && (
