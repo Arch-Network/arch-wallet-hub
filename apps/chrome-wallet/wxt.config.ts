@@ -6,7 +6,7 @@ export default defineConfig({
   manifest: {
     name: "Arch Wallet",
     description: "A Bitcoin, ARCH & APL wallet for Arch Network",
-    version: "0.1.0",
+    version: "0.1.3",
     icons: {
       16: "icon/16.png",
       32: "icon/32.png",
