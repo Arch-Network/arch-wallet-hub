@@ -144,6 +144,38 @@ export default function Approve() {
         return;
       }
 
+      if (request.type === "SIGN_MESSAGE") {
+        const messageHex: string | undefined = request.payload?.message;
+        if (!messageHex) throw new Error("No message to sign");
+
+        if (activeAccount.isCustodial) {
+          throw new Error("Message signing is not yet supported for custodial accounts");
+        }
+
+        const tk = new Turnkey({
+          apiBaseUrl: "https://api.turnkey.com",
+          defaultOrganizationId: activeAccount.organizationId,
+          rpId: globalThis.location?.hostname === "localhost" ? "localhost" : globalThis.location?.hostname ?? "localhost",
+        });
+        const signResult = await tk.passkeyClient().signRawPayload({
+          signWith: activeAccount.btcAddress,
+          payload: messageHex,
+          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+          hashFunction: "HASH_FUNCTION_SHA256",
+        });
+        const signature = `${signResult.r}${signResult.s}`;
+
+        chrome.runtime.sendMessage({
+          type: "APPROVE_REQUEST",
+          requestId,
+          result: { signature },
+        });
+
+        setSuccess(true);
+        setTimeout(() => window.close(), 1500);
+        return;
+      }
+
       throw new Error(`Unsupported request type: ${request.type}`);
     } catch (e: any) {
       setError(e?.message || "Failed to process request");
