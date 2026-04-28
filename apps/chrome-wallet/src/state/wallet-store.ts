@@ -27,7 +27,7 @@ export const walletStore = {
       }
     }
 
-    if (!state.apiBaseUrl || state.apiBaseUrl === "http://localhost:3005") {
+    if (!state.apiBaseUrl) {
       state.apiBaseUrl = DEFAULT_STATE.apiBaseUrl;
       migrated = true;
     }

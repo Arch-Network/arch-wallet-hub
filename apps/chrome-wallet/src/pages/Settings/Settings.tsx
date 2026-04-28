@@ -36,7 +36,7 @@ export default function Settings() {
   }, [state.apiBaseUrl, state.apiKey]);
 
   const handleSaveApiConfig = useCallback(async () => {
-    await walletStore.setApiConfig(apiBaseUrl, apiKey);
+    await walletStore.setApiConfig(apiBaseUrl.trim(), apiKey.trim());
     invalidateClientCache();
     setApiSaved(true);
     setTimeout(() => setApiSaved(false), 2000);

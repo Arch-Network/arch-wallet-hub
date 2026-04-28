@@ -49,6 +49,11 @@ const CreateSigningRequestBody = Type.Object({
       type: Type.Literal("arch.anchor"),
       btcTxid: Type.String({ minLength: 64, maxLength: 64 }),
       vout: Type.Integer({ minimum: 0 })
+    }),
+    Type.Object({
+      type: Type.Literal("arch.sign_message"),
+      // Raw dApp-provided message bytes, hex-encoded. Empty string not allowed.
+      messageHex: Type.String({ minLength: 2, pattern: "^[0-9a-fA-F]+$" })
     })
   ])
 });
@@ -515,6 +520,124 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         return reply.internalServerError("Missing signer arch account address");
       }
 
+      // arch.sign_message does not build an Arch runtime transaction: the signature is the
+      // end-product itself. We compute the BIP-322 taproot sighash directly from the raw
+      // message bytes, persist a pending signing request, and short-circuit the rest of
+      // the handler (no blockhash, no readiness, no instruction-building).
+      if (body.action.type === "arch.sign_message") {
+        const messageHex = String(body.action.messageHex).toLowerCase();
+        if (messageHex.length % 2 !== 0) {
+          return reply.badRequest("messageHex must have an even number of hex characters");
+        }
+        const messageBytes = Buffer.from(messageHex, "hex");
+        if (messageBytes.length === 0) {
+          return reply.badRequest("messageHex must decode to at least one byte");
+        }
+
+        // tapInternalKey: prefer the internal (untweaked) x-only key if we have it. For
+        // passkey/external signers that don't expose the internal key we fall back to the
+        // address-derived (tweaked/output) key, matching the transfer path's behaviour.
+        let xOnlyPubkey: Buffer;
+        if (signerInternalXOnlyPubkeyHex && signerInternalXOnlyPubkeyHex.length >= 64) {
+          xOnlyPubkey = Buffer.from(signerInternalXOnlyPubkeyHex.slice(0, 64), "hex");
+        } else {
+          const decodedAddress = btcAddress.fromBech32(signerTaprootAddress);
+          if (decodedAddress.version !== 1 || decodedAddress.data.length !== 32) {
+            return reply.badRequest("Signer must be a Taproot (p2tr) address for BIP-322 sign_message");
+          }
+          xOnlyPubkey = Buffer.from(decodedAddress.data);
+        }
+
+        const psbtBase64 = buildBip322ToSignPsbtBase64({
+          signerAddress: signerTaprootAddress,
+          message: messageBytes,
+          tapInternalKey: xOnlyPubkey
+        });
+        const sighash = computeBip322ToSignTaprootSighash({
+          signerAddress: signerTaprootAddress,
+          message: messageBytes
+        });
+
+        // tryDecodeUtf8: best-effort human-readable message for display. If the payload is
+        // not valid UTF-8 we simply omit it; the hex remains the authoritative form.
+        let messageUtf8: string | null = null;
+        try {
+          const decoded = new TextDecoder("utf-8", { fatal: true }).decode(messageBytes);
+          messageUtf8 = decoded;
+        } catch {
+          messageUtf8 = null;
+        }
+
+        const payloadToSign = {
+          kind: "taproot_sighash_hex",
+          signWith: signerTaprootAddress,
+          payloadHex: Buffer.from(sighash).toString("hex"),
+          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
+          hashFunction: "HASH_FUNCTION_NO_OP",
+          messageHex,
+          // Optional debug/interop fields.
+          psbtBase64,
+          internalXOnlyPubkeyHex: signerInternalXOnlyPubkeyHex,
+          psbtTapInternalKeyHex: xOnlyPubkey.toString("hex")
+        };
+
+        const display = {
+          kind: "arch.sign_message",
+          // Use `account` (like arch.anchor) so the submit handler's existing
+          // display?.account?.taprootAddress lookup picks it up.
+          account: {
+            taprootAddress: signerTaprootAddress,
+            archAccountAddress: signerArchAccountAddress,
+            xOnlyPubkeyHex: signerInternalXOnlyPubkeyHex
+          },
+          message: {
+            hex: messageHex,
+            utf8: messageUtf8,
+            byteLength: messageBytes.length
+          }
+        };
+
+        const row = await withDbTransaction(db, async (client) => {
+          const created = await insertSigningRequest(client, {
+            appId,
+            userId: user.id,
+            status: "pending",
+            signerKind: body.signer.kind,
+            signerAddress: body.signer.kind === "external" ? signerTaprootAddress : null,
+            turnkeyResourceId,
+            actionType: "arch.sign_message",
+            payloadToSign,
+            display,
+            expiresAt
+          });
+
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: user.id,
+            eventType: "signing_request.created",
+            entityType: "signing_request",
+            entityId: created.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { actionType: "arch.sign_message", signerKind: body.signer.kind },
+            outcome: "succeeded"
+          });
+
+          return created;
+        });
+
+        return {
+          signingRequestId: row.id,
+          status: row.status,
+          actionType: row.action_type,
+          payloadToSign,
+          display,
+          expiresAt
+        };
+      }
+
       const payerPubkey = parsePubkey(signerArchAccountAddress);
 
       if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
@@ -818,8 +941,13 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       const payerPubkey = parsePubkey(fromArch);
       const internalXOnlyPubkeyHex = String(display?.from?.xOnlyPubkeyHex ?? display?.account?.xOnlyPubkeyHex ?? "");
       const recentBlockhashHex = String((row.payload_to_sign as any)?.recentBlockhashHex ?? "");
-      if (!recentBlockhashHex) return reply.badRequest("Signing request missing recentBlockhashHex");
-      const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
+      // arch.sign_message does not build an Arch runtime tx, so it legitimately has no blockhash.
+      if (row.action_type !== "arch.sign_message" && !recentBlockhashHex) {
+        return reply.badRequest("Signing request missing recentBlockhashHex");
+      }
+      const recentBlockhash = recentBlockhashHex
+        ? new Uint8Array(Buffer.from(recentBlockhashHex, "hex"))
+        : new Uint8Array(0);
 
       // Enforce readiness on submit for arch.transfer / arch.token_transfer.
       if (row.action_type === "arch.transfer" || row.action_type === "arch.token_transfer") {
@@ -881,6 +1009,9 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const vout = Number(display?.utxo?.vout);
         if (!txid || Number.isNaN(vout)) return reply.badRequest("Signing request display missing anchor fields");
         instructions = [SystemInstructionUtil.anchor(payerPubkey, txid, vout)];
+      } else if (row.action_type === "arch.sign_message") {
+        // sign_message produces a standalone BIP-322 signature; no Arch instructions.
+        instructions = [];
       } else {
         return reply.badRequest("Unsupported action type");
       }
@@ -991,6 +1122,46 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             "Local schnorr.verify failed (internal key) - signature might still be valid for tweaked key"
           );
         }
+      }
+
+      // arch.sign_message terminates here: the BIP-322 signature we just verified IS the
+      // result. There is no Arch runtime tx to build or broadcast.
+      if (row.action_type === "arch.sign_message") {
+        const signature64Hex = Buffer.from(sig64).toString("hex");
+        const storedMessageHex = String((payloadToSign as any)?.messageHex ?? "");
+        const result = {
+          signature64Hex,
+          signWith: storedSignWith,
+          messageHex: storedMessageHex,
+          taprootOutputXOnlyHex,
+          turnkeyActivityId: body.turnkeyActivityId ?? null
+        };
+
+        await withDbTransaction(db, async (client) => {
+          // Record the submitted signature for audit parity with the transfer path, then
+          // mark succeeded in the same transaction.
+          await markSigningRequestSubmitted(client, {
+            id: row.id,
+            submittedSignatureJson: submittedSigJson,
+            resultJson: result
+          });
+          await markSigningRequestSucceeded(client, { id: row.id, resultJson: result });
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: user.id,
+            eventType: "signing_request.succeeded",
+            entityType: "signing_request",
+            entityId: row.id,
+            turnkeyActivityId: body.turnkeyActivityId ?? null,
+            turnkeyRequestId: null,
+            payloadJson: { actionType: "arch.sign_message", signWith: storedSignWith },
+            outcome: "succeeded"
+          });
+        });
+
+        return { signingRequestId: row.id, status: "succeeded", result };
       }
 
       // Build the runtime tx and submit.

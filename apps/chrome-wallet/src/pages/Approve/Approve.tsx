@@ -11,18 +11,19 @@ interface RequestDetails {
   payload?: any;
 }
 
-async function signAndSubmit(
+// Returns the raw `result` object from the Hub so callers can pick the field they need
+// (e.g. `txid` for transfers, `signature64Hex` for sign_message).
+async function signAndSubmitRequest(
   activeAccount: { btcAddress: string; organizationId: string; turnkeyResourceId: string; isCustodial: boolean },
   signingRequestId: string,
   payloadToSign: any,
   externalUserId: string,
-): Promise<string> {
+): Promise<any> {
   const client = await getClient();
 
   if (activeAccount.isCustodial) {
     const serverResult = await client.signWithTurnkey(signingRequestId, { externalUserId });
-    const res = (serverResult as any).result ?? serverResult;
-    return res?.txid || res?.txidHex || signingRequestId;
+    return (serverResult as any).result ?? serverResult;
   }
 
   const payloadHex = payloadToSign?.payloadHex;
@@ -45,8 +46,11 @@ async function signAndSubmit(
     externalUserId,
     signature64Hex,
   });
-  const res = (submitRes as any).result ?? submitRes;
-  return res?.txid || res?.txidHex || signingRequestId;
+  return (submitRes as any).result ?? submitRes;
+}
+
+function extractTxid(result: any, fallbackId: string): string {
+  return result?.txid || result?.txidHex || fallbackId;
 }
 
 export default function Approve() {
@@ -106,7 +110,8 @@ export default function Approve() {
           },
         });
 
-        const txid = await signAndSubmit(activeAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
+        const submitResult = await signAndSubmitRequest(activeAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
+        const txid = extractTxid(submitResult, sr.signingRequestId);
 
         chrome.runtime.sendMessage({
           type: "APPROVE_REQUEST",
@@ -131,12 +136,45 @@ export default function Approve() {
           },
         });
 
-        const txid = await signAndSubmit(activeAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
+        const submitResult = await signAndSubmitRequest(activeAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
+        const txid = extractTxid(submitResult, sr.signingRequestId);
 
         chrome.runtime.sendMessage({
           type: "APPROVE_REQUEST",
           requestId,
           result: { txid },
+        });
+
+        setSuccess(true);
+        setTimeout(() => window.close(), 1500);
+        return;
+      }
+
+      if (request.type === "SIGN_MESSAGE") {
+        const messageHex: string = request.payload?.message;
+        if (!messageHex || typeof messageHex !== "string") {
+          throw new Error("SIGN_MESSAGE request is missing payload.message (hex)");
+        }
+
+        const sr = await client.createSigningRequest({
+          externalUserId,
+          signer: { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
+          action: {
+            type: "arch.sign_message",
+            messageHex,
+          },
+        });
+
+        const submitResult = await signAndSubmitRequest(activeAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
+        const signature = submitResult?.signature64Hex || submitResult?.signature;
+        if (!signature || typeof signature !== "string") {
+          throw new Error("Hub did not return a signature for sign_message");
+        }
+
+        chrome.runtime.sendMessage({
+          type: "APPROVE_REQUEST",
+          requestId,
+          result: { signature },
         });
 
         setSuccess(true);
