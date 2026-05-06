@@ -19,8 +19,14 @@ export interface AppState {
   activeAccountId: string | null;
   accounts: WalletAccount[];
   connectedSites: Record<string, ConnectedSite>;
-  apiBaseUrl: string;
-  apiKey: string;
+
+  // Wallet Hub API (Turnkey + signing-requests + custodial BTC send)
+  hubBaseUrl: string;
+  hubApiKey: string;
+
+  // Arch Explorer Indexer API (reads + faucet + BTC + Arch RPC compat)
+  indexerBaseUrl: string;
+  indexerApiKey: string;
 }
 
 export interface ConnectedSite {
@@ -31,6 +37,9 @@ export interface ConnectedSite {
   accountId: string;
 }
 
+export const DEFAULT_HUB_BASE_URL = "http://44.222.123.237:3005";
+export const DEFAULT_HUB_API_KEY = "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog";
+
 export const DEFAULT_STATE: AppState = {
   initialized: false,
   locked: true,
@@ -38,6 +47,8 @@ export const DEFAULT_STATE: AppState = {
   activeAccountId: null,
   accounts: [],
   connectedSites: {},
-  apiBaseUrl: "http://44.222.123.237:3005",
-  apiKey: "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog",
+  hubBaseUrl: DEFAULT_HUB_BASE_URL,
+  hubApiKey: DEFAULT_HUB_API_KEY,
+  indexerBaseUrl: "",
+  indexerApiKey: "",
 };

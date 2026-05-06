@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { parsePubkey } from "../arch/arch.js";
+import { archRpcUrlForRequest } from "../indexer/forRequest.js";
 
 async function callJsonRpc(nodeUrl: string, body: any): Promise<any> {
   const res = await fetch(nodeUrl, {
@@ -45,7 +46,8 @@ export const registerArchAccountRoutes: FastifyPluginAsync = async (server) => {
     async (request, reply) => {
       const appId = request.app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
-      if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
+      const archRpcUrl = archRpcUrlForRequest(request, server);
+      if (!archRpcUrl) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
 
       const body = request.body as any;
       const archAccountAddress = String(body.archAccountAddress);
@@ -59,7 +61,7 @@ export const registerArchAccountRoutes: FastifyPluginAsync = async (server) => {
       const base = { jsonrpc: "2.0", id: "wallet-hub-airdrop", method: "request_airdrop" };
       try {
         // Observed in localnet: params is the flat u8 array (not nested).
-        const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
+        const result = await callJsonRpc(archRpcUrl, {
           ...base,
           params: pubkeyBytes
         });
@@ -69,20 +71,20 @@ export const registerArchAccountRoutes: FastifyPluginAsync = async (server) => {
         const lamports = Number(lamportsRaw);
         // Fallbacks in case another RPC build expects a different param shape.
         try {
-          const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
+          const result = await callJsonRpc(archRpcUrl, {
             ...base,
             params: { pubkey: pubkeyBytes, lamports }
           });
           return { archAccountAddress, result };
         } catch {
           try {
-            const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
+            const result = await callJsonRpc(archRpcUrl, {
               ...base,
               params: [pubkeyBytes, lamports]
             });
             return { archAccountAddress, result };
           } catch {
-            const result = await callJsonRpc(server.config.ARCH_RPC_NODE_URL, {
+            const result = await callJsonRpc(archRpcUrl, {
               ...base,
               params: [...pubkeyBytes, lamports]
             });

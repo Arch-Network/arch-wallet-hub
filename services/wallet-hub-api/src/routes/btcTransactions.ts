@@ -1,11 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
-import { getIndexerClient } from "../indexer/store.js";
 import { getDbPool } from "../db/pool.js";
 import { withDbTransaction } from "../db/tx.js";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
 import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
+import { indexerForRequest } from "../indexer/forRequest.js";
+import type { IndexerClient } from "../indexer/client.js";
 import * as bitcoin from "bitcoinjs-lib";
 
 type Utxo = {
@@ -37,8 +38,6 @@ function selectUtxos(utxos: Utxo[], targetSats: number, feeSats: number): { sele
 function estimateTxSize(inputCount: number, outputCount: number): number {
   return 10.5 + inputCount * 57.5 + outputCount * 43;
 }
-
-type IndexerClient = NonNullable<ReturnType<typeof getIndexerClient>>;
 
 async function buildUnsignedPsbt(params: {
   indexer: IndexerClient;
@@ -105,18 +104,6 @@ async function buildUnsignedPsbt(params: {
   };
 }
 
-const PrepareSendBody = Type.Object({
-  fromAddress: Type.String({ minLength: 1 }),
-  toAddress: Type.String({ minLength: 1 }),
-  amountSats: Type.Integer({ minimum: 546 }),
-  feeRate: Type.Optional(Type.Number({ minimum: 1 }))
-});
-
-const FinalizeBroadcastBody = Type.Object({
-  signedPsbtBase64: Type.String({ minLength: 1 }),
-  network: Type.Optional(Type.Union([Type.Literal("testnet"), Type.Literal("mainnet")]))
-});
-
 const SendBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
   turnkeyResourceId: Type.String({ minLength: 1 }),
@@ -126,95 +113,6 @@ const SendBody = Type.Object({
 });
 
 export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) => {
-
-  // ── Prepare: build unsigned PSBT without signing ──────────────────────
-  server.post(
-    "/btc/prepare-send",
-    {
-      schema: {
-        summary: "Build an unsigned PSBT for a BTC send (client signs separately)",
-        tags: ["btc"],
-        body: PrepareSendBody
-      }
-    },
-    async (request, reply) => {
-      const indexer = getIndexerClient();
-      if (!indexer) return reply.notImplemented("Indexer not configured");
-
-      const body = request.body as typeof PrepareSendBody.static;
-
-      try {
-        const result = await buildUnsignedPsbt({
-          indexer,
-          fromAddress: body.fromAddress,
-          toAddress: body.toAddress,
-          amountSats: body.amountSats,
-          feeRate: body.feeRate,
-        });
-
-        return {
-          psbtBase64: result.psbt.toBase64(),
-          psbtHex: result.psbt.toHex(),
-          fromAddress: result.fromAddress,
-          toAddress: result.toAddress,
-          amountSats: result.amountSats,
-          feeSats: result.feeSats,
-          feeRate: result.feeRate,
-          changeSats: result.changeSats,
-          inputCount: result.inputCount,
-        };
-      } catch (err: any) {
-        if (err.code === "NO_UTXOS") {
-          return reply.code(409).send({ error: "NoUtxos", message: err.message });
-        }
-        if (err.message?.includes("Insufficient BTC balance")) {
-          return reply.code(409).send({ error: "InsufficientBalance", message: err.message });
-        }
-        request.log.error({ err }, "btc.prepare-send.failed");
-        return reply.code(502).send({ error: "PsbtBuildFailed", message: err.message });
-      }
-    }
-  );
-
-  // ── Finalize + Broadcast: accept signed PSBT, finalize, broadcast ─────
-  server.post(
-    "/btc/finalize-and-broadcast",
-    {
-      schema: {
-        summary: "Finalize a signed PSBT and broadcast the transaction",
-        tags: ["btc"],
-        body: FinalizeBroadcastBody
-      }
-    },
-    async (request, reply) => {
-      const indexer = getIndexerClient();
-      if (!indexer) return reply.notImplemented("Indexer not configured");
-
-      const body = request.body as typeof FinalizeBroadcastBody.static;
-
-      let signedTxHex: string;
-      try {
-        const networkName = body.network ?? "testnet";
-        const network = networkName === "mainnet" ? bitcoin.networks.bitcoin : bitcoin.networks.testnet;
-        const signedPsbt = bitcoin.Psbt.fromBase64(body.signedPsbtBase64, { network });
-        signedPsbt.finalizeAllInputs();
-        signedTxHex = signedPsbt.extractTransaction().toHex();
-      } catch (err: any) {
-        request.log.error({ err }, "btc.finalize.failed");
-        return reply.code(400).send({ error: "FinalizeFailed", message: `Could not finalize PSBT: ${err.message}` });
-      }
-
-      let txid: string;
-      try {
-        txid = (await indexer.broadcastBtcTransaction(signedTxHex)) as string;
-      } catch (err: any) {
-        request.log.error({ err }, "btc.broadcast.failed");
-        return reply.code(502).send({ error: "BroadcastFailed", message: err.message });
-      }
-
-      return { txid, rawTxHex: signedTxHex };
-    }
-  );
 
   // ── Full send: server-side construction + signing (custodial only) ────
   server.post(
@@ -230,8 +128,8 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
       const appId = (request as any).app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
 
-      const indexer = getIndexerClient();
-      if (!indexer) return reply.notImplemented("Indexer not configured");
+      const indexer = indexerForRequest(request, reply);
+      if (!indexer) return;
 
       const db = getDbPool();
       const body = request.body as typeof SendBody.static;
@@ -252,7 +150,7 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
         return reply.code(400).send({
           statusCode: 400,
           error: "PasskeyWalletNotSupported",
-          message: "BTC sending from passkey wallets requires client-side signing. Use /btc/prepare-send instead."
+          message: "BTC sending from passkey wallets must be built and broadcast by the client."
         });
       }
 

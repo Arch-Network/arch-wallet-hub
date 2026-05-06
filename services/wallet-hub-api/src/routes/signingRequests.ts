@@ -13,9 +13,10 @@ import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, Signa
 import { Buffer } from "node:buffer";
 import bs58 from "bs58";
 import { secp256k1, schnorr } from "@noble/curves/secp256k1";
-import { getBtcPlatformClient } from "../btcPlatform/store.js";
 import { resolveArchAccountAddress, archAccountFromInternalKey } from "../arch/address.js";
 import { address as btcAddress } from "bitcoinjs-lib";
+import { indexerForRequest, archRpcUrlForRequest } from "../indexer/forRequest.js";
+import type { IndexerClient } from "../indexer/client.js";
 
 const CreateSigningRequestBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
@@ -148,7 +149,7 @@ async function computeBtcUtxoReadiness(params: {
   archRpc: ReturnType<typeof createArchRpcClient> | null;
   payerPubkey: Uint8Array;
   requiredConfirmations: number;
-  btc: ReturnType<typeof getBtcPlatformClient>;
+  indexer: IndexerClient | null;
   requireAnchoredUtxo: boolean;
 }) {
   if (!params.archRpc) {
@@ -184,10 +185,10 @@ async function computeBtcUtxoReadiness(params: {
     return { status: "not_ready", reason: "NotAnchored", anchoredUtxo: anchored } as const;
   }
 
-  if (!params.btc) {
+  if (!params.indexer) {
     return {
       status: "unknown",
-      reason: "BtcPlatformNotConfigured",
+      reason: "IndexerNotConfigured",
       anchoredUtxo: anchored,
       requiredConfirmations: params.requiredConfirmations
     } as const;
@@ -206,13 +207,31 @@ async function computeBtcUtxoReadiness(params: {
         "Arch RPC is deriving a regtest (bcrt1...) BTC account address. Point Wallet Hub at a TESTNET-configured Arch node (ARCH_NETWORK_MODE=TESTNET) to use tb1... addresses."
     } as const;
   }
-  const utxosRes: any = await params.btc.getAddressUtxos(btcAccountAddress, { confirmedOnly: false });
-  const utxos: any[] = Array.isArray(utxosRes?.utxos) ? utxosRes.utxos : [];
+
+  // Indexer UTXOs come as `[{ txid, vout, value, status: { confirmed, block_height } }]`.
+  // We compute confirmations against the chain tip ourselves rather than relying on a
+  // server-side `confirmations` field (which Titan exposed but the Indexer does not).
+  const utxosRaw: any = await params.indexer.getBtcAddressUtxos(btcAccountAddress);
+  const utxos: any[] = Array.isArray(utxosRaw) ? utxosRaw : Array.isArray(utxosRaw?.utxos) ? utxosRaw.utxos : [];
   const matchUtxo = utxos.find(
     (u) => String(u?.txid ?? "").toLowerCase() === anchored.txid && Number(u?.vout) === anchored.vout
   );
 
-  const confirmations = Number(matchUtxo?.confirmations ?? 0);
+  let confirmations = 0;
+  if (matchUtxo) {
+    if (typeof matchUtxo.confirmations === "number") {
+      confirmations = matchUtxo.confirmations;
+    } else if (matchUtxo?.status?.confirmed && typeof matchUtxo.status.block_height === "number") {
+      try {
+        const tip: any = await params.indexer.getBtcChainTip();
+        const tipHeight = typeof tip?.height === "number" ? tip.height : Number(tip?.height ?? 0);
+        if (tipHeight > 0) confirmations = Math.max(0, tipHeight - matchUtxo.status.block_height + 1);
+      } catch {
+        confirmations = matchUtxo.status.confirmed ? params.requiredConfirmations : 0;
+      }
+    }
+  }
+
   if (confirmations < params.requiredConfirmations) {
     return {
       status: "not_ready",
@@ -315,16 +334,18 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       let row: any = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
       if (!row) return reply.notFound("Unknown signingRequestId");
 
+      const archRpcUrl = archRpcUrlForRequest(request, server);
+
       // If the request is still "submitted", best-effort reconcile it by asking the node for the processed tx.
       // This prevents UIs from getting stuck when the submit endpoint times out before the tx is indexed.
       try {
-        if (row.status === "submitted" && server.config.ARCH_RPC_NODE_URL) {
+        if (row.status === "submitted" && archRpcUrl) {
           const txidHex = String((row.result_json as any)?.txidHex ?? "");
           const txidFallback = String((row.result_json as any)?.txid ?? "");
           const txidToQuery = txidHex || (txidFallback.length === 64 ? txidFallback : "");
           if (txidToQuery) {
             const processed = await waitForProcessedTransaction({
-              nodeUrl: server.config.ARCH_RPC_NODE_URL,
+              nodeUrl: archRpcUrl,
               txid: txidToQuery,
               timeoutMs: 2_000,
               pollMs: 500
@@ -356,8 +377,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       let readiness: any = { status: "unknown", reason: "NotApplicable" };
       try {
         if (row.action_type === "arch.transfer" || row.action_type === "arch.token_transfer") {
-          const btc = getBtcPlatformClient();
-          const archRpc = server.config.ARCH_RPC_NODE_URL ? createArchRpcClient(server.config.ARCH_RPC_NODE_URL) : null;
+          const indexer = indexerForRequest(request, reply);
+          const archRpc = archRpcUrl ? createArchRpcClient(archRpcUrl) : null;
           const display: any = row.display_json ?? {};
           const fromArch = String(display?.from?.archAccountAddress ?? "");
           const payerPubkey = fromArch ? parsePubkey(fromArch) : null;
@@ -366,7 +387,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
               archRpc,
               payerPubkey,
               requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
-              btc,
+              indexer,
               requireAnchoredUtxo: Boolean(server.config.ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO)
             });
           } else {
@@ -640,12 +661,13 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       const payerPubkey = parsePubkey(signerArchAccountAddress);
 
-      if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
+      const archRpcUrl = archRpcUrlForRequest(request, server);
+      if (!archRpcUrl) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       // Prefer finalized blockhash (required for transaction validation), fallback to best.
       // Add timeout to prevent hanging on slow/unresponsive Arch RPC.
       let recentBlockhashHex: string;
       try {
-        const blockhashPromise = getFinalizedBlockhash(server.config.ARCH_RPC_NODE_URL);
+        const blockhashPromise = getFinalizedBlockhash(archRpcUrl);
         const timeoutPromise = new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error("Blockhash fetch timeout")), 5000); // 5 second timeout
         });
@@ -666,7 +688,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         });
       }
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
-      const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
+      const archRpc = createArchRpcClient(archRpcUrl);
 
       let actionType: "arch.transfer" | "arch.token_transfer" | "arch.anchor";
       let instructions: Instruction[];
@@ -712,7 +734,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             archRpc,
             payerPubkey,
             requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
-            btc: getBtcPlatformClient(),
+            indexer: indexerForRequest(request, reply),
             requireAnchoredUtxo: Boolean(server.config.ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO)
           });
           
@@ -950,14 +972,15 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         : new Uint8Array(0);
 
       // Enforce readiness on submit for arch.transfer / arch.token_transfer.
+      const archRpcUrl = archRpcUrlForRequest(request, server);
       if (row.action_type === "arch.transfer" || row.action_type === "arch.token_transfer") {
-        if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
-        const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
+        if (!archRpcUrl) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
+        const archRpc = createArchRpcClient(archRpcUrl);
         const readiness = await computeBtcUtxoReadiness({
           archRpc,
           payerPubkey,
           requiredConfirmations: server.config.BTC_MIN_CONFIRMATIONS ?? 20,
-          btc: getBtcPlatformClient(),
+          indexer: indexerForRequest(request, reply),
           requireAnchoredUtxo: Boolean(server.config.ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO)
         });
         if (readiness.status === "not_ready") {
@@ -1236,17 +1259,17 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         "Submitting Arch transaction with signature - DEBUG"
       );
 
-      if (!server.config.ARCH_RPC_NODE_URL) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
+      if (!archRpcUrl) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       server.log.info(
         {
           signingRequestId: row.id,
           actionType: row.action_type,
-          nodeUrl: server.config.ARCH_RPC_NODE_URL,
+          nodeUrl: archRpcUrl,
           signWith: storedSignWith
         },
         "arch.send_transaction.requested"
       );
-      const txidHex = await submitArchTransaction({ nodeUrl: server.config.ARCH_RPC_NODE_URL, tx: runtimeTransaction });
+      const txidHex = await submitArchTransaction({ nodeUrl: archRpcUrl, tx: runtimeTransaction });
       // Arch RPC txids are 32-byte values; the RPC returns them as a 64-hex string.
       // For client UX (wallet/explorer-like), we return base58 while preserving the hex for RPC lookups.
       const txidBase58 = (() => {
@@ -1258,7 +1281,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         }
       })();
       server.log.info(
-        { signingRequestId: row.id, txidHex, txidBase58, nodeUrl: server.config.ARCH_RPC_NODE_URL },
+        { signingRequestId: row.id, txidHex, txidBase58, nodeUrl: archRpcUrl },
         "arch.send_transaction.accepted"
       );
 
@@ -1285,7 +1308,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       // Best-effort: wait briefly for execution result so we can return a truthful status to clients/UX.
       const processed = await waitForProcessedTransaction({
-        nodeUrl: server.config.ARCH_RPC_NODE_URL,
+        nodeUrl: archRpcUrl,
         txid: txidHex,
         timeoutMs: 10_000,
         pollMs: 500

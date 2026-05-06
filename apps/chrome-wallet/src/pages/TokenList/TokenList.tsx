@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
-import { getClient } from "../../utils/sdk";
+import { getIndexer } from "../../utils/indexer";
 import { formatTokenAmount, truncateAddress } from "../../utils/format";
-import { enrichTokenFromRpc, getArchRpcUrl } from "../../utils/arch-rpc";
+import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 
@@ -69,13 +69,12 @@ export default function TokenList() {
     (async () => {
       setLoading(true);
       try {
-        const client = await getClient();
+        const indexer = await getIndexer();
         const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
-        const rpcUrl = getArchRpcUrl(state.network);
-        const res = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
-        const rawTokens = (res as any)?.tokens ?? [];
+        const res = await indexer.getAccountTokens(tokenAddr);
+        const rawTokens = res?.tokens ?? [];
         const enriched = await Promise.all(
-          rawTokens.map(async (t: any) => {
+          rawTokens.map(async (t) => {
             const base = {
               mint: t.mint_address as string,
               symbol: t.symbol || truncateAddress(t.mint_address, 4),
@@ -89,7 +88,7 @@ export default function TokenList() {
             const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
             if (!needsEnrich) return base;
             try {
-              const rpc = await enrichTokenFromRpc(rpcUrl, t);
+              const rpc = await enrichTokenFromRpc(indexer, t);
               if (rpc.name) base.name = rpc.name;
               if (rpc.symbol) base.symbol = rpc.symbol;
               if (rpc.image) base.image = rpc.image;
@@ -106,7 +105,7 @@ export default function TokenList() {
         setLoading(false);
       }
     })();
-  }, [activeAccount]);
+  }, [activeAccount, state.network]);
 
   const filtered = useMemo(() => {
     if (!searchQuery.trim()) return tokens;

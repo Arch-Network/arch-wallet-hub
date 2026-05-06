@@ -16,6 +16,7 @@ import { SystemInstruction as SystemInstructionUtil, type Instruction, type Pubk
 import { getTurnkeyClient } from "../turnkey/store.js";
 import bs58 from "bs58";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
+import { archRpcUrlForRequest } from "../indexer/forRequest.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -160,7 +161,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const lamports = parseLamports(lamportsStr);
 
       // Check RPC node URL
-      if (!server.config.ARCH_RPC_NODE_URL) {
+      const archRpcUrl = archRpcUrlForRequest(request, server);
+      if (!archRpcUrl) {
         return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       }
 
@@ -172,7 +174,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       );
 
       // Get recent finalized blockhash (required for transaction validation)
-      const archRpc = createArchRpcClient(server.config.ARCH_RPC_NODE_URL);
+      const archRpc = createArchRpcClient(archRpcUrl);
       let recentBlockhashHex: string;
       try {
         recentBlockhashHex = await (archRpc as any).getBestFinalizedBlockHash();
@@ -217,7 +219,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
 
         // Submit transaction
         const txid = await submitArchTransaction({
-          nodeUrl: server.config.ARCH_RPC_NODE_URL,
+          nodeUrl: archRpcUrl,
           tx: runtimeTransaction
         });
 
@@ -332,7 +334,8 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       }
 
       // Check RPC node URL
-      if (!config.ARCH_RPC_NODE_URL) {
+      const archRpcUrl = archRpcUrlForRequest(request, server);
+      if (!archRpcUrl) {
         return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
       }
 
@@ -352,7 +355,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
       const payerPubkey = parsePubkey(fromResolved.archAccountAddress);
 
       // Get recent blockhash
-      const archRpc = createArchRpcClient(config.ARCH_RPC_NODE_URL);
+      const archRpc = createArchRpcClient(archRpcUrl);
       const recentBlockhashHex = await archRpc.getBestBlockHash();
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
 
@@ -390,7 +393,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
 
         // Submit transaction
         const txid = await submitArchTransaction({
-          nodeUrl: config.ARCH_RPC_NODE_URL,
+          nodeUrl: archRpcUrl,
           tx: runtimeTransaction
         });
 

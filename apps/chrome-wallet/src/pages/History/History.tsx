@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "../../hooks/useWallet";
-import { getClient } from "../../utils/sdk";
-import { formatArchId, truncateAddress, formatTimestamp, formatBtc, btcTxTimestampMs } from "../../utils/format";
+import { getIndexer } from "../../utils/indexer";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { formatArchId, truncateAddress, formatTimestamp, formatBtc, timestampToMs } from "../../utils/format";
+import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import ArchIcon from "../../components/ArchIcon";
 
 type Tab = "all" | "arch" | "btc";
@@ -18,8 +20,8 @@ interface TxItem {
   explorerUrl: string;
 }
 
-function BtcIcon() {
-  return <span style={{ fontSize: 14, lineHeight: 1 }}>₿</span>;
+function BtcIcon({ size = 14 }: { size?: number }) {
+  return <span style={{ fontSize: size, lineHeight: 1 }}>₿</span>;
 }
 
 function parseBtcTx(tx: any, walletAddress: string): { direction: "in" | "out" | "self" | "unknown"; amountSats: number } {
@@ -100,26 +102,26 @@ export default function History() {
     if (!activeAccount) return;
     setLoading(true);
     try {
-      const client = await getClient();
+      const indexer = await getIndexer();
       const items: TxItem[] = [];
+      const archAddr = activeAccount.archAddress || activeAccount.btcAddress;
+      const btcAddr = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
 
       const tokenTxIds = new Set<string>();
       try {
-        const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
-        const tokensRes = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
-        const tokenAccounts: string[] = ((tokensRes as any)?.tokens ?? [])
-          .map((t: any) => t.token_account_address)
-          .filter(Boolean);
+        const tokensRes = await indexer.getAccountTokens(archAddr);
+        const tokenAccounts: string[] = (tokensRes?.tokens ?? [])
+          .map((t) => t.token_account_address as string | undefined)
+          .filter((s): s is string => !!s);
 
         const tokenTxResults = await Promise.allSettled(
-          tokenAccounts.map((acct: string) =>
-            client.getTransactionHistory(acct, { limit: 50, archAddress: acct })
-          )
+          tokenAccounts.map((acct) => indexer.getAccountTransactions(acct, 50))
         );
         for (const r of tokenTxResults) {
           if (r.status === "fulfilled") {
-            for (const tx of ((r.value as any)?.transactions ?? [])) {
-              if (tx.txid) tokenTxIds.add(tx.txid);
+            for (const tx of (r.value?.transactions ?? [])) {
+              const txid = (tx as any)?.txid;
+              if (txid) tokenTxIds.add(String(txid));
             }
           }
         }
@@ -128,16 +130,11 @@ export default function History() {
       }
 
       try {
-        const archAddr = activeAccount.archAddress || activeAccount.btcAddress;
-        const archRes = await client.getTransactionHistory(archAddr, {
-          limit: 20,
-          page: archPage,
-          archAddress: activeAccount.archAddress,
-        });
-        const archTxs = (archRes as any)?.transactions ?? [];
+        const archRes = await indexer.getAccountTransactions(archAddr, 20, archPage);
+        const archTxs = archRes?.transactions ?? [];
         setHasMoreArch(archTxs.length >= 20);
 
-        for (const tx of archTxs) {
+        for (const tx of archTxs as any[]) {
           const isToken = isAplTransaction(tx) || tokenTxIds.has(tx.txid);
           const kind: TxKind = isToken ? "apl" : "arch";
           let statusStr = "confirmed";
@@ -166,16 +163,16 @@ export default function History() {
       }
 
       try {
-        const btcTxs = await client.getBtcTransactions(activeAccount.btcAddress);
-        const rawList = (btcTxs as any[]) ?? [];
+        const btcTxs = await indexer.getBtcAddressTxs(btcAddr);
+        const rawList = btcTxs ?? [];
 
         const fullTxs = await Promise.all(
           rawList.map(async (entry) => {
-            if (typeof entry === "object" && entry.txid) return entry;
+            if (typeof entry === "object" && entry !== null && (entry as any).txid) return entry as any;
             const txid = typeof entry === "string" ? entry : null;
             if (!txid) return null;
             try {
-              return await client.getBtcTransaction(txid);
+              return await indexer.getBtcTransaction(txid);
             } catch {
               return { txid };
             }
@@ -184,19 +181,19 @@ export default function History() {
 
         for (const tx of fullTxs) {
           if (!tx) continue;
-          const txid = tx.txid;
+          const txid = (tx as any).txid;
           if (!txid) continue;
 
-          const { direction, amountSats } = tx.input || tx.vin
-            ? parseBtcTx(tx, activeAccount.btcAddress)
+          const { direction, amountSats } = (tx as any).input || (tx as any).vin
+            ? parseBtcTx(tx, btcAddr)
             : { direction: "unknown" as const, amountSats: 0 };
 
-          const statusObj = tx.status;
+          const statusObj = (tx as any).status;
           const isConfirmed =
             typeof statusObj === "object" && statusObj !== null
               ? Boolean(statusObj.confirmed)
               : false;
-          const timeMs = btcTxTimestampMs(tx);
+          const timeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
 
           items.push({
             txid,
@@ -213,14 +210,13 @@ export default function History() {
         // btc txs may not be available
       }
 
-      const now = Date.now();
       items.sort((a, b) => {
         const aPending = a.status === "pending" || a.status === "unconfirmed";
         const bPending = b.status === "pending" || b.status === "unconfirmed";
         if (aPending && !bPending) return -1;
         if (!aPending && bPending) return 1;
-        const ta = a.timestamp ? new Date(Number(a.timestamp) || a.timestamp).getTime() : now;
-        const tb = b.timestamp ? new Date(Number(b.timestamp) || b.timestamp).getTime() : now;
+        const ta = timestampToMs(a.timestamp) ?? 0;
+        const tb = timestampToMs(b.timestamp) ?? 0;
         return tb - ta;
       });
 
@@ -230,7 +226,7 @@ export default function History() {
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, archPage, archExplorer, btcExplorer]);
+  }, [activeAccount, archPage, archExplorer, btcExplorer, state.network]);
 
   useEffect(() => {
     fetchTransactions();
@@ -303,7 +299,11 @@ export default function History() {
                           {" · "}
                         </span>
                       )}
-                      {tx.timestamp ? formatTimestamp(tx.timestamp) : "Just now"}
+                      {tx.timestamp
+                        ? formatTimestamp(tx.timestamp)
+                        : tx.status === "pending" || tx.status === "unconfirmed"
+                          ? "Pending"
+                          : "Time unavailable"}
                     </div>
                   </div>
                   <span

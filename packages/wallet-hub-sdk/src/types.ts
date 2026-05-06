@@ -7,6 +7,8 @@ export type WalletHubClientOptions = {
   fetchImpl?: typeof fetch;
 };
 
+// ── Wallet linking (dapp connect) ────────────────────────────────────────
+
 export type CreateChallengeRequest = {
   externalUserId: string;
   walletProvider: string;
@@ -35,12 +37,7 @@ export type VerifyChallengeResponse = {
   verificationScheme: string;
 };
 
-export type PortfolioResponse = {
-  inputAddress: string;
-  resolvedArchAccountAddress: string;
-  btc: { address: string; summary: unknown | null; utxos: unknown | null };
-  arch: { accountAddress: string; summary: unknown | null; transactions: unknown | null };
-};
+// ── Turnkey ──────────────────────────────────────────────────────────────
 
 export type TurnkeyConfigResponse = {
   organizationId: string;
@@ -92,16 +89,6 @@ export type ListTurnkeyWalletsResponse = {
   wallets: GetTurnkeyWalletResponse[];
 };
 
-export type AirdropArchAccountRequest = {
-  archAccountAddress: string;
-  lamports?: string;
-};
-
-export type AirdropArchAccountResponse = {
-  archAccountAddress: string;
-  result: unknown;
-};
-
 export type RegisterTurnkeyIndexedDbKeyRequest = {
   externalUserId: string;
   resourceId: string;
@@ -117,6 +104,8 @@ export type RegisterTurnkeyIndexedDbKeyResponse = {
   apiKeyIds: string[];
   activityId: string;
 };
+
+// ── Signing requests ─────────────────────────────────────────────────────
 
 export type CreateSigningRequest = {
   externalUserId: string;
@@ -192,166 +181,7 @@ export type SubmitSigningResponse = {
   result: unknown;
 };
 
-// ── Wallet Overview ──
-
-export type WalletOverviewResponse = {
-  inputAddress: string;
-  archAccountAddress: string;
-  btcAddress: string;
-  arch: {
-    account: {
-      address: string;
-      address_hex: string;
-      balance: string;
-      first_seen_at: string;
-      last_seen_at: string;
-    } | null;
-    accountTimedOut?: boolean;
-    recentTransactions: {
-      transactions: ArchTransaction[];
-    } | null;
-    recentTransactionsTimedOut?: boolean;
-  };
-  btc: {
-    summary: BtcAddressSummary | null;
-    summaryTimedOut?: boolean;
-  };
-};
-
-export type ArchTransaction = {
-  txid: string;
-  block_height: number;
-  created_at: string;
-  confirmed_at?: string;
-  status: Record<string, unknown>;
-  instructions?: string[];
-  fee_estimated_arch?: number;
-  from_address?: string;
-  to_address?: string;
-  programs?: string[];
-  token_mints?: string[];
-  token_transfer?: {
-    program_id?: string;
-    source_account?: string;
-    destination_account?: string;
-    mint?: string;
-    amount?: string;
-    decimals?: number;
-    authority?: string;
-  } | null;
-};
-
-export type ArchTransactionDetail = ArchTransaction & {
-  data?: Record<string, unknown>;
-  bitcoin_txids?: string[];
-  logs?: string[];
-};
-
-export type BtcAddressSummary = {
-  address: string;
-  chain_stats: {
-    funded_txo_count: number;
-    funded_txo_sum: number;
-    spent_txo_count: number;
-    spent_txo_sum: number;
-  };
-  mempool_stats: {
-    funded_txo_count: number;
-    funded_txo_sum: number;
-    spent_txo_count: number;
-    spent_txo_sum: number;
-  };
-};
-
-export type BtcUtxo = {
-  txid: string;
-  vout: number;
-  value: number;
-  status: {
-    confirmed: boolean;
-    block_height?: number;
-    block_hash?: string;
-    block_time?: number;
-  };
-};
-
-export type BtcTransaction = {
-  txid: string;
-  version: number;
-  locktime: number;
-  size: number;
-  weight: number;
-  fee: number;
-  status: {
-    confirmed: boolean;
-    block_height?: number;
-    block_hash?: string;
-    block_time?: number;
-  };
-  vin: unknown[];
-  vout: unknown[];
-};
-
-// ── Transactions List ──
-
-export type TransactionListResponse = {
-  total_count: number | null;
-  next_cursor: string | null;
-  page: number | null;
-  limit: number | null;
-  transactions: ArchTransaction[];
-};
-
-export type TransactionListParams = {
-  limit?: number;
-  page?: number;
-  cursor?: string;
-  offset?: number;
-};
-
-// ── Tokens ──
-
-export type TokenInfo = {
-  mint_address: string;
-  mint_address_hex: string;
-  program_id: string;
-  decimals: number;
-  supply: string;
-  name: string;
-  symbol: string;
-  image: string;
-  description: string;
-};
-
-export type TokenListResponse = {
-  page: number;
-  limit: number;
-  total: number;
-  results: TokenInfo[];
-};
-
-// ── Network ──
-
-export type NetworkStatsResponse = {
-  total_transactions: number;
-  total_blocks: number;
-  indexed_height: number;
-  latest_block_height: number;
-  current_tps: number;
-  average_tps: number;
-  peak_tps: number;
-  daily_transactions: number;
-};
-
-// ── Faucet ──
-
-export type FaucetAirdropResponse = {
-  txid: string;
-  address: string;
-  network: string;
-};
-
-// ── BTC Send ──
+// ── Custodial BTC send ───────────────────────────────────────────────────
 
 export type SendBtcRequest = {
   externalUserId: string;
@@ -368,78 +198,4 @@ export type SendBtcResponse = {
   amountSats: number;
   feeSats: number;
   feeRate: number;
-};
-
-// ── BTC Prepare Send (unsigned PSBT) ──
-
-export type PrepareBtcSendRequest = {
-  fromAddress: string;
-  toAddress: string;
-  amountSats: number;
-  feeRate?: number;
-};
-
-export type PrepareBtcSendResponse = {
-  psbtBase64: string;
-  psbtHex: string;
-  fromAddress: string;
-  toAddress: string;
-  amountSats: number;
-  feeSats: number;
-  feeRate: number;
-  changeSats: number;
-  inputCount: number;
-};
-
-// ── BTC Finalize + Broadcast ──
-
-export type FinalizeBtcRequest = {
-  signedPsbtBase64: string;
-  network?: "testnet" | "mainnet";
-};
-
-export type FinalizeBtcResponse = {
-  txid: string;
-  rawTxHex: string;
-};
-
-// ── BTC Fee Estimates ──
-
-export type BtcFeeEstimates = Record<string, number>;
-
-// ── Account Token Holdings ──
-
-export type AccountTokenBalance = {
-  mint_address: string;
-  mint_address_hex: string;
-  token_account_address: string;
-  name: string | null;
-  symbol: string | null;
-  decimals: number;
-  image: string | null;
-  amount: string;
-  ui_amount: string;
-  state: "uninitialized" | "initialized" | "frozen";
-};
-
-export type AccountTokensResponse = {
-  owner: string;
-  tokens: AccountTokenBalance[];
-};
-
-// ── Health Status ──
-
-export type NetworkAvailability = {
-  available: boolean;
-  latencyMs?: number;
-  error?: string;
-};
-
-export type HealthStatusResponse = {
-  ok: boolean;
-  service: string;
-  networks: {
-    bitcoin: NetworkAvailability;
-    arch: NetworkAvailability;
-  };
 };

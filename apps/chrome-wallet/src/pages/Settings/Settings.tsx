@@ -7,6 +7,8 @@ import { truncateAddress } from "../../utils/format";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import CopyButton from "../../components/CopyButton";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
+import { DEFAULT_HUB_BASE_URL } from "../../state/types";
+import { INDEXER_BASE_URL } from "../../utils/explorer-config";
 
 const NETWORKS: { id: NetworkId; label: string }[] = [
   { id: "testnet4", label: "Testnet4" },
@@ -18,9 +20,15 @@ export default function Settings() {
   const { activeAccount, state, setNetwork, lock, refresh } = useWallet();
   const [connectedSites, setConnectedSites] = useState<Record<string, ConnectedSite>>({});
   const [showReset, setShowReset] = useState(false);
-  const [apiBaseUrl, setApiBaseUrl] = useState(state.apiBaseUrl || "http://44.222.123.237:3005");
-  const [apiKey, setApiKey] = useState(state.apiKey || "");
-  const [apiSaved, setApiSaved] = useState(false);
+
+  const [hubBaseUrl, setHubBaseUrl] = useState(state.hubBaseUrl || DEFAULT_HUB_BASE_URL);
+  const [hubApiKey, setHubApiKey] = useState(state.hubApiKey || "");
+  const [hubSaved, setHubSaved] = useState(false);
+
+  const [indexerBaseUrl, setIndexerBaseUrl] = useState(state.indexerBaseUrl || INDEXER_BASE_URL);
+  const [indexerApiKey, setIndexerApiKey] = useState(state.indexerApiKey || "");
+  const [indexerSaved, setIndexerSaved] = useState(false);
+
   const displayBtcAddress = useMemo(
     () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
     [activeAccount, state.network]
@@ -31,16 +39,28 @@ export default function Settings() {
   }, [state.connectedSites]);
 
   useEffect(() => {
-    setApiBaseUrl(state.apiBaseUrl || "http://44.222.123.237:3005");
-    setApiKey(state.apiKey || "");
-  }, [state.apiBaseUrl, state.apiKey]);
+    setHubBaseUrl(state.hubBaseUrl || DEFAULT_HUB_BASE_URL);
+    setHubApiKey(state.hubApiKey || "");
+  }, [state.hubBaseUrl, state.hubApiKey]);
 
-  const handleSaveApiConfig = useCallback(async () => {
-    await walletStore.setApiConfig(apiBaseUrl.trim(), apiKey.trim());
+  useEffect(() => {
+    setIndexerBaseUrl(state.indexerBaseUrl || INDEXER_BASE_URL);
+    setIndexerApiKey(state.indexerApiKey || "");
+  }, [state.indexerBaseUrl, state.indexerApiKey]);
+
+  const handleSaveHubConfig = useCallback(async () => {
+    await walletStore.setHubConfig(hubBaseUrl.trim(), hubApiKey.trim());
     invalidateClientCache();
-    setApiSaved(true);
-    setTimeout(() => setApiSaved(false), 2000);
-  }, [apiBaseUrl, apiKey]);
+    setHubSaved(true);
+    setTimeout(() => setHubSaved(false), 2000);
+  }, [hubBaseUrl, hubApiKey]);
+
+  const handleSaveIndexerConfig = useCallback(async () => {
+    await walletStore.setIndexerConfig(indexerBaseUrl.trim(), indexerApiKey.trim());
+    invalidateClientCache();
+    setIndexerSaved(true);
+    setTimeout(() => setIndexerSaved(false), 2000);
+  }, [indexerBaseUrl, indexerApiKey]);
 
   const handleDisconnect = useCallback(async (origin: string) => {
     await walletStore.disconnectSite(origin);
@@ -166,18 +186,21 @@ export default function Settings() {
       </div>
 
       <div className="section">
-        <div className="section-title">API Configuration</div>
+        <div className="section-title">Indexer API</div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
+          Reads, faucet, BTC, and Arch RPC compat. Default key is bundled.
+        </div>
         <div className="card">
           <div style={{ marginBottom: 8 }}>
             <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-              API Base URL
+              Base URL
             </label>
             <input
               className="input"
               type="text"
-              value={apiBaseUrl}
-              onChange={(e) => setApiBaseUrl(e.target.value)}
-              placeholder="http://44.222.123.237:3005"
+              value={indexerBaseUrl}
+              onChange={(e) => setIndexerBaseUrl(e.target.value)}
+              placeholder={INDEXER_BASE_URL}
               style={{ width: "100%", boxSizing: "border-box" }}
             />
           </div>
@@ -188,18 +211,60 @@ export default function Settings() {
             <input
               className="input"
               type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Enter your API key"
+              value={indexerApiKey}
+              onChange={(e) => setIndexerApiKey(e.target.value)}
+              placeholder="arch_live_..."
               style={{ width: "100%", boxSizing: "border-box" }}
             />
           </div>
           <button
-            className={`btn btn-sm ${apiSaved ? "btn-primary" : "btn-secondary"}`}
-            onClick={handleSaveApiConfig}
+            className={`btn btn-sm ${indexerSaved ? "btn-primary" : "btn-secondary"}`}
+            onClick={handleSaveIndexerConfig}
             style={{ width: "100%" }}
           >
-            {apiSaved ? "✓ Saved" : "Save API Settings"}
+            {indexerSaved ? "✓ Saved" : "Save Indexer Settings"}
+          </button>
+        </div>
+      </div>
+
+      <div className="section">
+        <div className="section-title">Wallet Hub API</div>
+        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
+          Turnkey, signing requests, and custodial BTC sends.
+        </div>
+        <div className="card">
+          <div style={{ marginBottom: 8 }}>
+            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+              Base URL
+            </label>
+            <input
+              className="input"
+              type="text"
+              value={hubBaseUrl}
+              onChange={(e) => setHubBaseUrl(e.target.value)}
+              placeholder={DEFAULT_HUB_BASE_URL}
+              style={{ width: "100%", boxSizing: "border-box" }}
+            />
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+              API Key
+            </label>
+            <input
+              className="input"
+              type="password"
+              value={hubApiKey}
+              onChange={(e) => setHubApiKey(e.target.value)}
+              placeholder="Enter your Hub API key"
+              style={{ width: "100%", boxSizing: "border-box" }}
+            />
+          </div>
+          <button
+            className={`btn btn-sm ${hubSaved ? "btn-primary" : "btn-secondary"}`}
+            onClick={handleSaveHubConfig}
+            style={{ width: "100%" }}
+          >
+            {hubSaved ? "✓ Saved" : "Save Hub Settings"}
           </button>
         </div>
       </div>

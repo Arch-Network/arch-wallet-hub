@@ -45,8 +45,31 @@ export function formatArchId(id: string): string {
   return id;
 }
 
+export function timestampToMs(ts: string | number | null | undefined): number | null {
+  if (ts == null || ts === "") return null;
+
+  if (typeof ts === "number") {
+    if (!Number.isFinite(ts) || ts <= 0) return null;
+    return ts < 1e12 ? ts * 1000 : ts;
+  }
+
+  const trimmed = ts.trim();
+  if (!trimmed) return null;
+
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n < 1e12 ? n * 1000 : n;
+  }
+
+  const parsed = new Date(trimmed).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
 export function formatTimestamp(ts: string | number): string {
-  const d = new Date(typeof ts === "number" ? ts * 1000 : ts);
+  const ms = timestampToMs(ts);
+  if (ms == null) return String(ts);
+  const d = new Date(ms);
   if (isNaN(d.getTime())) return String(ts);
   return d.toLocaleDateString(undefined, {
     month: "short",
@@ -56,26 +79,46 @@ export function formatTimestamp(ts: string | number): string {
   });
 }
 
-/** UNIX milliseconds for sorting/display; handles Esplora/Titan variants and ms-vs-seconds. */
+/** UNIX milliseconds for sorting/display; handles Esplora/Indexer variants and ms-vs-seconds. */
 export function btcTxTimestampMs(tx: unknown): number | null {
   const t = tx as Record<string, unknown> | null;
   if (!t || typeof t !== "object") return null;
 
-  const secondsFrom = (v: unknown): number | null => {
-    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return null;
-    return v < 1e12 ? v : Math.floor(v / 1000);
+  const msFrom = (v: unknown): number | null => {
+    if (typeof v === "number" || typeof v === "string") return timestampToMs(v);
+    return null;
   };
 
   const status = t.status;
   if (status && typeof status === "object") {
     const s = status as Record<string, unknown>;
-    const sec = secondsFrom(s.block_time) ?? secondsFrom(s.blockTime);
-    if (sec !== null) return sec * 1000;
+    const ms =
+      msFrom(s.block_time) ??
+      msFrom(s.blockTime) ??
+      msFrom(s.block_timestamp) ??
+      msFrom(s.blockTimestamp) ??
+      msFrom(s.timestamp) ??
+      msFrom(s.time);
+    if (ms !== null) return ms;
   }
 
-  const rootSec =
-    secondsFrom(t.block_time) ?? secondsFrom(t.blockTime) ?? secondsFrom(t.timestamp);
-  if (rootSec !== null) return rootSec * 1000;
-
-  return null;
+  return (
+    msFrom(t.block_time) ??
+    msFrom(t.blockTime) ??
+    msFrom(t.block_timestamp) ??
+    msFrom(t.blockTimestamp) ??
+    msFrom(t.timestamp) ??
+    msFrom(t.time) ??
+    msFrom(t.confirmed_at) ??
+    msFrom(t.confirmedAt) ??
+    msFrom(t.first_seen_at) ??
+    msFrom(t.firstSeenAt) ??
+    msFrom(t.seen_at) ??
+    msFrom(t.seenAt) ??
+    msFrom(t.received_at) ??
+    msFrom(t.receivedAt) ??
+    msFrom(t.created_at) ??
+    msFrom(t.createdAt) ??
+    null
+  );
 }

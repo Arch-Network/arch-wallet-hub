@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@arch/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
+    "@bitcoinerlab/secp256k1": "^1.2.0",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
     "@turnkey/sdk-browser": "^5.2.1",
+    "bitcoinjs-lib": "^7.0.1",
     "bs58": "^6.0.0",
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",

@@ -1,5 +1,6 @@
-import { AppState, DEFAULT_STATE, WalletAccount, NetworkId, ConnectedSite } from "./types";
+import { AppState, DEFAULT_STATE, WalletAccount, NetworkId, ConnectedSite, DEFAULT_HUB_BASE_URL, DEFAULT_HUB_API_KEY } from "./types";
 import { deriveArchAccountAddress } from "../utils/sdk";
+import { INDEXER_BASE_URL, DEFAULT_INDEXER_API_KEY } from "../utils/explorer-config";
 
 const STORAGE_KEY = "arch_wallet_state";
 
@@ -12,9 +13,47 @@ async function saveState(state: AppState): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEY]: state });
 }
 
+/**
+ * One-shot migration from the legacy single-API config (apiBaseUrl/apiKey,
+ * which targeted the Wallet Hub) to the new split config:
+ *   - hubBaseUrl/hubApiKey   → Turnkey + signing-requests + custodial BTC
+ *   - indexerBaseUrl/indexerApiKey → Arch Explorer Indexer (reads, faucet, BTC, RPC)
+ */
+function migrateApiConfig(state: any): boolean {
+  let migrated = false;
+
+  if (state.apiBaseUrl !== undefined || state.apiKey !== undefined) {
+    if (!state.hubBaseUrl) state.hubBaseUrl = state.apiBaseUrl || DEFAULT_HUB_BASE_URL;
+    if (!state.hubApiKey) state.hubApiKey = state.apiKey || DEFAULT_HUB_API_KEY;
+    delete state.apiBaseUrl;
+    delete state.apiKey;
+    migrated = true;
+  }
+
+  if (!state.hubBaseUrl) {
+    state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
+    migrated = true;
+  }
+  if (!state.hubApiKey) {
+    state.hubApiKey = DEFAULT_HUB_API_KEY;
+    migrated = true;
+  }
+
+  if (!state.indexerBaseUrl) {
+    state.indexerBaseUrl = INDEXER_BASE_URL;
+    migrated = true;
+  }
+  if (!state.indexerApiKey) {
+    state.indexerApiKey = DEFAULT_INDEXER_API_KEY;
+    migrated = true;
+  }
+
+  return migrated;
+}
+
 export const walletStore = {
   async getState(): Promise<AppState> {
-    const state = await loadState();
+    const state = (await loadState()) as any;
     let migrated = false;
     for (const acct of state.accounts) {
       if ((acct as any).isCustodial === undefined) {
@@ -27,17 +66,10 @@ export const walletStore = {
       }
     }
 
-    if (!state.apiBaseUrl) {
-      state.apiBaseUrl = DEFAULT_STATE.apiBaseUrl;
-      migrated = true;
-    }
-    if (!state.apiKey || state.apiKey === "") {
-      state.apiKey = DEFAULT_STATE.apiKey;
-      migrated = true;
-    }
+    if (migrateApiConfig(state)) migrated = true;
 
     if (migrated) await saveState(state);
-    return state;
+    return state as AppState;
   },
 
   async initialize(): Promise<void> {
@@ -115,10 +147,17 @@ export const walletStore = {
     return origin in state.connectedSites;
   },
 
-  async setApiConfig(apiBaseUrl: string, apiKey: string): Promise<void> {
+  async setHubConfig(hubBaseUrl: string, hubApiKey: string): Promise<void> {
     const state = await loadState();
-    state.apiBaseUrl = apiBaseUrl;
-    state.apiKey = apiKey;
+    state.hubBaseUrl = hubBaseUrl;
+    state.hubApiKey = hubApiKey;
+    await saveState(state);
+  },
+
+  async setIndexerConfig(indexerBaseUrl: string, indexerApiKey: string): Promise<void> {
+    const state = await loadState();
+    state.indexerBaseUrl = indexerBaseUrl;
+    state.indexerApiKey = indexerApiKey;
     await saveState(state);
   },
 

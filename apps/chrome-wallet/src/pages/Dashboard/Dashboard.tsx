@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
-import { getClient } from "../../utils/sdk";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, btcTxTimestampMs } from "../../utils/format";
-import { enrichTokenFromRpc, getArchRpcUrl } from "../../utils/arch-rpc";
+import { getIndexer } from "../../utils/indexer";
+import { fetchWalletOverview } from "../../utils/wallet-overview";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { deriveArchAccountAddress } from "../../utils/sdk";
+import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, timestampToMs } from "../../utils/format";
+import { enrichTokenFromRpc } from "../../utils/arch-rpc";
+import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import ArchIcon from "../../components/ArchIcon";
 
 interface TokenBalance {
@@ -70,6 +74,54 @@ function SkeletonTxRow() {
   );
 }
 
+function parseRecentBtcTx(tx: any, walletAddress: string): Pick<RecentTx, "direction" | "amount"> {
+  let sentSats = 0;
+  let receivedSats = 0;
+  const vin = Array.isArray(tx?.vin) ? tx.vin : [];
+  const vout = Array.isArray(tx?.vout) ? tx.vout : [];
+  const inputs = Array.isArray(tx?.input) ? tx.input : [];
+  const outputs = Array.isArray(tx?.output) ? tx.output : [];
+
+  for (const input of vin) {
+    if (input?.prevout?.scriptpubkey_address === walletAddress) {
+      sentSats += Number(input.prevout.value ?? 0);
+    }
+  }
+  for (const input of inputs) {
+    if (input?.previous_output_data?.script_pubkey_address === walletAddress) {
+      sentSats += Number(input.previous_output_data.value ?? 0);
+    }
+  }
+  for (const output of vout) {
+    if (output?.scriptpubkey_address === walletAddress) {
+      receivedSats += Number(output.value ?? 0);
+    }
+  }
+  for (const output of outputs) {
+    if (output?.script_pubkey_address === walletAddress) {
+      receivedSats += Number(output.value ?? 0);
+    }
+  }
+
+  const direction =
+    sentSats > 0 ? "out" :
+    receivedSats > 0 ? "in" :
+    "unknown";
+  const amountSats = sentSats > 0 ? Math.max(sentSats - receivedSats, 0) : receivedSats;
+
+  return {
+    direction,
+    amount: amountSats > 0 ? formatBtc(amountSats) : undefined,
+  };
+}
+
+function isBtcTxConfirmed(tx: any): boolean {
+  if (typeof tx?.status === "object" && tx.status !== null) {
+    return tx.status.confirmed === true;
+  }
+  return Boolean(tx?.block_height || tx?.blockHeight || tx?.confirmed);
+}
+
 export default function Dashboard() {
   const { activeAccount, state } = useWallet();
   const navigate = useNavigate();
@@ -91,10 +143,19 @@ export default function Dashboard() {
     if (!activeAccount) return;
     setError(null);
 
-    const client = await getClient();
-    const addr = activeAccount.btcAddress;
+    const indexer = await getIndexer();
+    const inputAddr = activeAccount.btcAddress;
+    const btcAddrForNetwork = reEncodeTaprootAddress(inputAddr, state.network);
+    const archAddr =
+      activeAccount.archAddress ||
+      (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
 
-    const overviewPromise = client.getWalletOverview(addr, { noCache: opts?.noCache, archAddress: activeAccount.archAddress }).then((overview: any) => {
+    const overviewPromise = fetchWalletOverview(indexer, {
+      inputAddress: inputAddr,
+      archAccountAddress: archAddr,
+      btcAddress: btcAddrForNetwork,
+      noCache: opts?.noCache
+    }).then(async (overview) => {
       const btcSummary = overview?.btc?.summary;
       let confirmedSats = 0;
       let pendingSats = 0;
@@ -103,7 +164,7 @@ export default function Dashboard() {
         confirmedSats = (btcSummary.chain_stats.funded_txo_sum ?? 0) - (btcSummary.chain_stats.spent_txo_sum ?? 0);
         pendingSats = (btcSummary.mempool_stats?.funded_txo_sum ?? 0) - (btcSummary.mempool_stats?.spent_txo_sum ?? 0);
       } else if (Array.isArray(btcSummary?.outputs)) {
-        for (const utxo of btcSummary.outputs) {
+        for (const utxo of btcSummary.outputs as any[]) {
           const val = Number(utxo.value ?? 0);
           if (utxo.spent?.spent) continue;
           if (utxo.status?.confirmed) {
@@ -125,22 +186,36 @@ export default function Dashboard() {
       setOverviewLoaded(true);
 
       const btcTxItems: RecentTx[] = [];
-      const outputs = Array.isArray(btcSummary?.outputs) ? btcSummary.outputs : [];
-      const seen = new Set<string>();
-      for (const o of outputs) {
-        const txid = o?.txid;
-        if (!txid || seen.has(txid)) continue;
-        seen.add(txid);
-        const isConfirmed = o?.status?.confirmed === true;
-        const oTime = btcTxTimestampMs(o);
-        btcTxItems.push({
-          txid,
-          type: "btc",
-          direction: "in",
-          amount: typeof o.value === "number" ? formatBtc(o.value) : undefined,
-          timestamp: oTime != null ? String(oTime) : undefined,
-          status: isConfirmed ? "confirmed" : "pending",
-        });
+      try {
+        const btcTxs = await indexer.getBtcAddressTxs(btcAddrForNetwork);
+        const rawList = (btcTxs ?? []).slice(0, 5);
+        const fullTxs = await Promise.all(
+          rawList.map(async (entry) => {
+            if (typeof entry === "object" && entry !== null && (entry as any).txid) return entry as any;
+            const txid = typeof entry === "string" ? entry : null;
+            if (!txid) return null;
+            try {
+              return await indexer.getBtcTransaction(txid);
+            } catch {
+              return { txid };
+            }
+          })
+        );
+
+        for (const tx of fullTxs) {
+          const txid = tx?.txid as string | undefined;
+          if (!txid) continue;
+          const timeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
+          btcTxItems.push({
+            txid,
+            type: "btc",
+            ...parseRecentBtcTx(tx, btcAddrForNetwork),
+            timestamp: timeMs != null ? String(timeMs) : undefined,
+            status: isBtcTxConfirmed(tx) ? "confirmed" : "pending",
+          });
+        }
+      } catch (e: any) {
+        console.warn("[Dashboard] getBtcAddressTxs failed:", e?.message);
       }
 
       const archTxItems: RecentTx[] = (overview?.arch?.recentTransactions?.transactions ?? [])
@@ -168,8 +243,8 @@ export default function Dashboard() {
 
       const merged = [...archTxItems, ...btcTxItems];
       merged.sort((a, b) => {
-        const ta = a.timestamp ? new Date(Number(a.timestamp) || a.timestamp).getTime() : 0;
-        const tb = b.timestamp ? new Date(Number(b.timestamp) || b.timestamp).getTime() : 0;
+        const ta = timestampToMs(a.timestamp) ?? 0;
+        const tb = timestampToMs(b.timestamp) ?? 0;
         return tb - ta;
       });
       setRecentTxs(merged.slice(0, 5));
@@ -182,12 +257,11 @@ export default function Dashboard() {
       setTxsLoaded(true);
     });
 
-    const tokenAddr = activeAccount.archAddress || addr;
-    const rpcUrl = getArchRpcUrl(state.network);
-    const tokensPromise = client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress }).then(async (res: any) => {
+    const tokenAddr = archAddr || inputAddr;
+    const tokensPromise = indexer.getAccountTokens(tokenAddr).then(async (res) => {
       const rawTokens = res?.tokens ?? [];
       const enriched = await Promise.all(
-        rawTokens.map(async (t: any) => {
+        rawTokens.map(async (t) => {
           const base = {
             mint: t.mint_address as string,
             symbol: t.symbol || truncateAddress(t.mint_address, 4),
@@ -200,7 +274,7 @@ export default function Dashboard() {
           const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
           if (!needsEnrich) return base;
           try {
-            const rpc = await enrichTokenFromRpc(rpcUrl, t);
+            const rpc = await enrichTokenFromRpc(indexer, t);
             if (rpc.name) base.name = rpc.name;
             if (rpc.symbol) base.symbol = rpc.symbol;
             if (rpc.image) base.image = rpc.image;
@@ -219,7 +293,7 @@ export default function Dashboard() {
     });
 
     await Promise.allSettled([overviewPromise, tokensPromise]);
-  }, [activeAccount]);
+  }, [activeAccount, state.network]);
 
   useEffect(() => {
     fetchAll();
@@ -239,8 +313,8 @@ export default function Dashboard() {
     if (!archAddress) return;
     setAirdropLoading(true);
     try {
-      const client = await getClient();
-      await client.requestFaucetAirdrop(archAddress);
+      const indexer = await getIndexer();
+      await indexer.requestFaucetAirdrop(archAddress);
 
       const prevLamports = archLamports ?? 0;
       const MAX_ATTEMPTS = 12;
@@ -248,8 +322,8 @@ export default function Dashboard() {
       for (let i = 0; i < MAX_ATTEMPTS; i++) {
         await new Promise((r) => setTimeout(r, POLL_INTERVAL));
         try {
-          const fresh = await client.getArchAccount(activeAccount!.btcAddress) as any;
-          const newLamports = fresh?.lamports_balance ?? fresh?.lamports ?? 0;
+          const fresh = await indexer.getAccountSummary(archAddress);
+          const newLamports = fresh?.lamports_balance ?? (fresh as any)?.lamports ?? 0;
           if (newLamports !== prevLamports) {
             setArchLamports(newLamports);
             break;
@@ -263,7 +337,7 @@ export default function Dashboard() {
     } finally {
       setAirdropLoading(false);
     }
-  }, [archAddress, archLamports, activeAccount]);
+  }, [archAddress, archLamports]);
 
   const isTestnet = state.network === "testnet4";
   const balancesReady = overviewLoaded;
@@ -453,7 +527,13 @@ export default function Dashboard() {
                       )}
                       {truncateAddress(tx.type === "arch" ? formatArchId(tx.txid) : tx.txid, 8)}
                     </div>
-                    <div className="tx-time">{tx.timestamp ? formatTimestamp(tx.timestamp) : "Just now"}</div>
+                    <div className="tx-time">
+                      {tx.timestamp
+                        ? formatTimestamp(tx.timestamp)
+                        : tx.status === "pending" || tx.status === "unconfirmed"
+                          ? "Pending"
+                          : "Time unavailable"}
+                    </div>
                   </div>
                   <span className={`badge ${tx.status === "confirmed" || tx.status === "processed" ? "badge-success" : tx.status === "failed" ? "badge-failed" : "badge-pending"}`}>
                     {tx.status}

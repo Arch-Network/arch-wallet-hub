@@ -37,10 +37,6 @@ const EnvSchema = z.object({
   // many transactions, so a generous default avoids spurious timeouts.
   INDEXER_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
 
-  // BTC API platform (our own BTC data API)
-  BTC_PLATFORM_BASE_URL: z.string().url().optional(),
-  BTC_PLATFORM_API_KEY: z.string().optional(),
-
   // For Arch flows that depend on anchored BTC UTXOs (e.g., arch.transfer),
   // the validator may require a minimum BTC confirmation count before it can
   // generate the underlying "transaction to sign".
@@ -55,12 +51,12 @@ const EnvSchema = z.object({
     .default("true")
     .transform((v) => v === "true"),
 
-  // Backwards-compat env vars (deprecated)
-  TITAN_BASE_URL: z.string().url().optional(),
-  TITAN_API_KEY: z.string().optional(),
-
-  // Arch Network RPC node (for transaction submission)
-  ARCH_RPC_NODE_URL: z.string().url().optional()
+  // Arch Network RPC nodes (for transaction submission). Use the network-specific
+  // variants when both networks are served from the same Wallet Hub instance.
+  // ARCH_RPC_NODE_URL is the legacy single-network fallback.
+  ARCH_RPC_NODE_URL: z.string().url().optional(),
+  ARCH_RPC_NODE_URL_TESTNET: z.string().url().optional(),
+  ARCH_RPC_NODE_URL_MAINNET: z.string().url().optional()
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -74,13 +70,5 @@ export function getEnv(rawEnv: NodeJS.ProcessEnv): Env {
       .join("; ");
     throw new Error(`Invalid environment: ${message}`);
   }
-  const env = parsed.data;
-  // Backwards-compatible fallback: if new BTC_PLATFORM_* vars aren't set, use TITAN_*.
-  if (!env.BTC_PLATFORM_BASE_URL && env.TITAN_BASE_URL) {
-    (env as any).BTC_PLATFORM_BASE_URL = env.TITAN_BASE_URL;
-  }
-  if (!env.BTC_PLATFORM_API_KEY && env.TITAN_API_KEY) {
-    (env as any).BTC_PLATFORM_API_KEY = env.TITAN_API_KEY;
-  }
-  return env;
+  return parsed.data;
 }

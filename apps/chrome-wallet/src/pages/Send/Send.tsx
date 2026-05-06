@@ -1,10 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Turnkey } from "@turnkey/sdk-browser";
+import * as bitcoin from "bitcoinjs-lib";
 import { useWallet } from "../../hooks/useWallet";
-import { getClient, getExternalUserId } from "../../utils/sdk";
+import { getClient, getExternalUserId, deriveArchAccountAddress } from "../../utils/sdk";
+import { getIndexer } from "../../utils/indexer";
+import { fetchWalletOverview } from "../../utils/wallet-overview";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
 import { formatBtc, formatArch, formatTokenAmount, formatArchId } from "../../utils/format";
-import { enrichTokenFromRpc, getArchRpcUrl } from "../../utils/arch-rpc";
+import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import ArchIcon from "../../components/ArchIcon";
 
 type AssetType = "btc" | "arch" | "apl";
@@ -62,11 +67,19 @@ export default function Send() {
     }, 8000);
 
     const loadBalances = async () => {
-      const client = await getClient();
+      const indexer = await getIndexer();
+      const archAddr =
+        activeAccount.archAddress ||
+        (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
+      const btcAddr = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
 
       try {
-        const o = await client.getWalletOverview(activeAccount.btcAddress, { archAddress: activeAccount.archAddress });
-        const btcSummary = (o as any)?.btc?.summary;
+        const o = await fetchWalletOverview(indexer, {
+          inputAddress: activeAccount.btcAddress,
+          archAccountAddress: archAddr,
+          btcAddress: btcAddr,
+        });
+        const btcSummary = o.btc.summary as any;
         let confirmed = 0;
         let pending = 0;
 
@@ -91,7 +104,7 @@ export default function Send() {
         setBtcPending(pending);
         setBtcLoaded(true);
 
-        const lamports = (o as any)?.arch?.account?.lamports_balance ?? 0;
+        const lamports = o.arch.account?.lamports_balance ?? 0;
         setArchBalance(String(lamports));
       } catch {
         setBtcLoaded(true);
@@ -99,12 +112,11 @@ export default function Send() {
       }
 
       try {
-        const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
-        const rpcUrl = getArchRpcUrl(state.network);
-        const tokens = await client.getAccountTokens(tokenAddr, { archAddress: activeAccount.archAddress });
-        const rawTokens = (tokens as any)?.tokens ?? [];
+        const tokenAddr = archAddr || activeAccount.btcAddress;
+        const tokens = await indexer.getAccountTokens(tokenAddr);
+        const rawTokens = tokens?.tokens ?? [];
         const enriched = await Promise.all(
-          rawTokens.map(async (t: any) => {
+          rawTokens.map(async (t) => {
             const base = {
               mint: t.mint_address as string,
               balance: Number(t.amount) || 0,
@@ -116,7 +128,7 @@ export default function Send() {
             const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
             if (!needsEnrich) return base;
             try {
-              const rpc = await enrichTokenFromRpc(rpcUrl, t);
+              const rpc = await enrichTokenFromRpc(indexer, t);
               if (rpc.name) base.name = rpc.name;
               if (rpc.symbol) base.symbol = rpc.symbol;
               if (rpc.decimals != null) base.decimals = rpc.decimals;
@@ -132,7 +144,7 @@ export default function Send() {
     };
     loadBalances();
     return () => clearTimeout(timeout);
-  }, [activeAccount]);
+  }, [activeAccount, state.network]);
 
   const signWithPasskey = useCallback(
     async (signingRequestId: string, payloadHex: string): Promise<string> => {
@@ -169,42 +181,67 @@ export default function Send() {
     setError("");
     setBtcPrepare(null);
     try {
-      const client = await getClient();
       const amountSats = Math.round((Number(amount) || 0) * 1e8);
       if (amountSats < 546) throw new Error("Amount too small (minimum 546 sats)");
 
-      const result = await client.prepareBtcSend({
-        fromAddress: activeAccount.btcAddress,
-        toAddress: recipient,
-        amountSats,
-      });
+      const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
 
-      setBtcPrepare({
-        psbtHex: result.psbtHex,
-        psbtBase64: result.psbtBase64,
-        feeSats: result.feeSats,
-        feeRate: result.feeRate,
-        changeSats: result.changeSats,
-        inputCount: result.inputCount,
-      });
+      if (activeAccount.isCustodial) {
+        // Custodial sends are still server-built (Turnkey signs server-side and
+        // broadcasts via the Hub), so we just compute a local fee estimate to
+        // show the user. We don't need an actual PSBT here.
+        const indexer = await getIndexer();
+        let feeRate = 5;
+        try {
+          const est = await indexer.getBtcFeeEstimates();
+          feeRate = est["6"] ?? est["3"] ?? 5;
+        } catch { /* fallback */ }
+        const utxos = await indexer.getBtcAddressUtxos(fromAddress);
+        if (!utxos?.length) throw new Error("No UTXOs available for this address");
+        const feeSats = Math.ceil((10.5 + 1 * 57.5 + 2 * 43) * feeRate);
+        setBtcPrepare({
+          psbtHex: "",
+          psbtBase64: "",
+          feeSats,
+          feeRate,
+          changeSats: 0,
+          inputCount: 1,
+        });
+      } else {
+        const indexer = await getIndexer();
+        const built = await buildUnsignedPsbt({
+          indexer,
+          fromAddress,
+          toAddress: recipient,
+          amountSats,
+        });
+        setBtcPrepare({
+          psbtHex: built.psbt.toHex(),
+          psbtBase64: built.psbt.toBase64(),
+          feeSats: built.feeSats,
+          feeRate: built.feeRate,
+          changeSats: built.changeSats,
+          inputCount: built.inputCount,
+        });
+      }
       setStep(3);
     } catch (err: any) {
       setError(err.message || "Failed to prepare transaction");
     } finally {
       setPreparing(false);
     }
-  }, [activeAccount, recipient, amount]);
+  }, [activeAccount, recipient, amount, state.network]);
 
   const handleBtcSign = useCallback(async () => {
     if (!activeAccount || !btcPrepare) return;
     setLoading(true);
     setError("");
     try {
-      const client = await getClient();
       const externalUserId = getExternalUserId();
       const amountSats = Math.round((Number(amount) || 0) * 1e8);
 
       if (activeAccount.isCustodial) {
+        const client = await getClient();
         const result = await client.sendBitcoin({
           externalUserId,
           turnkeyResourceId: activeAccount.turnkeyResourceId,
@@ -217,13 +254,14 @@ export default function Send() {
         if (!activeAccount.organizationId)
           throw new Error("Missing organization ID for passkey wallet");
 
+        const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
         const tk = new Turnkey({
           apiBaseUrl: "https://api.turnkey.com",
           defaultOrganizationId: activeAccount.organizationId,
           rpId: globalThis.location?.hostname === "localhost" ? "localhost" : globalThis.location?.hostname ?? "localhost",
         });
         const signResult = await tk.passkeyClient().signTransaction({
-          signWith: activeAccount.btcAddress,
+          signWith: fromAddress,
           unsignedTransaction: btcPrepare.psbtHex,
           type: "TRANSACTION_TYPE_BITCOIN",
         });
@@ -232,11 +270,12 @@ export default function Send() {
         if (!signedPsbtHex) throw new Error("Turnkey did not return a signed transaction");
 
         const isTestnet = state.network === "testnet4";
-        const broadcastResult = await client.finalizeBtcTransaction({
-          signedPsbtBase64: hexToBase64(signedPsbtHex),
-          network: isTestnet ? "testnet" : "mainnet",
-        });
-        setTxResult({ txid: broadcastResult.txid, rawTxid: broadcastResult.txid });
+        const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+        const rawTxHex = finalizeSignedPsbt(hexToBase64(signedPsbtHex), network);
+
+        const indexer = await getIndexer();
+        const txid = await indexer.broadcastBtc(rawTxHex);
+        setTxResult({ txid, rawTxid: txid });
       }
 
       setStep(4);

@@ -130,6 +130,8 @@ export class WalletHubStack extends cdk.Stack {
         DB_RUN_MIGRATIONS: "true",
         TURNKEY_BASE_URL: "https://api.turnkey.com",
         ARCH_RPC_NODE_URL: "https://rpc.testnet.arch.network",
+        ARCH_RPC_NODE_URL_TESTNET: "https://rpc.testnet.arch.network",
+        ARCH_RPC_NODE_URL_MAINNET: "https://rpc.mainnet.arch.network",
         INDEXER_BASE_URL: "https://explorer.arch.network/api/v1/testnet",
         ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: "false",
         CORS_ALLOW_ORIGINS: "*",

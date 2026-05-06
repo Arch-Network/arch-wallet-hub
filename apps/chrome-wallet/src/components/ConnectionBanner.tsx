@@ -30,39 +30,41 @@ function WarningIcon() {
 }
 
 function getBannerContent(status: NetworkStatus): { title: string; sub: string; variant: "error" | "warning" } | null {
-  if (status.api === "disconnected") {
-    return {
-      title: "Unable to connect to server",
-      sub: "Check your API settings or try again",
-      variant: "error",
-    };
-  }
-
-  if (status.api === "checking") return null;
-
+  // Indexer drives the daily wallet experience (reads, faucet, BTC, RPC), so
+  // it's the primary signal. Hub is only required for Turnkey wallet creation,
+  // Arch/APL signing-requests, and custodial BTC — its outage is a soft warning.
   const btcDown = status.bitcoin === "disconnected";
   const archDown = status.arch === "disconnected";
+  const hubDown = status.api === "disconnected";
 
   if (btcDown && archDown) {
     return {
-      title: "Bitcoin and Arch networks unavailable",
-      sub: "Both networks are currently unreachable",
+      title: "Indexer unreachable",
+      sub: "Check the Indexer Base URL / API key in Settings",
       variant: "error",
     };
   }
 
   if (btcDown) {
     return {
-      title: "Bitcoin network unavailable",
-      sub: "BTC features may not work correctly",
+      title: "Bitcoin data unavailable",
+      sub: "Indexer BTC endpoints aren't responding",
       variant: "warning",
     };
   }
 
   if (archDown) {
     return {
-      title: "Arch Network unavailable",
-      sub: "ARCH and token features may not work correctly",
+      title: "Arch data unavailable",
+      sub: "Indexer Arch endpoints aren't responding",
+      variant: "warning",
+    };
+  }
+
+  if (hubDown) {
+    return {
+      title: "Hub features unavailable",
+      sub: "Wallet creation, signing, and custodial BTC may not work",
       variant: "warning",
     };
   }

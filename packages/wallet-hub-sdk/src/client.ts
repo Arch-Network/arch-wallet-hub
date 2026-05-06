@@ -4,14 +4,11 @@ import type {
   CreateChallengeResponse,
   VerifyChallengeRequest,
   VerifyChallengeResponse,
-  PortfolioResponse,
   CreateTurnkeyWalletRequest,
   CreateTurnkeyWalletResponse,
   CreateTurnkeyPasskeyWalletRequest,
   GetTurnkeyWalletResponse,
   ListTurnkeyWalletsResponse,
-  AirdropArchAccountRequest,
-  AirdropArchAccountResponse,
   RegisterTurnkeyIndexedDbKeyRequest,
   RegisterTurnkeyIndexedDbKeyResponse,
   CreateSigningRequest,
@@ -19,29 +16,23 @@ import type {
   GetSigningRequestResponse,
   SubmitSigningRequest,
   SubmitSigningResponse,
-  WalletOverviewResponse,
-  TransactionListResponse,
-  TransactionListParams,
-  ArchTransactionDetail,
-  TokenListResponse,
-  TokenInfo,
-  NetworkStatsResponse,
-  FaucetAirdropResponse,
-  BtcAddressSummary,
-  BtcUtxo,
-  BtcTransaction,
-  BtcFeeEstimates,
   SendBtcRequest,
   SendBtcResponse,
-  PrepareBtcSendRequest,
-  PrepareBtcSendResponse,
-  FinalizeBtcRequest,
-  FinalizeBtcResponse,
-  TurnkeyConfigResponse,
-  AccountTokensResponse,
-  HealthStatusResponse
+  TurnkeyConfigResponse
 } from "./types.js";
 
+/**
+ * Wallet Hub client.
+ *
+ * Scope after the Indexer migration:
+ *   - Turnkey config + wallet management
+ *   - Wallet-link challenge/verify (dapp connect flow)
+ *   - Signing requests (create / get / submit / sign-with-turnkey)
+ *   - Custodial BTC send (`/btc/send`)
+ *
+ * Reads, BTC PSBT building, and broadcasts now live on the extension/SDK side
+ * via the Arch Explorer Indexer (see `apps/chrome-wallet/src/utils/indexer.ts`).
+ */
 export class WalletHubClient {
   private baseUrl: string;
   private apiKey: string | undefined;
@@ -71,6 +62,8 @@ export class WalletHubClient {
     return (await res.json()) as T;
   }
 
+  // ── Wallet linking (dapp connect challenge / verify) ─────────────────────
+
   async createWalletLinkChallenge(body: CreateChallengeRequest): Promise<CreateChallengeResponse> {
     return await this.requestJson("/wallet-links/challenge", {
       method: "POST",
@@ -85,9 +78,7 @@ export class WalletHubClient {
     });
   }
 
-  async getPortfolio(address: string): Promise<PortfolioResponse> {
-    return await this.requestJson(`/portfolio/${encodeURIComponent(address)}`);
-  }
+  // ── Turnkey ──────────────────────────────────────────────────────────────
 
   async getTurnkeyConfig(): Promise<TurnkeyConfigResponse> {
     return await this.requestJson(`/turnkey/config`);
@@ -104,27 +95,6 @@ export class WalletHubClient {
     });
   }
 
-  async listTurnkeyWallets(externalUserId: string): Promise<ListTurnkeyWalletsResponse> {
-    const q = new URLSearchParams({ externalUserId });
-    return await this.requestJson(`/turnkey/wallets?${q.toString()}`);
-  }
-
-  async airdropArchAccount(body: AirdropArchAccountRequest): Promise<AirdropArchAccountResponse> {
-    return await this.requestJson(`/arch/accounts/airdrop`, {
-      method: "POST",
-      body: JSON.stringify(body)
-    });
-  }
-
-  async registerTurnkeyIndexedDbKey(
-    body: RegisterTurnkeyIndexedDbKeyRequest
-  ): Promise<RegisterTurnkeyIndexedDbKeyResponse> {
-    return await this.requestJson(`/turnkey/indexeddb-keys`, {
-      method: "POST",
-      body: JSON.stringify(body)
-    });
-  }
-
   async createTurnkeyPasskeyWallet(params: {
     idempotencyKey: string;
     body: CreateTurnkeyPasskeyWalletRequest;
@@ -136,6 +106,11 @@ export class WalletHubClient {
     });
   }
 
+  async listTurnkeyWallets(externalUserId: string): Promise<ListTurnkeyWalletsResponse> {
+    const q = new URLSearchParams({ externalUserId });
+    return await this.requestJson(`/turnkey/wallets?${q.toString()}`);
+  }
+
   async getTurnkeyWallet(params: {
     resourceId: string;
     externalUserId: string;
@@ -145,6 +120,17 @@ export class WalletHubClient {
       `/turnkey/wallets/${encodeURIComponent(params.resourceId)}?${q.toString()}`
     );
   }
+
+  async registerTurnkeyIndexedDbKey(
+    body: RegisterTurnkeyIndexedDbKeyRequest
+  ): Promise<RegisterTurnkeyIndexedDbKeyResponse> {
+    return await this.requestJson(`/turnkey/indexeddb-keys`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  }
+
+  // ── Signing requests ─────────────────────────────────────────────────────
 
   async createSigningRequest(body: CreateSigningRequest): Promise<CreateSigningResponse> {
     return await this.requestJson(`/signing-requests`, {
@@ -171,130 +157,12 @@ export class WalletHubClient {
     });
   }
 
-  // ── Wallet Overview (aggregated dashboard) ──
-
-  async getWalletOverview(address: string, opts?: { noCache?: boolean; archAddress?: string }): Promise<WalletOverviewResponse> {
-    const params = new URLSearchParams();
-    if (opts?.noCache) params.set("nocache", "");
-    if (opts?.archAddress) params.set("archAddress", opts.archAddress);
-    const qs = params.toString() ? `?${params.toString()}` : "";
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/overview${qs}`);
-  }
-
-  async getArchAccount(address: string): Promise<unknown> {
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/arch-account`);
-  }
-
-  // ── Arch Transactions ──
-
-  async getTransactionHistory(address: string, params?: TransactionListParams & { archAddress?: string }): Promise<TransactionListResponse> {
-    const qs = new URLSearchParams();
-    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
-    if (params?.page !== undefined) qs.set("page", String(params.page));
-    if (params?.archAddress) qs.set("archAddress", params.archAddress);
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/transactions${suffix}`);
-  }
-
-  async getTransactionDetail(txid: string): Promise<ArchTransactionDetail> {
-    return await this.requestJson(`/wallet/transactions/${encodeURIComponent(txid)}`);
-  }
-
-  // ── Tokens ──
-
-  async getTokenList(params?: { q?: string; sort?: string; limit?: number }): Promise<TokenListResponse> {
-    const qs = new URLSearchParams();
-    if (params?.q) qs.set("q", params.q);
-    if (params?.sort) qs.set("sort", params.sort);
-    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return await this.requestJson(`/wallet/tokens${suffix}`);
-  }
-
-  async getTokenDetail(mint: string): Promise<TokenInfo> {
-    return await this.requestJson(`/wallet/tokens/${encodeURIComponent(mint)}`);
-  }
-
-  // ── Network ──
-
-  async getNetworkStats(): Promise<NetworkStatsResponse> {
-    return await this.requestJson("/wallet/network/stats");
-  }
-
-  // ── Faucet ──
-
-  async requestFaucetAirdrop(address: string): Promise<FaucetAirdropResponse> {
-    return await this.requestJson("/wallet/faucet/airdrop", {
-      method: "POST",
-      body: JSON.stringify({ address })
-    });
-  }
-
-  // ── Token Holdings ──
-
-  async getTokensHeld(address: string, opts?: { archAddress?: string }): Promise<unknown> {
-    const qs = new URLSearchParams();
-    if (opts?.archAddress) qs.set("archAddress", opts.archAddress);
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held${suffix}`);
-  }
-
-  // ── Bitcoin ──
-
-  async getBtcAddressSummary(address: string): Promise<BtcAddressSummary> {
-    return await this.requestJson(`/wallet/btc/address/${encodeURIComponent(address)}`);
-  }
-
-  async getBtcUtxos(address: string): Promise<BtcUtxo[]> {
-    return await this.requestJson(`/wallet/btc/address/${encodeURIComponent(address)}/utxos`);
-  }
-
-  async getBtcTransactions(address: string, afterTxid?: string): Promise<BtcTransaction[]> {
-    const suffix = afterTxid ? `?after_txid=${encodeURIComponent(afterTxid)}` : "";
-    return await this.requestJson(`/wallet/btc/address/${encodeURIComponent(address)}/txs${suffix}`);
-  }
-
-  async getBtcTransaction(txid: string): Promise<BtcTransaction> {
-    return await this.requestJson(`/wallet/btc/tx/${encodeURIComponent(txid)}`);
-  }
-
-  async getBtcFeeEstimates(): Promise<BtcFeeEstimates> {
-    return await this.requestJson("/wallet/btc/fee-estimates");
-  }
+  // ── Custodial BTC send (server-side construction + Turnkey signing) ──────
 
   async sendBitcoin(params: SendBtcRequest): Promise<SendBtcResponse> {
     return await this.requestJson("/btc/send", {
       method: "POST",
       body: JSON.stringify(params)
     });
-  }
-
-  async prepareBtcSend(params: PrepareBtcSendRequest): Promise<PrepareBtcSendResponse> {
-    return await this.requestJson("/btc/prepare-send", {
-      method: "POST",
-      body: JSON.stringify(params)
-    });
-  }
-
-  async finalizeBtcTransaction(params: FinalizeBtcRequest): Promise<FinalizeBtcResponse> {
-    return await this.requestJson("/btc/finalize-and-broadcast", {
-      method: "POST",
-      body: JSON.stringify(params)
-    });
-  }
-
-  // ── Account Token Holdings ──
-
-  async getAccountTokens(address: string, opts?: { archAddress?: string }): Promise<AccountTokensResponse> {
-    const qs = new URLSearchParams();
-    if (opts?.archAddress) qs.set("archAddress", opts.archAddress);
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return await this.requestJson(`/wallet/${encodeURIComponent(address)}/tokens-held${suffix}`);
-  }
-
-  // ── Health Status ──
-
-  async getHealthStatus(): Promise<HealthStatusResponse> {
-    return await this.requestJson("/health/status");
   }
 }

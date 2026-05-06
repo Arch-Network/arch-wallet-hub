@@ -3,6 +3,8 @@ import type { ArchNetwork } from "@arch/wallet-hub-sdk";
 import bs58 from "bs58";
 import { walletStore } from "../state/wallet-store";
 import type { NetworkId } from "../state/types";
+import { DEFAULT_HUB_BASE_URL } from "../state/types";
+import { invalidateIndexerCache } from "./indexer";
 
 let cachedClient: WalletHubClient | null = null;
 let cachedBaseUrl: string | null = null;
@@ -15,8 +17,8 @@ function networkIdToArch(n: NetworkId): ArchNetwork {
 
 export async function getClient(): Promise<WalletHubClient> {
   const state = await walletStore.getState();
-  const baseUrl = state.apiBaseUrl || "http://44.222.123.237:3005";
-  const apiKey = state.apiKey || "";
+  const baseUrl = state.hubBaseUrl || DEFAULT_HUB_BASE_URL;
+  const apiKey = state.hubApiKey || "";
   const network = networkIdToArch(state.network);
 
   if (cachedClient && cachedBaseUrl === baseUrl && cachedApiKey === apiKey && cachedNetwork === network) {
@@ -34,10 +36,16 @@ export async function getClient(): Promise<WalletHubClient> {
   return cachedClient;
 }
 
+/**
+ * Invalidate every cached upstream client (Hub + Indexer). Call after any
+ * settings or network change so the next request picks up fresh config.
+ */
 export function invalidateClientCache(): void {
   cachedClient = null;
   cachedBaseUrl = null;
   cachedApiKey = null;
+  cachedNetwork = null;
+  invalidateIndexerCache();
 }
 
 export function getExternalUserId(): string {

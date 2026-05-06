@@ -1,33 +1,20 @@
 import bs58 from "bs58";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import type { ArchIndexerClient } from "./indexer";
 
 const METADATA_PROGRAM_ID = "MetaLUJnthcRKvy3ayXTnVcxaXqca1fbaQox8ChQqAk";
 const METADATA_SEED = new TextEncoder().encode("metadata");
 
-const RPC_URLS: Record<string, string> = {
-  testnet: "https://rpc.testnet.arch.network",
-  mainnet: "https://rpc.mainnet.arch.network",
-};
-
-export function getArchRpcUrl(network: string): string {
-  return RPC_URLS[network === "testnet4" ? "testnet" : network] ?? RPC_URLS.testnet;
-}
-
-async function callRpc(url: string, method: string, params: unknown): Promise<unknown> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const json = await res.json();
-  if (json?.error) throw new Error(json.error.message ?? JSON.stringify(json.error));
-  return json?.result;
+interface AccountInfo {
+  data: number[];
+  owner: number[];
+  lamports: number;
 }
 
 function isOnCurve(bytes: Uint8Array): boolean {
   try {
-    ed25519.ExtendedPoint.fromHex(bytes);
+    ed25519.Point.fromBytes(bytes);
     return true;
   } catch {
     return false;
@@ -58,10 +45,13 @@ export function deriveMetadataPda(mintBase58: string): string | null {
   return result ? bs58.encode(result.address) : null;
 }
 
-async function readAccountInfo(rpcUrl: string, addressBase58: string): Promise<{ data: number[]; owner: number[]; lamports: number } | null> {
+async function readAccountInfo(
+  indexer: ArchIndexerClient,
+  addressBase58: string,
+): Promise<AccountInfo | null> {
   const pubkeyBytes = Array.from(bs58.decode(addressBase58));
   try {
-    const result = await callRpc(rpcUrl, "read_account_info", pubkeyBytes) as any;
+    const result = await indexer.rpc<AccountInfo | null>("read_account_info", pubkeyBytes);
     return result ?? null;
   } catch {
     return null;
@@ -150,16 +140,22 @@ function parseMetadataData(data: number[]): TokenMetadataInfo | null {
   }
 }
 
-export async function fetchMintInfo(rpcUrl: string, mintBase58: string): Promise<MintInfo | null> {
-  const acct = await readAccountInfo(rpcUrl, mintBase58);
+export async function fetchMintInfo(
+  indexer: ArchIndexerClient,
+  mintBase58: string,
+): Promise<MintInfo | null> {
+  const acct = await readAccountInfo(indexer, mintBase58);
   if (!acct?.data) return null;
   return parseMintData(acct.data);
 }
 
-export async function fetchTokenMetadata(rpcUrl: string, mintBase58: string): Promise<TokenMetadataInfo | null> {
+export async function fetchTokenMetadata(
+  indexer: ArchIndexerClient,
+  mintBase58: string,
+): Promise<TokenMetadataInfo | null> {
   const pda = deriveMetadataPda(mintBase58);
   if (!pda) return null;
-  const acct = await readAccountInfo(rpcUrl, pda);
+  const acct = await readAccountInfo(indexer, pda);
   if (!acct?.data) return null;
   return parseMetadataData(acct.data);
 }
@@ -174,12 +170,20 @@ export interface EnrichedTokenData {
 }
 
 /**
- * Enrich a token from the indexer with direct RPC data when the indexer
- * returns missing decimals (0/null) or missing metadata (null name/symbol).
+ * Enrich a token with on-chain data when the indexer returns missing decimals
+ * or metadata. Uses the indexer's legacy /rpc compat for `read_account_info`.
  */
 export async function enrichTokenFromRpc(
-  rpcUrl: string,
-  token: { mint_address: string; amount: string | number; decimals: number | null; name: string | null; symbol: string | null; image: string | null },
+  indexer: ArchIndexerClient,
+  token: {
+    mint_address: string;
+    amount?: string | number;
+    decimals?: number | null;
+    name?: string | null;
+    symbol?: string | null;
+    image?: string | null;
+    [key: string]: unknown;
+  },
 ): Promise<EnrichedTokenData> {
   const result: EnrichedTokenData = {};
 
@@ -190,7 +194,7 @@ export async function enrichTokenFromRpc(
 
   if (needsDecimals) {
     promises.push(
-      fetchMintInfo(rpcUrl, token.mint_address).then((mint) => {
+      fetchMintInfo(indexer, token.mint_address).then((mint) => {
         if (mint && mint.decimals > 0) {
           result.decimals = mint.decimals;
           const raw = Number(token.amount) || 0;
@@ -205,7 +209,7 @@ export async function enrichTokenFromRpc(
 
   if (needsMetadata) {
     promises.push(
-      fetchTokenMetadata(rpcUrl, token.mint_address).then((md) => {
+      fetchTokenMetadata(indexer, token.mint_address).then((md) => {
         if (md) {
           if (md.name) result.name = md.name;
           if (md.symbol) result.symbol = md.symbol;

@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useWallet } from "../../hooks/useWallet";
-import { getClient } from "../../utils/sdk";
+import { deriveArchAccountAddress } from "../../utils/sdk";
+import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
@@ -20,13 +21,23 @@ export default function Receive() {
 
   useEffect(() => {
     if (!activeAccount) return;
+    // Prefer the locally derived Arch address (always available offline) and
+    // confirm against the indexer's view if possible.
+    const local =
+      activeAccount.archAddress ||
+      (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
+    if (local) setArchAddress(local);
+
     (async () => {
       try {
-        const client = await getClient();
-        const overview = await client.getWalletOverview(activeAccount.btcAddress);
-        setArchAddress((overview as any)?.archAccountAddress ?? "");
+        const indexer = await getIndexer();
+        if (!local) return;
+        const summary = await indexer.getAccountSummary(local);
+        const remote = summary?.address ?? local;
+        setArchAddress(remote);
       } catch {
-        // fallback
+        // Indexer may 404 if the account hasn't been seen yet; the local
+        // derivation is fine for receive-side display.
       }
     })();
   }, [activeAccount]);

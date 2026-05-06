@@ -4,7 +4,7 @@ import { WalletHubClient } from "@arch/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
 import { walletStore } from "../../state/wallet-store";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
-import type { WalletAccount } from "../../state/types";
+import { DEFAULT_HUB_BASE_URL, type WalletAccount } from "../../state/types";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -14,40 +14,38 @@ interface OnboardingProps {
 
 type Step = "welcome" | "creating";
 
-const DEFAULT_BASE_URL = "http://44.222.123.237:3005";
-
 export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("welcome");
   const [error, setError] = useState<string | null>(null);
   const [walletName, setWalletName] = useState("");
   const [showServerSettings, setShowServerSettings] = useState(false);
-  const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [apiKey, setApiKey] = useState("");
+  const [hubBaseUrl, setHubBaseUrl] = useState(DEFAULT_HUB_BASE_URL);
+  const [hubApiKey, setHubApiKey] = useState("");
   const [statusMessage, setStatusMessage] = useState("Setting up your wallet...");
 
   useEffect(() => {
     (async () => {
       const state = await walletStore.getState();
-      if (state.apiBaseUrl) setApiBaseUrl(state.apiBaseUrl);
-      if (state.apiKey) setApiKey(state.apiKey);
+      if (state.hubBaseUrl) setHubBaseUrl(state.hubBaseUrl);
+      if (state.hubApiKey) setHubApiKey(state.hubApiKey);
     })();
   }, []);
 
   const buildClient = useCallback(() => {
     return new WalletHubClient({
-      baseUrl: apiBaseUrl || DEFAULT_BASE_URL,
-      ...(apiKey ? { apiKey } : {}),
+      baseUrl: hubBaseUrl || DEFAULT_HUB_BASE_URL,
+      ...(hubApiKey ? { apiKey: hubApiKey } : {}),
     });
-  }, [apiBaseUrl, apiKey]);
+  }, [hubBaseUrl, hubApiKey]);
 
   const saveApiConfig = useCallback(async () => {
-    await walletStore.setApiConfig(
-      apiBaseUrl || DEFAULT_BASE_URL,
-      apiKey
+    await walletStore.setHubConfig(
+      hubBaseUrl || DEFAULT_HUB_BASE_URL,
+      hubApiKey
     );
     invalidateClientCache();
-  }, [apiBaseUrl, apiKey]);
+  }, [hubBaseUrl, hubApiKey]);
 
   const finishOnboarding = useCallback(() => {
     onComplete();
@@ -259,9 +257,9 @@ export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
             <input
               className="input"
               type="text"
-              value={apiBaseUrl}
-              onChange={(e) => setApiBaseUrl(e.target.value)}
-              placeholder="http://44.222.123.237:3005"
+              value={hubBaseUrl}
+              onChange={(e) => setHubBaseUrl(e.target.value)}
+              placeholder={DEFAULT_HUB_BASE_URL}
               style={{ width: "100%", boxSizing: "border-box" }}
             />
           </div>
@@ -272,8 +270,8 @@ export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
             <input
               className="input"
               type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
+              value={hubApiKey}
+              onChange={(e) => setHubApiKey(e.target.value)}
               placeholder="Enter your API key"
               style={{ width: "100%", boxSizing: "border-box" }}
             />
