@@ -37,6 +37,8 @@ services:
       TURNKEY_API_PRIVATE_KEY: ${TURNKEY_API_PRIVATE_KEY}
       TURNKEY_ORGANIZATION_ID: ${TURNKEY_ORGANIZATION_ID}
       ARCH_RPC_NODE_URL: ${ARCH_RPC_URL:-https://rpc.testnet.arch.network}
+      ARCH_RPC_NODE_URL_TESTNET: ${ARCH_RPC_NODE_URL_TESTNET:-https://rpc.testnet.arch.network}
+      ARCH_RPC_NODE_URL_MAINNET: ${ARCH_RPC_NODE_URL_MAINNET:-https://rpc.mainnet.arch.network}
       INDEXER_BASE_URL: ${INDEXER_BASE_URL:-https://explorer.arch.network/api/v1/testnet}
       INDEXER_API_KEY: ${INDEXER_API_KEY:-}
       INDEXER_TIMEOUT_MS: ${INDEXER_TIMEOUT_MS:-30000}
