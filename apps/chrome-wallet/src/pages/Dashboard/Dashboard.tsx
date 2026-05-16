@@ -470,7 +470,12 @@ export default function Dashboard() {
                 return (
                   <>
                     {visible.map((tk) => (
-                      <div className="asset-row" key={tk.mint} onClick={() => navigate("/tokens")} style={{ cursor: "pointer" }}>
+                      <div
+                        className="asset-row"
+                        key={tk.mint}
+                        onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
+                        style={{ cursor: "pointer" }}
+                      >
                         <div className="asset-icon apl">
                           {tk.image
                             ? <img src={tk.image} alt={tk.symbol} style={{ width: 24, height: 24, borderRadius: "50%" }} />
