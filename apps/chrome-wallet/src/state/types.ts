@@ -37,8 +37,8 @@ export interface ConnectedSite {
   accountId: string;
 }
 
-export const DEFAULT_HUB_BASE_URL = "http://44.222.123.237:3005";
-export const DEFAULT_HUB_API_KEY = "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog";
+export const DEFAULT_HUB_BASE_URL = "http://wallet-hub-alb-1812078009.us-east-1.elb.amazonaws.com";
+export const DEFAULT_HUB_API_KEY = "n63cYrYqamWINppvktPb9OkzxPg69SYfc0zRGnGGUhQ";
 
 export const DEFAULT_STATE: AppState = {
   initialized: false,

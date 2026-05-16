@@ -3,6 +3,7 @@ import type { NetworkStatus } from "../hooks/useApiStatus";
 interface ConnectionBannerProps {
   status: NetworkStatus;
   onRetry: () => void;
+  showHubWarning?: boolean;
 }
 
 function DisconnectedIcon() {
@@ -29,7 +30,7 @@ function WarningIcon() {
   );
 }
 
-function getBannerContent(status: NetworkStatus): { title: string; sub: string; variant: "error" | "warning" } | null {
+function getBannerContent(status: NetworkStatus, showHubWarning: boolean): { title: string; sub: string; variant: "error" | "warning" } | null {
   // Indexer drives the daily wallet experience (reads, faucet, BTC, RPC), so
   // it's the primary signal. Hub is only required for Turnkey wallet creation,
   // Arch/APL signing-requests, and custodial BTC — its outage is a soft warning.
@@ -62,9 +63,10 @@ function getBannerContent(status: NetworkStatus): { title: string; sub: string; 
   }
 
   if (hubDown) {
+    if (!showHubWarning) return null;
     return {
-      title: "Hub features unavailable",
-      sub: "Wallet creation, signing, and custodial BTC may not work",
+      title: "Wallet Hub unavailable",
+      sub: "Wallet creation and Hub-backed signing may not work",
       variant: "warning",
     };
   }
@@ -72,8 +74,8 @@ function getBannerContent(status: NetworkStatus): { title: string; sub: string; 
   return null;
 }
 
-export default function ConnectionBanner({ status, onRetry }: ConnectionBannerProps) {
-  const content = getBannerContent(status);
+export default function ConnectionBanner({ status, onRetry, showHubWarning = false }: ConnectionBannerProps) {
+  const content = getBannerContent(status, showHubWarning);
   if (!content) return null;
 
   const isWarning = content.variant === "warning";

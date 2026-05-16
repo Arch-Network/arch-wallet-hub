@@ -3,6 +3,8 @@ import { deriveArchAccountAddress } from "../utils/sdk";
 import { INDEXER_BASE_URL, DEFAULT_INDEXER_API_KEY } from "../utils/explorer-config";
 
 const STORAGE_KEY = "arch_wallet_state";
+const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
+const LEGACY_HUB_API_KEY = "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog";
 
 async function loadState(): Promise<AppState> {
   const result = await chrome.storage.local.get(STORAGE_KEY);
@@ -33,8 +35,14 @@ function migrateApiConfig(state: any): boolean {
   if (!state.hubBaseUrl) {
     state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
     migrated = true;
+  } else if (state.hubBaseUrl === LEGACY_EC2_HUB_BASE_URL) {
+    state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
+    migrated = true;
   }
   if (!state.hubApiKey) {
+    state.hubApiKey = DEFAULT_HUB_API_KEY;
+    migrated = true;
+  } else if (state.hubApiKey === LEGACY_HUB_API_KEY) {
     state.hubApiKey = DEFAULT_HUB_API_KEY;
     migrated = true;
   }
@@ -103,6 +111,17 @@ export const walletStore = {
   async setActiveAccount(accountId: string): Promise<void> {
     const state = await loadState();
     state.activeAccountId = accountId;
+    await saveState(state);
+  },
+
+  async updateAccount(accountId: string, patch: Partial<WalletAccount>): Promise<void> {
+    const state = await loadState();
+    const account = state.accounts.find((a) => a.id === accountId);
+    if (!account) return;
+    Object.assign(account, patch);
+    if (patch.id && state.activeAccountId === accountId) {
+      state.activeAccountId = patch.id;
+    }
     await saveState(state);
   },
 

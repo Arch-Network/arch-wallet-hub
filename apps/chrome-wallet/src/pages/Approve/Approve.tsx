@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Turnkey } from "@turnkey/sdk-browser";
 import { useWallet } from "../../hooks/useWallet";
-import { getClient, getExternalUserId } from "../../utils/sdk";
+import { getClient, getExternalUserId, formatWalletHubError } from "../../utils/sdk";
 import { truncateAddress, formatArch } from "../../utils/format";
 
 interface RequestDetails {
@@ -184,7 +184,7 @@ export default function Approve() {
 
       throw new Error(`Unsupported request type: ${request.type}`);
     } catch (e: any) {
-      setError(e?.message || "Failed to process request");
+      setError(formatWalletHubError(e, "Failed to process request"));
     } finally {
       setLoading(false);
     }

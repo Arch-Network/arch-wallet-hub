@@ -50,6 +50,9 @@ function AppRoutes() {
   const location = useLocation();
 
   const isApproveRoute = location.pathname.startsWith("/approve/");
+  const showHubWarning =
+    location.pathname === "/settings" ||
+    location.pathname === "/add-wallet";
 
   if (loading) {
     return (
@@ -83,12 +86,12 @@ function AppRoutes() {
   return (
     <div className="app-container">
       <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} />
-      <ConnectionBanner status={networkStatus} onRetry={retryApi} />
+      <ConnectionBanner status={networkStatus} onRetry={retryApi} showHubWarning={showHubWarning} />
       <div className="app-body">
         <RouteRestorer />
         <Routes>
           <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/send" element={<Send />} />
+          <Route path="/send" element={<Send networkStatus={networkStatus} />} />
           <Route path="/receive" element={<Receive />} />
           <Route path="/history" element={<History />} />
           <Route path="/tokens" element={<TokenList />} />

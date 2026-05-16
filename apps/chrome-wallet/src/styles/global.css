@@ -610,6 +610,90 @@ a {
   color: var(--warning);
 }
 
+/* ═══════════════════ Send Asset Picker ═══════════════════ */
+
+.send-asset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.send-asset-card {
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.send-asset-card:hover {
+  border-color: rgba(193, 154, 91, 0.42);
+  background: rgba(30, 24, 20, 0.9);
+  transform: translateY(-1px);
+}
+
+.send-asset-card-disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.send-asset-card-disabled:hover {
+  border-color: var(--border-primary);
+  background: var(--bg-card);
+  transform: none;
+}
+
+.send-asset-row {
+  border: none;
+  padding: 0;
+  align-items: center;
+}
+
+.send-asset-balance-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  min-width: 128px;
+  max-width: 158px;
+  margin-left: auto;
+  text-align: right;
+}
+
+.send-asset-balance-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.send-asset-balance {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.send-asset-pending {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.send-asset-pending.incoming {
+  color: var(--success);
+}
+
+.send-asset-pending.outgoing {
+  color: var(--warning);
+}
+
 @keyframes pulse-pending {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -1186,6 +1270,16 @@ a {
   border: 1px solid rgba(217, 83, 79, 0.2);
   border-radius: var(--radius-sm);
   color: var(--danger);
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+.warning-banner {
+  padding: 8px 12px;
+  background: rgba(230, 168, 23, 0.1);
+  border: 1px solid rgba(230, 168, 23, 0.2);
+  border-radius: var(--radius-sm);
+  color: var(--warning);
   font-size: 12px;
   margin-bottom: 12px;
 }

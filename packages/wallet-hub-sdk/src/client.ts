@@ -7,6 +7,8 @@ import type {
   CreateTurnkeyWalletRequest,
   CreateTurnkeyWalletResponse,
   CreateTurnkeyPasskeyWalletRequest,
+  RegisterExistingPasskeyWalletRequest,
+  RegisterExistingPasskeyWalletResponse,
   GetTurnkeyWalletResponse,
   ListTurnkeyWalletsResponse,
   RegisterTurnkeyIndexedDbKeyRequest,
@@ -103,6 +105,15 @@ export class WalletHubClient {
       method: "POST",
       headers: { "idempotency-key": params.idempotencyKey },
       body: JSON.stringify(params.body)
+    });
+  }
+
+  async registerExistingPasskeyWallet(
+    body: RegisterExistingPasskeyWalletRequest
+  ): Promise<RegisterExistingPasskeyWalletResponse> {
+    return await this.requestJson(`/turnkey/passkey-wallets/import`, {
+      method: "POST",
+      body: JSON.stringify(body)
     });
   }
 

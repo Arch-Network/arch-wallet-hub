@@ -39,6 +39,14 @@ const CreatePasskeyWalletBody = Type.Object({
   })
 });
 
+const ImportPasskeyWalletBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
+  organizationId: Type.String({ minLength: 1 }),
+  defaultAddress: Type.String({ minLength: 1 }),
+  defaultPublicKeyHex: Type.String({ minLength: 64 }),
+  label: Type.Optional(Type.String({ minLength: 1 }))
+});
+
 const CreateWalletResponse = Type.Object({
   resourceId: Type.String(),
   userId: Type.String(),
@@ -49,6 +57,15 @@ const CreateWalletResponse = Type.Object({
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   activityId: Type.String()
+});
+
+const ImportPasskeyWalletResponse = Type.Object({
+  resourceId: Type.String(),
+  userId: Type.String(),
+  externalUserId: Type.String(),
+  organizationId: Type.String(),
+  defaultAddress: Type.String(),
+  defaultPublicKeyHex: Type.String()
 });
 
 const GetWalletResponse = Type.Object({
@@ -96,6 +113,77 @@ const SignMessageResponse = Type.Object({
 });
 
 export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
+  server.post(
+    "/turnkey/passkey-wallets/import",
+    {
+      schema: {
+        summary: "Register an existing passkey wallet metadata row for this Hub app",
+        tags: ["turnkey"],
+        body: ImportPasskeyWalletBody,
+        response: { 200: ImportPasskeyWalletResponse }
+      }
+    },
+    async (request, reply) => {
+      const appId = request.app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const body = request.body as any;
+      const externalUserId = String(body.externalUserId);
+      const organizationId = String(body.organizationId);
+      const defaultAddress = String(body.defaultAddress);
+      const defaultPublicKeyHex = String(body.defaultPublicKeyHex);
+      const db = getDbPool();
+
+      const response = await withDbTransaction(db, async (client) => {
+        const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
+        const resource = await insertTurnkeyResource(client, {
+          appId,
+          userId: user.id,
+          organizationId,
+          turnkeyRootUserId: null,
+          walletId: null,
+          vaultId: null,
+          keyId: null,
+          policyId: null,
+          defaultAddress,
+          defaultPublicKeyHex,
+          defaultAddressFormat: null,
+          defaultDerivationPath: null
+        });
+
+        await auditEvent({
+          client,
+          appId,
+          requestId: request.id,
+          userId: user.id,
+          eventType: "turnkey.wallet.import",
+          entityType: "turnkey_resource",
+          entityId: resource.id,
+          turnkeyActivityId: null,
+          turnkeyRequestId: null,
+          payloadJson: {
+            mode: "passkey_metadata_import",
+            organizationId,
+            defaultAddress,
+            label: body.label ?? null
+          },
+          outcome: "succeeded"
+        });
+
+        return {
+          resourceId: resource.id,
+          userId: user.id,
+          externalUserId,
+          organizationId,
+          defaultAddress,
+          defaultPublicKeyHex
+        };
+      });
+
+      return response;
+    }
+  );
+
   server.post(
     "/turnkey/passkey-wallets",
     {

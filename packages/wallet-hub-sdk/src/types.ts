@@ -58,6 +58,23 @@ export type CreateTurnkeyPasskeyWalletRequest = CreateTurnkeyWalletRequest & {
   };
 };
 
+export type RegisterExistingPasskeyWalletRequest = {
+  externalUserId: string;
+  organizationId: string;
+  defaultAddress: string;
+  defaultPublicKeyHex: string;
+  label?: string;
+};
+
+export type RegisterExistingPasskeyWalletResponse = {
+  resourceId: string;
+  userId: string;
+  externalUserId: string;
+  organizationId: string;
+  defaultAddress: string;
+  defaultPublicKeyHex: string;
+};
+
 export type CreateTurnkeyWalletResponse = {
   resourceId: string;
   userId: string;
@@ -114,7 +131,7 @@ export type CreateSigningRequest = {
     | { kind: "turnkey"; resourceId: string };
   action:
     | { type: "arch.transfer"; toAddress: string; lamports: string }
-    | { type: "arch.token_transfer"; mintAddress: string; toAddress: string; amount: string; decimals?: number }
+    | { type: "arch.token_transfer"; mintAddress: string; toAddress: string; amount: string; sourceTokenAccount?: string; decimals?: number }
     | { type: "arch.anchor"; btcTxid: string; vout: number }
     | { type: "arch.sign_message"; messageHex: string };
 };

@@ -44,6 +44,7 @@ const CreateSigningRequestBody = Type.Object({
       mintAddress: Type.String({ minLength: 1 }),
       toAddress: Type.String({ minLength: 1 }),
       amount: Type.String({ minLength: 1 }),
+      sourceTokenAccount: Type.Optional(Type.String({ minLength: 1 })),
       decimals: Type.Optional(Type.Integer({ minimum: 0, maximum: 18 }))
     }),
     Type.Object({
@@ -284,9 +285,42 @@ function secp256k1PublicKeyToArchAccountBase58(publicKeyHex: string): string {
 
 // ── APL Token Transfer helpers ──
 
-const APL_TOKEN_PROGRAM_ID: Pubkey = new Uint8Array(
-  Buffer.from("AplToken111111111111111111111111", "ascii")
+const APL_TOKEN_PROGRAM_ID: Pubkey = PubkeyUtil.fromHex(
+  "06ddf6e1b9ea84412c10b8df021c100fc8871907c309c33535de209c341763bf"
 );
+const APL_ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey = PubkeyUtil.fromHex(
+  "8c97231184927b77b5f180118fcc683414b77c521e5a77081cf71d5f606a5384"
+);
+
+function getAplAssociatedTokenAddress(mint: Pubkey, owner: Pubkey): Pubkey {
+  return PubkeyUtil.getAssociatedTokenAddress(
+    mint,
+    owner,
+    true,
+    APL_TOKEN_PROGRAM_ID,
+    APL_ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+}
+
+function buildCreateAssociatedTokenAccountInstruction(
+  payerPubkey: Pubkey,
+  associatedTokenAccount: Pubkey,
+  ownerPubkey: Pubkey,
+  mintPubkey: Pubkey
+): Instruction {
+  return {
+    program_id: APL_ASSOCIATED_TOKEN_PROGRAM_ID,
+    accounts: [
+      { pubkey: payerPubkey, is_signer: true, is_writable: true } as AccountMeta,
+      { pubkey: associatedTokenAccount, is_signer: false, is_writable: true } as AccountMeta,
+      { pubkey: ownerPubkey, is_signer: false, is_writable: false } as AccountMeta,
+      { pubkey: mintPubkey, is_signer: false, is_writable: false } as AccountMeta,
+      { pubkey: PubkeyUtil.systemProgram(), is_signer: false, is_writable: false } as AccountMeta,
+      { pubkey: APL_TOKEN_PROGRAM_ID, is_signer: false, is_writable: false } as AccountMeta,
+    ],
+    data: new Uint8Array(0),
+  };
+}
 
 function buildTokenTransferInstruction(
   sourceAta: Pubkey,
@@ -769,11 +803,52 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const toPubkey = parsePubkey(body.action.toAddress);
         const amount = BigInt(body.action.amount);
 
-        const sourceAta = PubkeyUtil.getAssociatedTokenAddress(mintPubkey, payerPubkey);
-        const destAta = PubkeyUtil.getAssociatedTokenAddress(mintPubkey, toPubkey);
+        let sourceAta = body.action.sourceTokenAccount
+          ? parsePubkey(body.action.sourceTokenAccount)
+          : getAplAssociatedTokenAddress(mintPubkey, payerPubkey);
+        let destAta = getAplAssociatedTokenAddress(mintPubkey, toPubkey);
+        let createDestAta = true;
+
+        try {
+          const indexer = indexerForRequest(request, reply);
+          if (!indexer) throw new Error("Indexer not configured");
+          const [senderTokens, recipientTokens] = await Promise.all([
+            indexer.getAccountTokens(signerArchAccountAddress),
+            indexer.getAccountTokens(body.action.toAddress)
+          ]);
+          const findTokenAccount = (tokensResponse: any): string | null => {
+            const tokens = Array.isArray(tokensResponse?.tokens) ? tokensResponse.tokens : [];
+            const mintInput = body.action.mintAddress;
+            const mintHex = Buffer.from(mintPubkey).toString("hex");
+            const match = tokens.find((t: any) =>
+              t?.mint_address === mintInput ||
+              t?.mint_address_hex === mintHex ||
+              t?.mint === mintInput
+            );
+            return typeof match?.token_account_address === "string" ? match.token_account_address : null;
+          };
+
+          const indexedSourceAta = findTokenAccount(senderTokens);
+          const indexedDestAta = findTokenAccount(recipientTokens);
+          if (indexedSourceAta) sourceAta = parsePubkey(indexedSourceAta);
+          if (indexedDestAta) {
+            destAta = parsePubkey(indexedDestAta);
+            createDestAta = false;
+          }
+        } catch (err: any) {
+          server.log.warn(
+            { err: String(err?.message ?? err), mint: body.action.mintAddress },
+            "Failed to resolve indexed token accounts; falling back to associated token derivation"
+          );
+        }
 
         actionType = "arch.token_transfer";
-        instructions = [buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, amount)];
+        instructions = [
+          ...(createDestAta
+            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
+            : []),
+          buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, amount)
+        ];
 
         display = {
           kind: "arch.token_transfer",
@@ -788,6 +863,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           decimals: body.action.decimals ?? null,
           sourceAta: bs58.encode(Buffer.from(sourceAta)),
           destAta: bs58.encode(Buffer.from(destAta)),
+          createDestAta,
         };
 
       } else if (body.action.type === "arch.anchor") {
@@ -1026,7 +1102,15 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           return reply.badRequest("Signing request display missing token transfer fields");
         const sourceAta = parsePubkey(sourceAtaStr);
         const destAta = parsePubkey(destAtaStr);
-        instructions = [buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, BigInt(amountStr))];
+        const mintPubkey = parsePubkey(mint);
+        const toAddr = String(display?.to?.archAccountAddress ?? "");
+        const toPubkey = parsePubkey(toAddr);
+        instructions = [
+          ...(display?.createDestAta
+            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
+            : []),
+          buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, BigInt(amountStr))
+        ];
       } else if (row.action_type === "arch.anchor") {
         const txid = String(display?.utxo?.txid ?? "");
         const vout = Number(display?.utxo?.vout);

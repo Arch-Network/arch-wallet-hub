@@ -22,15 +22,13 @@ function LockIcon() {
 }
 
 function dotClass(ns: NetworkStatus): string {
-  if (ns.api === "checking") return "network-dot-checking";
-  if (ns.api === "disconnected") return "network-dot-disconnected";
+  if (ns.bitcoin === "checking" || ns.arch === "checking") return "network-dot-checking";
   if (ns.bitcoin === "disconnected" && ns.arch === "disconnected") return "network-dot-disconnected";
   if (ns.bitcoin === "disconnected" || ns.arch === "disconnected") return "network-dot-degraded";
   return "";
 }
 
 function pillClass(ns: NetworkStatus): string {
-  if (ns.api === "disconnected") return "network-pill-disconnected";
   if (ns.bitcoin === "disconnected" && ns.arch === "disconnected") return "network-pill-disconnected";
   if (ns.bitcoin === "disconnected" || ns.arch === "disconnected") return "network-pill-degraded";
   return "";

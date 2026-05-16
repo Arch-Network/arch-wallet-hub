@@ -3,20 +3,32 @@ import { useNavigate } from "react-router-dom";
 import { Turnkey } from "@turnkey/sdk-browser";
 import * as bitcoin from "bitcoinjs-lib";
 import { useWallet } from "../../hooks/useWallet";
-import { getClient, getExternalUserId, deriveArchAccountAddress } from "../../utils/sdk";
+import type { NetworkStatus } from "../../hooks/useApiStatus";
+import {
+  getClient,
+  getExternalUserId,
+  deriveArchAccountAddress,
+  formatWalletHubError,
+  isWalletHubAuthError,
+  isWalletHubUnknownResourceError,
+  resetHubConfigToDefaults,
+} from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
 import { formatBtc, formatArch, formatTokenAmount, formatArchId } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
+import { walletStore } from "../../state/wallet-store";
 import ArchIcon from "../../components/ArchIcon";
 
 type AssetType = "btc" | "arch" | "apl";
 
 interface TokenHolding {
   mint: string;
+  tokenAccount?: string;
   balance: number;
+  rawAmount: string;
   decimals: number;
   symbol?: string;
   name?: string;
@@ -38,7 +50,11 @@ const ASSET_META: Record<AssetType, { icon: React.ReactNode; label: string; unit
   apl: { icon: <ArchIcon size={14} color="#7b68ee" />, label: "APL Token", unit: "tokens" },
 };
 
-export default function Send() {
+interface SendProps {
+  networkStatus?: NetworkStatus;
+}
+
+export default function Send({ networkStatus }: SendProps) {
   const navigate = useNavigate();
   const { activeAccount, state } = useWallet();
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
@@ -119,7 +135,9 @@ export default function Send() {
           rawTokens.map(async (t) => {
             const base = {
               mint: t.mint_address as string,
+              tokenAccount: t.token_account_address as string | undefined,
               balance: Number(t.amount) || 0,
+              rawAmount: String(t.amount ?? "0"),
               decimals: t.decimals ?? 0,
               symbol: t.symbol as string | undefined,
               name: (t.name || "APL Token") as string,
@@ -280,7 +298,7 @@ export default function Send() {
 
       setStep(4);
     } catch (err: any) {
-      setError(err.message || "Transaction signing failed");
+      setError(activeAccount?.isCustodial ? formatWalletHubError(err, "Transaction signing failed") : err.message || "Transaction signing failed");
     } finally {
       setLoading(false);
     }
@@ -296,48 +314,86 @@ export default function Send() {
     setLoading(true);
     setError("");
     try {
-      const client = await getClient();
-      const externalUserId = getExternalUserId();
-      let txid: string;
-
       const archLamports = String(Math.round((Number(amount) || 0) * 1e9));
-
-      const action =
+      const aplRawAmount =
         asset === "apl" && selectedToken
-          ? {
-              type: "arch.token_transfer" as const,
-              mintAddress: selectedToken.mint,
-              toAddress: recipient,
-              amount,
-              decimals: selectedToken.decimals,
-            }
-          : {
-              type: "arch.transfer" as const,
-              toAddress: recipient,
-              lamports: archLamports,
-            };
+          ? parseTokenDisplayAmountToRaw(amount, selectedToken.decimals)
+          : null;
+      if (asset === "apl" && selectedToken && aplRawAmount) {
+        const availableRaw = parseRawTokenAmount(selectedToken.rawAmount);
+        if (aplRawAmount > availableRaw) throw new Error("Insufficient token balance");
+      }
 
-      const sr = await client.createSigningRequest({
-        externalUserId,
-        signer: { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
-        action,
-      });
+      const submitViaHub = async (): Promise<string> => {
+        const client = await getClient();
+        const externalUserId = getExternalUserId();
+        const action =
+          asset === "apl" && selectedToken
+            ? {
+                type: "arch.token_transfer" as const,
+                mintAddress: selectedToken.mint,
+                toAddress: recipient,
+                amount: aplRawAmount!.toString(),
+                sourceTokenAccount: selectedToken.tokenAccount,
+                decimals: selectedToken.decimals,
+              }
+            : {
+                type: "arch.transfer" as const,
+                toAddress: recipient,
+                lamports: archLamports,
+              };
 
-      if (activeAccount.isCustodial) {
-        const serverResult = await client.signWithTurnkey(sr.signingRequestId, { externalUserId });
-        const res = (serverResult as any).result ?? serverResult;
-        txid = res?.txid || res?.txidHex || sr.signingRequestId;
-      } else {
+        const sr = await client.createSigningRequest({
+          externalUserId,
+          signer: { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
+          action,
+        });
+
+        if (activeAccount.isCustodial) {
+          const serverResult = await client.signWithTurnkey(sr.signingRequestId, { externalUserId });
+          const res = (serverResult as any).result ?? serverResult;
+          return res?.txid || res?.txidHex || sr.signingRequestId;
+        }
+
         const payloadHex = (sr.payloadToSign as any)?.payloadHex;
         if (!payloadHex) throw new Error("No payload available for signing");
-        txid = await signWithPasskey(sr.signingRequestId, payloadHex);
+        return await signWithPasskey(sr.signingRequestId, payloadHex);
+      };
+
+      let txid: string;
+      try {
+        txid = await submitViaHub();
+      } catch (err) {
+        if (isWalletHubAuthError(err)) {
+          await resetHubConfigToDefaults();
+        } else if (isWalletHubUnknownResourceError(err) && !activeAccount.isCustodial) {
+          const client = await getClient();
+          const registered = await client.registerExistingPasskeyWallet({
+            externalUserId: getExternalUserId(),
+            organizationId: activeAccount.organizationId,
+            defaultAddress: activeAccount.btcAddress,
+            defaultPublicKeyHex: activeAccount.publicKeyHex,
+            label: activeAccount.label,
+          });
+          await walletStore.updateAccount(activeAccount.id, {
+            id: registered.resourceId,
+            turnkeyResourceId: registered.resourceId,
+            organizationId: registered.organizationId,
+          });
+          activeAccount.id = registered.resourceId;
+          activeAccount.turnkeyResourceId = registered.resourceId;
+          activeAccount.organizationId = registered.organizationId;
+        } else {
+          throw err;
+        }
+        txid = await submitViaHub();
       }
 
       const displayTxid = formatArchId(txid);
       setTxResult({ txid: displayTxid, rawTxid: txid });
       setStep(4);
     } catch (err: any) {
-      setError(err.message || "Transaction failed");
+      setError(formatWalletHubError(err, "Transaction failed"));
     } finally {
       setLoading(false);
     }
@@ -368,53 +424,64 @@ export default function Send() {
       <>
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Choose Asset</h2>
         {error && <div className="error-banner">{error}</div>}
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <button className="card" style={{ cursor: "pointer", textAlign: "left" }} onClick={() => { setAsset("btc"); setStep(2); }}>
-            <div className="asset-row" style={{ border: "none", padding: 0 }}>
+        <div className="send-asset-list">
+          <button className="card send-asset-card" onClick={() => { setAsset("btc"); setStep(2); }}>
+            <div className="asset-row send-asset-row">
               <div className="asset-icon btc">₿</div>
               <div className="asset-info">
                 <div className="asset-name">Bitcoin</div>
-                <div className="asset-sub">
+                <div className="asset-sub">BTC</div>
+              </div>
+              <div className="send-asset-balance-wrap">
+                <div className="send-asset-balance-label">Available</div>
+                <div className="send-asset-balance">
                   {btcLoaded
                     ? formatBtc(btcConfirmed + btcPending)
                     : "Loading..."}
-                  {btcLoaded && btcPending !== 0 && (
-                    <span style={{ color: "var(--success)", fontSize: 10, marginLeft: 6 }}>
-                      ({(btcPending / 1e8).toFixed(8)} pending)
-                    </span>
-                  )}
                 </div>
+                {btcLoaded && btcPending !== 0 && (
+                  <div className={`send-asset-pending ${btcPending > 0 ? "incoming" : "outgoing"}`}>
+                    {btcPending > 0 ? "+" : ""}{(btcPending / 1e8).toFixed(8)} pending
+                  </div>
+                )}
               </div>
             </div>
           </button>
-          <button className="card" style={{ cursor: "pointer", textAlign: "left" }} onClick={() => { setAsset("arch"); setStep(2); }}>
-            <div className="asset-row" style={{ border: "none", padding: 0 }}>
+          <button className="card send-asset-card" onClick={() => { setAsset("arch"); setStep(2); }}>
+            <div className="asset-row send-asset-row">
               <div className="asset-icon arch"><ArchIcon size={18} /></div>
               <div className="asset-info">
                 <div className="asset-name">ARCH</div>
-                <div className="asset-sub">{archBalance !== null ? formatArch(archBalance) : "Loading..."}</div>
+                <div className="asset-sub">Native gas token</div>
+              </div>
+              <div className="send-asset-balance-wrap">
+                <div className="send-asset-balance-label">Available</div>
+                <div className="send-asset-balance">{archBalance !== null ? formatArch(archBalance) : "Loading..."}</div>
               </div>
             </div>
           </button>
           {tokensHeld.map((tk) => (
             <button
               key={tk.mint}
-              className="card"
-              style={{ cursor: "pointer", textAlign: "left" }}
+              className="card send-asset-card"
               onClick={() => { setSelectedToken(tk); setAsset("apl"); setStep(2); }}
             >
-              <div className="asset-row" style={{ border: "none", padding: 0 }}>
+              <div className="asset-row send-asset-row">
                 <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
                 <div className="asset-info">
                   <div className="asset-name">{tk.name || "APL Token"}</div>
-                  <div className="asset-sub">{tk.uiAmount} {tk.symbol ? tk.symbol : ""}</div>
+                  <div className="asset-sub">{tk.symbol || "APL Token"}</div>
+                </div>
+                <div className="send-asset-balance-wrap">
+                  <div className="send-asset-balance-label">Available</div>
+                  <div className="send-asset-balance">{tk.uiAmount} {tk.symbol ? tk.symbol : ""}</div>
                 </div>
               </div>
             </button>
           ))}
           {tokensHeld.length === 0 && (
-            <div className="card" style={{ opacity: 0.5 }}>
-              <div className="asset-row" style={{ border: "none", padding: 0 }}>
+            <div className="card send-asset-card send-asset-card-disabled">
+              <div className="asset-row send-asset-row">
                 <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
                 <div className="asset-info">
                   <div className="asset-name">APL Tokens</div>
@@ -435,6 +502,15 @@ export default function Send() {
       setError("");
       if (asset === "btc") {
         handlePrepareBtc();
+      } else if (asset === "apl" && selectedToken) {
+        try {
+          const rawAmount = parseTokenDisplayAmountToRaw(amount, selectedToken.decimals);
+          const availableRaw = parseRawTokenAmount(selectedToken.rawAmount);
+          if (rawAmount > availableRaw) throw new Error("Insufficient token balance");
+          setStep(3);
+        } catch (err: any) {
+          setError(err.message || "Enter a valid token amount");
+        }
       } else {
         setStep(3);
       }
@@ -479,7 +555,7 @@ export default function Send() {
             <input
               className="input-field mono"
               type="number"
-              step={asset === "btc" ? "0.00000001" : asset === "arch" ? "0.0001" : "1"}
+              step={asset === "btc" ? "0.00000001" : asset === "arch" ? "0.0001" : tokenInputStep(selectedToken?.decimals ?? 0)}
               placeholder="0"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
@@ -549,6 +625,10 @@ export default function Send() {
   if (step === 3) {
     const meta = asset ? ASSET_META[asset] : ASSET_META.arch;
     const amountSats = asset === "btc" ? Math.round((Number(amount) || 0) * 1e8) : 0;
+    const aplRawAmount =
+      asset === "apl" && selectedToken
+        ? tryParseTokenDisplayAmountToRaw(amount, selectedToken.decimals)
+        : null;
 
     return (
       <>
@@ -556,6 +636,16 @@ export default function Send() {
           ← Back
         </button>
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Review Transaction</h2>
+        {networkStatus?.api === "disconnected" && asset !== "btc" && (
+          <div className="warning-banner">
+            This {asset === "apl" ? "APL token" : "ARCH"} send uses Wallet Hub for signing orchestration. Check Wallet Hub API in Settings if signing fails.
+          </div>
+        )}
+        {networkStatus?.api === "disconnected" && asset === "btc" && activeAccount?.isCustodial && (
+          <div className="warning-banner">
+            Custodial BTC sends use Wallet Hub for server-side signing. Check Wallet Hub API in Settings if signing fails.
+          </div>
+        )}
         {error && <div className="error-banner">{error}</div>}
         <div className="card" style={{ marginBottom: 12 }}>
           <div style={{ marginBottom: 8 }}>
@@ -571,7 +661,7 @@ export default function Send() {
             <div style={{ fontWeight: 600 }}>
               {asset === "btc" ? `${Number(amount) || 0} BTC`
                 : asset === "arch" ? `${Number(amount) || 0} ARCH`
-                : selectedToken ? `${formatTokenAmount(Number(amount) || 0, selectedToken.decimals)} ${selectedToken.symbol || "APL"}`
+                : selectedToken ? `${amount} ${selectedToken.symbol || "APL"}`
                 : amount}
             </div>
             {asset === "arch" && Number(amount) > 0 && (
@@ -582,6 +672,11 @@ export default function Send() {
             {asset === "btc" && amountSats > 0 && (
               <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
                 {amountSats.toLocaleString()} sats
+              </div>
+            )}
+            {asset === "apl" && aplRawAmount !== null && (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
+                {aplRawAmount.toLocaleString()} raw units
               </div>
             )}
           </div>
@@ -695,4 +790,45 @@ function hexToBase64(hex: string): string {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
+}
+
+function tokenInputStep(decimals: number): string {
+  if (decimals <= 0) return "1";
+  return `0.${"0".repeat(Math.max(decimals - 1, 0))}1`;
+}
+
+function parseRawTokenAmount(rawAmount: string): bigint {
+  const normalized = rawAmount.trim();
+  if (!/^\d+$/.test(normalized)) return 0n;
+  return BigInt(normalized);
+}
+
+function tryParseTokenDisplayAmountToRaw(input: string, decimals: number): bigint | null {
+  try {
+    return parseTokenDisplayAmountToRaw(input, decimals);
+  } catch {
+    return null;
+  }
+}
+
+function parseTokenDisplayAmountToRaw(input: string, decimals: number): bigint {
+  const normalized = input.trim();
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    throw new Error("Enter a valid token amount");
+  }
+
+  const [wholePart, fractionalPart = ""] = normalized.split(".");
+  if (fractionalPart.length > decimals) {
+    throw new Error(`Amount supports up to ${decimals} decimal places`);
+  }
+
+  const scale = 10n ** BigInt(decimals);
+  const whole = BigInt(wholePart || "0") * scale;
+  const fractional =
+    decimals > 0
+      ? BigInt((fractionalPart || "").padEnd(decimals, "0") || "0")
+      : 0n;
+  const raw = whole + fractional;
+  if (raw <= 0n) throw new Error("Amount must be greater than zero");
+  return raw;
 }
