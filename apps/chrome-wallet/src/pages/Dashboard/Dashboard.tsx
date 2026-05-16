@@ -6,7 +6,7 @@ import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, timestampToMs, formatBtcUsd } from "../../utils/format";
+import { formatBtc, formatBtcAmount, formatArch, formatArchAmount, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, timestampToMs, formatBtcUsd } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { summarizeArchTx, type ArchTxSummary } from "../../utils/arch-tx-summary";
@@ -278,8 +278,22 @@ export default function Dashboard() {
         console.info("[Dashboard] No Arch transactions for", archAddr);
       }
 
-      const archTxItems: RecentTx[] = rawArchTxs
-        .slice(0, 5)
+      // Enrich each row with decoded instruction data from /transactions/:txid
+      // so the summarizer can read direction + amount for plain ARCH transfers
+      // (v2 only summarises token_transfer specifically). All five run in
+      // parallel, capped to the same fast timeout as the rest of the overview.
+      const enrichedArchTxs = await Promise.all(
+        rawArchTxs.slice(0, 5).map(async (tx: any) => {
+          try {
+            const detail = await indexer.getTransactionDetail(tx.txid);
+            return { ...tx, ...(detail as Record<string, unknown>) };
+          } catch {
+            return tx;
+          }
+        })
+      );
+
+      const archTxItems: RecentTx[] = enrichedArchTxs
         .map((tx: any): RecentTx => {
           const status = normalizeArchStatus(tx);
           const summary: ArchTxSummary = summarizeArchTx({ ...tx, status }, archAddr);
@@ -494,14 +508,14 @@ export default function Dashboard() {
               <div className="asset-balance-group">
                 {btcPending !== 0 ? (
                   <>
-                    <div className="asset-balance">{formatBtc((btcBalance ?? 0) + btcPending)}</div>
+                    <div className="asset-balance">{formatBtcAmount((btcBalance ?? 0) + btcPending)}</div>
                     {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd) && (
                       <div className="asset-balance-usd">
                         {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd)}
                       </div>
                     )}
                     <div className="asset-balance-breakdown">
-                      <span className="asset-confirmed">{formatBtc(btcBalance ?? 0)} confirmed</span>
+                      <span className="asset-confirmed">{formatBtcAmount(btcBalance ?? 0)} confirmed</span>
                       <span className={`asset-pending-line ${btcPending > 0 ? "incoming" : "outgoing"}`}>
                         {btcPending > 0 ? "+" : ""}{(btcPending / 1e8).toFixed(8)} pending
                       </span>
@@ -509,7 +523,7 @@ export default function Dashboard() {
                   </>
                 ) : (
                   <>
-                    <div className="asset-balance">{formatBtc(btcBalance ?? 0)}</div>
+                    <div className="asset-balance">{formatBtcAmount(btcBalance ?? 0)}</div>
                     {formatBtcUsd(btcBalance ?? 0, btcUsd) && (
                       <div className="asset-balance-usd">{formatBtcUsd(btcBalance ?? 0, btcUsd)}</div>
                     )}
@@ -528,7 +542,7 @@ export default function Dashboard() {
                 <div className="asset-name">Arch</div>
                 <div className="asset-sub">ARCH</div>
               </div>
-              <div className="asset-balance">{formatArch(archLamports ?? 0)}</div>
+              <div className="asset-balance">{formatArchAmount(archLamports ?? 0)}</div>
             </div>
           ) : (
             <SkeletonAssetRow />

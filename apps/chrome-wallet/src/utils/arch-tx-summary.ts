@@ -1,18 +1,22 @@
 /**
- * Lightweight classifier for Arch transactions that derives a short,
- * human-readable label from the `/transactions/v2` response. Designed for
- * activity feeds where we don't want to call `/instructions` per tx but
- * still want to show something better than the txid.
+ * Classifier for Arch transactions that derives a short, human-readable
+ * label, direction, and amount from indexer data.
  *
- * v2 rows include:
+ * v2 rows alone (`/accounts/:addr/transactions/v2`) carry:
  *   instructions:  string[]      e.g. ["System: Transfer", "Token: Transfer"]
  *   programs:      string[]      program names invoked
  *   status:        object|string
  *   fee_payer:     string
  *   token_transfer?: { source_account, destination_account, amount, decimals, mint }
  *
+ * After being merged with `/transactions/:txid` detail, `instructions` becomes
+ * an array of decoded objects with shape:
+ *   { action: "System: Transfer", decoded: { source, destination, amount/lamports } }
+ * We use the decoded form when present to get direction + amount for plain
+ * ARCH transfers (which v2 doesn't summarise the way it does token_transfer).
+ *
  * This module deliberately ignores anything it can't classify reliably and
- * falls back to "Arch Transaction" so the dashboard never shows a blank row.
+ * falls back to a generic label so the dashboard never shows a blank row.
  */
 
 export type ArchTxKind =
@@ -123,6 +127,105 @@ function formatRawAmountWithDecimals(raw: string, decimals: number): string {
   }
 }
 
+const SYSTEM_TRANSFER_ACTIONS = new Set([
+  "Transfer",
+  "System: Transfer",
+]);
+
+const TOKEN_TRANSFER_ACTIONS = new Set([
+  "Token: Transfer",
+  "Token: TransferChecked",
+]);
+
+/**
+ * Look through decoded instruction objects (from `/transactions/:txid`)
+ * for the first transfer-like instruction we can classify against the
+ * caller's archAddress. Returns null when the input isn't decoded
+ * instructions or no transfer was found.
+ */
+function summarizeFromDecodedInstructions(
+  instructions: unknown,
+  archAddress: string
+): { kind: ArchTxKind; label: string; direction: "in" | "out" | "neutral"; amountLabel?: string; counterparty?: string } | null {
+  if (!Array.isArray(instructions)) return null;
+
+  for (const raw of instructions) {
+    if (!raw || typeof raw !== "object") continue;
+    const ix = raw as Record<string, unknown>;
+    const action = typeof ix.action === "string" ? ix.action : "";
+    if (!action) continue;
+
+    const decoded = (ix.decoded ?? {}) as Record<string, unknown>;
+    const src = asString(decoded.source) || asString(decoded.from);
+    const dst = asString(decoded.destination) || asString(decoded.to);
+    if (!src && !dst) continue;
+
+    if (SYSTEM_TRANSFER_ACTIONS.has(action)) {
+      const direction: "in" | "out" | "neutral" =
+        src === archAddress ? "out" : dst === archAddress ? "in" : "neutral";
+      if (direction === "neutral") continue;
+
+      // System Transfer amounts come in lamports. Try `lamports` first,
+      // fall back to `amount` for indexer versions that use either.
+      const rawLamports = asString(decoded.lamports) || asString(decoded.amount);
+      let amountLabel: string | undefined;
+      if (rawLamports) {
+        try {
+          const lam = BigInt(rawLamports);
+          // 9 decimal places like formatArch
+          const archStr = formatRawAmountWithDecimals(lam.toString(), 9);
+          const trimmed = trimTrailingZeros(archStr, 4);
+          const sign = direction === "out" ? "-" : "+";
+          amountLabel = `${sign}${trimmed} ARCH`;
+        } catch {
+          // Ignore malformed amounts -- still useful to show direction.
+        }
+      }
+
+      return {
+        kind: "system_transfer",
+        label: direction === "in" ? "Received ARCH" : "Sent ARCH",
+        direction,
+        amountLabel,
+        counterparty: direction === "in" ? src || undefined : dst || undefined,
+      };
+    }
+
+    if (TOKEN_TRANSFER_ACTIONS.has(action)) {
+      // Token transfers can fail-over to this path when the v2 row didn't
+      // include token_transfer (some indexer versions).
+      const direction: "in" | "out" | "neutral" =
+        src === archAddress ? "out" : dst === archAddress ? "in" : "neutral";
+      if (direction === "neutral") continue;
+
+      const rawAmount = asString(decoded.amount);
+      const decimals = typeof decoded.decimals === "number" ? decoded.decimals : 0;
+      const pretty = rawAmount ? formatRawAmountWithDecimals(rawAmount, decimals) : null;
+      const sign = direction === "out" ? "-" : "+";
+      const amountLabel = pretty ? `${sign}${pretty}` : undefined;
+
+      return {
+        kind: "token_transfer",
+        label: direction === "in" ? "Received Token" : "Sent Token",
+        direction,
+        amountLabel,
+        counterparty: direction === "in" ? src || undefined : dst || undefined,
+      };
+    }
+  }
+  return null;
+}
+
+/** Strip trailing zeros after the decimal point, keeping at least `keep` digits. */
+function trimTrailingZeros(s: string, keep = 2): string {
+  if (!s.includes(".")) return s;
+  let [whole, frac] = s.split(".");
+  if (frac.length <= keep) return s;
+  frac = frac.replace(/0+$/, "");
+  if (frac.length < keep) frac = frac.padEnd(keep, "0");
+  return frac ? `${whole}.${frac}` : whole;
+}
+
 function summarizeTokenTransfer(
   tx: any,
   archAddress: string
@@ -163,7 +266,6 @@ function summarizeTokenTransfer(
  */
 export function summarizeArchTx(tx: any, archAddress: string): ArchTxSummary {
   const failed = isFailedStatus(tx?.status);
-  const labels = asArray<string>(tx?.instructions).filter((s) => typeof s === "string");
 
   // Token transfer takes priority when the row carries decoded data, even
   // for failed txs -- we still want to know "Sent Token (failed)" rather
@@ -172,6 +274,17 @@ export function summarizeArchTx(tx: any, archAddress: string): ArchTxSummary {
   if (tokenSummary) {
     return { kind: "token_transfer", ...tokenSummary };
   }
+
+  // After being merged with /transactions/:txid detail, `instructions`
+  // becomes an array of decoded objects. When that's the case we can read
+  // source/destination/amount directly for system + token transfers.
+  const decodedSummary = summarizeFromDecodedInstructions(tx?.instructions, archAddress);
+  if (decodedSummary) {
+    return decodedSummary;
+  }
+
+  // Fall back to chip-label classification when only v2 strings are present.
+  const labels = asArray<string>(tx?.instructions).filter((s) => typeof s === "string");
 
   // Consult the chip labels (best-effort match against both prefixed and
   // bare forms emitted by v2).

@@ -9,10 +9,23 @@ export function formatBtc(sats: number): string {
   return `${(sats / 1e8).toFixed(8)} BTC`;
 }
 
+/** Just the numeric portion, e.g. "0.00000000". Used in places that show
+ *  the unit separately (asset rows already render "BTC" in the sub line). */
+export function formatBtcAmount(sats: number): string {
+  return (sats / 1e8).toFixed(8);
+}
+
 export function formatArch(lamports: number | string): string {
   const n = typeof lamports === "string" ? parseInt(lamports, 10) : lamports;
   if (isNaN(n)) return "0 ARCH";
   return `${(n / 1e9).toFixed(4)} ARCH`;
+}
+
+/** Just the numeric portion, e.g. "0.0010". Counterpart to formatBtcAmount. */
+export function formatArchAmount(lamports: number | string): string {
+  const n = typeof lamports === "string" ? parseInt(lamports, 10) : lamports;
+  if (isNaN(n)) return "0";
+  return (n / 1e9).toFixed(4);
 }
 
 export function formatTokenAmount(amount: number, decimals: number): string {
