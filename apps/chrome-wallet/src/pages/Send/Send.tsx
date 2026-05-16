@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Turnkey } from "@turnkey/sdk-browser";
 import * as bitcoin from "bitcoinjs-lib";
 import { useWallet } from "../../hooks/useWallet";
@@ -56,12 +56,15 @@ interface SendProps {
 
 export default function Send({ networkStatus }: SendProps) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { activeAccount, state } = useWallet();
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [asset, setAsset] = useState<AssetType | null>(null);
   const [selectedToken, setSelectedToken] = useState<TokenHolding | null>(null);
   const [recipient, setRecipient] = useState("");
   const [amount, setAmount] = useState("");
+  const presetMint = searchParams.get("mint");
+  const presetAsset = searchParams.get("asset");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [txResult, setTxResult] = useState<{ txid: string; rawTxid: string } | null>(null);
@@ -163,6 +166,28 @@ export default function Send({ networkStatus }: SendProps) {
     loadBalances();
     return () => clearTimeout(timeout);
   }, [activeAccount, state.network]);
+
+  // Apply preset asset/mint once (deep link from Token Detail). Only triggers
+  // on step 1 so we don't yank the user out of a flow they started.
+  useEffect(() => {
+    if (step !== 1 || !presetAsset) return;
+    if (presetAsset === "apl" && presetMint) {
+      const match = tokensHeld.find((t) => t.mint === presetMint);
+      if (!match) return;
+      setSelectedToken(match);
+      setAsset("apl");
+      setStep(2);
+      setSearchParams({}, { replace: true });
+    } else if (presetAsset === "arch") {
+      setAsset("arch");
+      setStep(2);
+      setSearchParams({}, { replace: true });
+    } else if (presetAsset === "btc") {
+      setAsset("btc");
+      setStep(2);
+      setSearchParams({}, { replace: true });
+    }
+  }, [step, presetAsset, presetMint, tokensHeld, setSearchParams]);
 
   const signWithPasskey = useCallback(
     async (signingRequestId: string, payloadHex: string): Promise<string> => {
