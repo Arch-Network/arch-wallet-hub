@@ -30,6 +30,61 @@ interface TxItem {
   timestamp: string;
   status: TxStatus;
   explorerUrl: string;
+  direction: "in" | "out" | "neutral";
+  amountLabel: string | null;
+}
+
+const TRANSFER_INSTRUCTIONS = new Set([
+  "Transfer",
+  "TransferChecked",
+  "MintTo",
+  "MintToChecked",
+  "Burn",
+  "BurnChecked",
+]);
+
+function isTokenTransferTx(tx: any): boolean {
+  if (tx?.token_transfer && typeof tx.token_transfer === "object") return true;
+  const instructions = tx?.instructions;
+  if (Array.isArray(instructions)) {
+    return instructions.some((label) => typeof label === "string" && TRANSFER_INSTRUCTIONS.has(label));
+  }
+  return false;
+}
+
+function formatRawAmountWithDecimals(raw: string, decimals: number): string {
+  try {
+    const n = BigInt(raw);
+    if (decimals <= 0) return n.toString();
+    const s = n.toString().padStart(decimals + 1, "0");
+    const whole = s.slice(0, -decimals);
+    const frac = s.slice(-decimals).replace(/0+$/, "");
+    return frac ? `${whole}.${frac}` : whole;
+  } catch {
+    return raw;
+  }
+}
+
+function deriveTransfer(
+  tx: any,
+  tokenAccount: string,
+  tokenDecimals: number,
+): { direction: "in" | "out" | "neutral"; amountLabel: string | null } {
+  const tt = tx?.token_transfer;
+  if (!tt || typeof tt !== "object") return { direction: "neutral", amountLabel: null };
+
+  const src = (tt.source_account ?? "") as string;
+  const dst = (tt.destination_account ?? "") as string;
+  const direction: "in" | "out" | "neutral" =
+    dst === tokenAccount ? "in" : src === tokenAccount ? "out" : "neutral";
+
+  const rawAmount = (tt.amount ?? "") as string;
+  const decimals = typeof tt.decimals === "number" ? tt.decimals : tokenDecimals;
+  if (!rawAmount) return { direction, amountLabel: null };
+
+  const pretty = formatRawAmountWithDecimals(String(rawAmount), decimals);
+  const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
+  return { direction, amountLabel: `${sign}${pretty}` };
 }
 
 function BackArrow() {
@@ -157,11 +212,15 @@ export default function TokenDetail() {
       try {
         const indexer = await getIndexer();
         const archExplorer = `${explorerBase}/tx/`;
-        const res = await indexer.getAccountTransactions(token.tokenAccount, 20);
+        // Fetch a deeper page so we have enough material after filtering out
+        // non-transfer instructions like CreateAssociatedTokenAccount.
+        const res = await indexer.getAccountTransactions(token.tokenAccount, 50);
         const txs = (res?.transactions ?? []) as any[];
 
+        const transferOnly = txs.filter(isTokenTransferTx);
+
         const detailed = await Promise.all(
-          txs.map(async (tx) => {
+          transferOnly.map(async (tx) => {
             try {
               const detail = await indexer.getTransactionDetail(tx.txid);
               return { ...tx, ...(detail as Record<string, unknown>) };
@@ -171,13 +230,18 @@ export default function TokenDetail() {
           })
         );
 
-        const items: TxItem[] = detailed.map((tx: any) => ({
-          txid: tx.txid,
-          displayTxid: truncateAddress(formatArchId(tx.txid), 8),
-          timestamp: tx.created_at || "",
-          status: normalizeArchStatus(tx),
-          explorerUrl: `${archExplorer}${tx.txid}`,
-        }));
+        const items: TxItem[] = detailed.map((tx: any) => {
+          const { direction, amountLabel } = deriveTransfer(tx, token.tokenAccount, token.decimals);
+          return {
+            txid: tx.txid,
+            displayTxid: truncateAddress(formatArchId(tx.txid), 8),
+            timestamp: tx.created_at || "",
+            status: normalizeArchStatus(tx),
+            explorerUrl: `${archExplorer}${tx.txid}`,
+            direction,
+            amountLabel,
+          };
+        });
 
         if (!cancelled) {
           setTransactions(items);
@@ -192,7 +256,7 @@ export default function TokenDetail() {
     })();
 
     return () => { cancelled = true; };
-  }, [token?.tokenAccount, explorerBase]);
+  }, [token?.tokenAccount, token?.decimals, explorerBase]);
 
   const handleSend = useCallback(() => {
     if (!token) return;
@@ -286,33 +350,48 @@ export default function TokenDetail() {
             No transactions yet
           </div>
         ) : (
-          transactions.map((tx) => (
-            <a
-              key={tx.txid}
-              href={tx.explorerUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{ textDecoration: "none", color: "inherit" }}
-            >
-              <div className="tx-row" style={{ cursor: "pointer" }}>
-                <div className="tx-dir apl">
-                  <ArchIcon size={16} color="#7b68ee" />
-                </div>
-                <div className="tx-info">
-                  <div className="tx-label">
-                    <span className="tx-direction-tag" style={{ color: "#7b68ee" }}>APL Token{" "}</span>
-                    {tx.displayTxid}
+          transactions.map((tx) => {
+            const dirClass =
+              tx.direction === "in" ? "inbound" : tx.direction === "out" ? "outbound" : "apl";
+            const dirLabel =
+              tx.direction === "in" ? "Received" : tx.direction === "out" ? "Sent" : "Transfer";
+            const amountClass =
+              tx.direction === "in" ? "inbound" : tx.direction === "out" ? "outbound" : "";
+            return (
+              <a
+                key={tx.txid}
+                href={tx.explorerUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ textDecoration: "none", color: "inherit" }}
+              >
+                <div className="tx-row" style={{ cursor: "pointer" }}>
+                  <div className={`tx-dir ${dirClass}`}>
+                    {tx.direction === "in" ? "↓" : tx.direction === "out" ? "↑" : <ArchIcon size={14} color="#7b68ee" />}
                   </div>
-                  <div className="tx-time">
-                    {tx.timestamp ? formatTimestamp(tx.timestamp) : "Time unavailable"}
+                  <div className="tx-info">
+                    <div className="tx-label">
+                      <span className="tx-direction-tag">{dirLabel}</span>{" "}
+                      <span style={{ color: "var(--text-muted)" }}>{tx.displayTxid}</span>
+                    </div>
+                    <div className="tx-time">
+                      {tx.timestamp ? formatTimestamp(tx.timestamp) : "Time unavailable"}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                    {tx.amountLabel && (
+                      <span className={`tx-amount ${amountClass}`}>
+                        {tx.amountLabel} {token.symbol}
+                      </span>
+                    )}
+                    <span className={`badge ${statusBadgeClass(tx.status)}`}>
+                      {statusLabel(tx.status)}
+                    </span>
                   </div>
                 </div>
-                <span className={`badge ${statusBadgeClass(tx.status)}`}>
-                  {statusLabel(tx.status)}
-                </span>
-              </div>
-            </a>
-          ))
+              </a>
+            );
+          })
         )}
       </div>
 
