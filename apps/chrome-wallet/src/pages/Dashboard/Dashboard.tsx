@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
+import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, timestampToMs } from "../../utils/format";
+import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, timestampToMs, formatBtcUsd } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
+import { summarizeArchTx, type ArchTxSummary } from "../../utils/arch-tx-summary";
 import ArchIcon from "../../components/ArchIcon";
 
 interface TokenBalance {
@@ -23,8 +25,15 @@ interface TokenBalance {
 interface RecentTx {
   txid: string;
   type: "arch" | "btc";
-  direction: "in" | "out" | "unknown";
-  amount?: string;
+  direction: "in" | "out" | "unknown" | "neutral";
+  /** Primary line, e.g. "Sent BTC", "Received Token", "Arch Transaction". */
+  label: string;
+  /** Signed pre-formatted amount, e.g. "+0.00012345 BTC" or "-1024 APL". */
+  amountLabel?: string;
+  /** USD equivalent shown beneath the amount, e.g. "$12.34". Mainnet only. */
+  usdSubtitle?: string;
+  /** Raw amount in sats for BTC, used to compute USD lazily once price loads. */
+  sats?: number;
   timestamp?: string;
   status: string;
 }
@@ -74,7 +83,13 @@ function SkeletonTxRow() {
   );
 }
 
-function parseRecentBtcTx(tx: any, walletAddress: string): Pick<RecentTx, "direction" | "amount"> {
+interface BtcTxDelta {
+  direction: "in" | "out" | "unknown";
+  /** Net change for this address in sats. Always >= 0 (sign comes from direction). */
+  sats: number;
+}
+
+function parseRecentBtcTx(tx: any, walletAddress: string): BtcTxDelta {
   let sentSats = 0;
   let receivedSats = 0;
   const vin = Array.isArray(tx?.vin) ? tx.vin : [];
@@ -103,16 +118,23 @@ function parseRecentBtcTx(tx: any, walletAddress: string): Pick<RecentTx, "direc
     }
   }
 
-  const direction =
-    sentSats > 0 ? "out" :
-    receivedSats > 0 ? "in" :
-    "unknown";
-  const amountSats = sentSats > 0 ? Math.max(sentSats - receivedSats, 0) : receivedSats;
+  const direction: BtcTxDelta["direction"] =
+    sentSats > 0 ? "out" : receivedSats > 0 ? "in" : "unknown";
+  const sats = sentSats > 0 ? Math.max(sentSats - receivedSats, 0) : receivedSats;
 
-  return {
-    direction,
-    amount: amountSats > 0 ? formatBtc(amountSats) : undefined,
-  };
+  return { direction, sats };
+}
+
+function buildBtcAmountLabel(direction: BtcTxDelta["direction"], sats: number): string | undefined {
+  if (sats <= 0) return undefined;
+  const sign = direction === "out" ? "-" : "+";
+  return `${sign}${formatBtc(sats)}`;
+}
+
+function btcLabel(direction: BtcTxDelta["direction"]): string {
+  if (direction === "in") return "Received BTC";
+  if (direction === "out") return "Sent BTC";
+  return "BTC Transaction";
 }
 
 function isBtcTxConfirmed(tx: any): boolean {
@@ -125,6 +147,7 @@ function isBtcTxConfirmed(tx: any): boolean {
 export default function Dashboard() {
   const { activeAccount, state } = useWallet();
   const navigate = useNavigate();
+  const { price: btcUsd } = useBtcUsdPrice();
 
   const [btcBalance, setBtcBalance] = useState<number | null>(null);
   const [btcPending, setBtcPending] = useState<number>(0);
@@ -206,10 +229,14 @@ export default function Dashboard() {
           const txid = tx?.txid as string | undefined;
           if (!txid) continue;
           const timeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
+          const { direction, sats } = parseRecentBtcTx(tx, btcAddrForNetwork);
           btcTxItems.push({
             txid,
             type: "btc",
-            ...parseRecentBtcTx(tx, btcAddrForNetwork),
+            direction,
+            sats,
+            label: btcLabel(direction),
+            amountLabel: buildBtcAmountLabel(direction, sats),
             timestamp: timeMs != null ? String(timeMs) : undefined,
             status: isBtcTxConfirmed(tx) ? "confirmed" : "pending",
           });
@@ -220,7 +247,7 @@ export default function Dashboard() {
 
       const archTxItems: RecentTx[] = (overview?.arch?.recentTransactions?.transactions ?? [])
         .slice(0, 5)
-        .map((tx: any) => {
+        .map((tx: any): RecentTx => {
           let statusStr = "confirmed";
           const st = tx.status;
           if (typeof st === "string") {
@@ -232,10 +259,14 @@ export default function Dashboard() {
           } else if (!tx.block_height) {
             statusStr = "pending";
           }
+
+          const summary: ArchTxSummary = summarizeArchTx(tx, archAddr);
           return {
             txid: tx.txid,
-            type: "arch" as const,
-            direction: "unknown" as const,
+            type: "arch",
+            direction: summary.direction,
+            label: summary.label,
+            amountLabel: summary.amountLabel,
             timestamp: tx.created_at,
             status: statusStr,
           };
@@ -417,7 +448,10 @@ export default function Dashboard() {
         <SkeletonActions />
       )}
 
-      {/* Assets section -- progressive loading */}
+      {/* Portfolio + Recent Activity. The grid wrapper collapses to a
+          single column on narrow viewports and splits side-by-side on
+          wide side panels (>= 880px). */}
+      <div className="dashboard-grid">
       <div className="section">
         <div className="section-title">Portfolio</div>
         <div className="card">
@@ -432,6 +466,11 @@ export default function Dashboard() {
                 {btcPending !== 0 ? (
                   <>
                     <div className="asset-balance">{formatBtc((btcBalance ?? 0) + btcPending)}</div>
+                    {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd) && (
+                      <div className="asset-balance-usd">
+                        {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd)}
+                      </div>
+                    )}
                     <div className="asset-balance-breakdown">
                       <span className="asset-confirmed">{formatBtc(btcBalance ?? 0)} confirmed</span>
                       <span className={`asset-pending-line ${btcPending > 0 ? "incoming" : "outgoing"}`}>
@@ -440,7 +479,12 @@ export default function Dashboard() {
                     </div>
                   </>
                 ) : (
-                  <div className="asset-balance">{formatBtc(btcBalance ?? 0)}</div>
+                  <>
+                    <div className="asset-balance">{formatBtc(btcBalance ?? 0)}</div>
+                    {formatBtcUsd(btcBalance ?? 0, btcUsd) && (
+                      <div className="asset-balance-usd">{formatBtcUsd(btcBalance ?? 0, btcUsd)}</div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -520,31 +564,7 @@ export default function Dashboard() {
         <div className="card">
           {txsLoaded ? (
             (recentTxs ?? []).length > 0 ? (
-              recentTxs!.map((tx) => (
-                <div className="tx-row" key={`${tx.type}-${tx.txid}`}>
-                  <div className={`tx-dir ${tx.type === "btc" ? (tx.direction === "in" ? "inbound" : "outbound") : "arch"}`}>
-                    {tx.type === "btc" ? "₿" : <ArchIcon size={14} />}
-                  </div>
-                  <div className="tx-info">
-                    <div className="tx-label">
-                      {tx.type === "btc" && tx.amount && (
-                        <span className="tx-direction-tag">{tx.direction === "in" ? "+" : ""}{tx.amount}{" "}</span>
-                      )}
-                      {truncateAddress(tx.type === "arch" ? formatArchId(tx.txid) : tx.txid, 8)}
-                    </div>
-                    <div className="tx-time">
-                      {tx.timestamp
-                        ? formatTimestamp(tx.timestamp)
-                        : tx.status === "pending" || tx.status === "unconfirmed"
-                          ? "Pending"
-                          : "Time unavailable"}
-                    </div>
-                  </div>
-                  <span className={`badge ${tx.status === "confirmed" || tx.status === "processed" ? "badge-success" : tx.status === "failed" ? "badge-failed" : "badge-pending"}`}>
-                    {tx.status}
-                  </span>
-                </div>
-              ))
+              recentTxs!.map((tx) => renderActivityRow(tx, btcUsd))
             ) : (
               <div style={{ padding: 12, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
                 No recent transactions
@@ -559,6 +579,79 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+      </div>
     </>
+  );
+}
+
+function ArrowDown() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 5v14" />
+      <path d="M19 12l-7 7-7-7" />
+    </svg>
+  );
+}
+
+function ArrowUp() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 19V5" />
+      <path d="M5 12l7-7 7 7" />
+    </svg>
+  );
+}
+
+function renderActivityRow(tx: RecentTx, btcUsd: number | null) {
+  const isSuccess = tx.status === "confirmed" || tx.status === "processed";
+  const isFailed = tx.status === "failed" || tx.status === "rejected";
+  const showBadge = !isSuccess; // success rows go uncluttered
+
+  const dirClass =
+    tx.direction === "in" ? "inbound" :
+    tx.direction === "out" ? "outbound" :
+    tx.type === "btc" ? "neutral" : "arch";
+
+  const usdSubtitle = tx.type === "btc" && tx.sats != null
+    ? formatBtcUsd(tx.sats, btcUsd)
+    : undefined;
+
+  return (
+    <div className="tx-row tx-row-activity" key={`${tx.type}-${tx.txid}`}>
+      <div className={`tx-dir ${dirClass}`}>
+        {tx.direction === "in" ? <ArrowDown />
+          : tx.direction === "out" ? <ArrowUp />
+          : tx.type === "btc" ? <span style={{ fontSize: 14, lineHeight: 1 }}>₿</span>
+          : <ArchIcon size={14} />}
+      </div>
+      <div className="tx-info">
+        <div className="tx-activity-title">
+          <span className="tx-activity-label">{tx.label}</span>
+          {tx.amountLabel && (
+            <span className={`tx-activity-amount ${tx.direction === "out" ? "outbound" : tx.direction === "in" ? "inbound" : ""}`}>
+              {tx.amountLabel}
+            </span>
+          )}
+        </div>
+        <div className="tx-activity-meta">
+          <span className="tx-time">
+            {tx.timestamp
+              ? formatTimestamp(tx.timestamp)
+              : tx.status === "pending" || tx.status === "unconfirmed"
+                ? "Pending"
+                : "Time unavailable"}
+          </span>
+          {usdSubtitle && <span className="tx-activity-usd">{usdSubtitle}</span>}
+          <span className="tx-activity-ref mono">
+            {truncateAddress(tx.type === "arch" ? formatArchId(tx.txid) : tx.txid, 6)}
+          </span>
+        </div>
+      </div>
+      {showBadge && (
+        <span className={`badge ${isFailed ? "badge-failed" : "badge-pending"}`}>
+          {tx.status}
+        </span>
+      )}
+    </div>
   );
 }

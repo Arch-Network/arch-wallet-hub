@@ -17,7 +17,8 @@ import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId } from "../../utils/format";
+import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd } from "../../utils/format";
+import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import { walletStore } from "../../state/wallet-store";
 import ArchIcon from "../../components/ArchIcon";
@@ -54,10 +55,16 @@ interface SendProps {
   networkStatus?: NetworkStatus;
 }
 
+function btcUsdSubtitle(sats: number, btcUsd: number | null): string | null {
+  if (sats <= 0) return null;
+  return formatBtcUsd(sats, btcUsd);
+}
+
 export default function Send({ networkStatus }: SendProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { activeAccount, state } = useWallet();
+  const { price: btcUsd } = useBtcUsdPrice();
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [asset, setAsset] = useState<AssetType | null>(null);
   const [selectedToken, setSelectedToken] = useState<TokenHolding | null>(null);
@@ -464,6 +471,11 @@ export default function Send({ networkStatus }: SendProps) {
                     ? formatBtc(btcConfirmed + btcPending)
                     : "Loading..."}
                 </div>
+                {btcLoaded && btcUsdSubtitle(btcConfirmed + btcPending, btcUsd) && (
+                  <div className="send-asset-usd">
+                    {btcUsdSubtitle(btcConfirmed + btcPending, btcUsd)}
+                  </div>
+                )}
                 {btcLoaded && btcPending !== 0 && (
                   <div className={`send-asset-pending ${btcPending > 0 ? "incoming" : "outgoing"}`}>
                     {btcPending > 0 ? "+" : ""}{(btcPending / 1e8).toFixed(8)} pending
@@ -615,6 +627,15 @@ export default function Send({ networkStatus }: SendProps) {
               </button>
             )}
           </div>
+          {asset === "btc" && Number(amount) > 0 && (() => {
+            const sats = Math.round(Number(amount) * 1e8);
+            const usd = btcUsdSubtitle(sats, btcUsd);
+            return usd ? (
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, fontFamily: "var(--font-mono)" }}>
+                {"\u2248"} {usd}
+              </div>
+            ) : null;
+          })()}
         </div>
         {asset === "btc" && btcPending !== 0 && (
           <div style={{

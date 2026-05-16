@@ -22,6 +22,26 @@ export function formatTokenAmount(amount: number, decimals: number): string {
   });
 }
 
+/** Format a USD amount with smart precision: < $1 -> 4 decimals, otherwise 2. */
+export function formatUsd(value: number): string {
+  if (!Number.isFinite(value)) return "$0.00";
+  const abs = Math.abs(value);
+  const digits = abs > 0 && abs < 1 ? 4 : 2;
+  return value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+/** Convert sats + BTC-USD price into a formatted USD string, or null if price is missing. */
+export function formatBtcUsd(sats: number, btcUsd: number | null | undefined): string | null {
+  if (btcUsd == null || !Number.isFinite(btcUsd) || btcUsd <= 0) return null;
+  const usd = (sats / 1e8) * btcUsd;
+  return formatUsd(usd);
+}
+
 export function hexToBase58(hex: string): string {
   try {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex;

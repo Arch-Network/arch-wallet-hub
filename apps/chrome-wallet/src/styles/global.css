@@ -845,9 +845,46 @@ a {
   color: var(--warning);
 }
 
+.send-asset-usd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
 @keyframes pulse-pending {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
+}
+
+/* ═══════════════════ Dashboard Grid ═══════════════════ */
+
+.dashboard-grid {
+  display: contents;
+}
+
+/* Two-column layout once we have real space: Portfolio on the left,
+   Recent Activity on the right. Only fires in the side panel since the
+   popup is fixed at 400px. */
+@media (min-width: 880px) {
+  html[data-mode="sidepanel"] .dashboard-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 18px;
+    align-items: start;
+  }
+
+  html[data-mode="sidepanel"] .dashboard-grid > .section {
+    margin-bottom: 0;
+  }
+}
+
+/* USD subtitle next to fiat-priced balances (BTC only today) */
+.asset-balance-usd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 
 /* ═══════════════════ Transaction Rows ═══════════════════ */
@@ -944,6 +981,74 @@ a {
 
 .tx-amount.outbound { color: var(--danger); }
 .tx-amount.inbound { color: var(--success); }
+
+/* Refreshed activity row used on the Dashboard */
+.tx-row-activity {
+  padding: 11px 0;
+}
+
+.tx-row-activity .tx-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tx-activity-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tx-activity-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tx-activity-amount {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.tx-activity-amount.inbound { color: var(--success); }
+.tx-activity-amount.outbound { color: var(--danger); }
+
+.tx-activity-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tx-activity-meta .tx-time {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tx-activity-usd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.tx-activity-usd::before {
+  content: "\00b7";  /* middle dot */
+  margin-right: 6px;
+  opacity: 0.6;
+}
+
+.tx-activity-ref {
+  margin-left: auto;
+  opacity: 0.6;
+}
 
 /* ═══════════════════ Badges ═══════════════════ */
 

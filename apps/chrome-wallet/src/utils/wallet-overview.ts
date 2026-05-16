@@ -92,7 +92,14 @@ export async function fetchWalletOverview(
   const hasTxs = (archAccountData?.transaction_count ?? 0) > 0;
 
   const archTxs = hasTxs
-    ? await raceWithTimeout(client.getAccountTransactions(params.archAccountAddress, 10), FAST_TIMEOUT_MS)
+    ? await raceWithTimeout(
+        // v2 returns the chip labels + decoded summaries we need to render
+        // a richer activity feed on the dashboard. Falls back to v1 on error.
+        client.getAccountTransactionsV2(params.archAccountAddress, 10).catch(() =>
+          client.getAccountTransactions(params.archAccountAddress, 10)
+        ),
+        FAST_TIMEOUT_MS
+      )
     : { value: EMPTY_TX_RESPONSE, timedOut: false as const };
 
   const displayArchAddress = archAccountData?.address ?? params.archAccountAddress;

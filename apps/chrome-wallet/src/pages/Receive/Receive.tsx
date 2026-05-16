@@ -1,9 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useWallet } from "../../hooks/useWallet";
+import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { formatUsd } from "../../utils/format";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 
@@ -11,6 +13,7 @@ type Tab = "btc" | "arch";
 
 export default function Receive() {
   const { activeAccount, state } = useWallet();
+  const { price: btcUsd } = useBtcUsdPrice();
   const [tab, setTab] = useState<Tab>("btc");
   const [archAddress, setArchAddress] = useState<string>("");
 
@@ -68,6 +71,11 @@ export default function Receive() {
         </div>
 
         <div className="input-label" style={{ textAlign: "center" }}>{label}</div>
+        {tab === "btc" && btcUsd && (
+          <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+            1 BTC {"\u2248"} {formatUsd(btcUsd)}
+          </div>
+        )}
 
         {address ? (
           <div
