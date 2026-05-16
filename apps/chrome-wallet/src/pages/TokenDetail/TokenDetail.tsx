@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
-import { formatTokenAmount, formatArchId, truncateAddress, formatTimestamp } from "../../utils/format";
+import { formatTokenAmount, truncateAddress, formatTimestamp } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import {
   type TxStatus,
@@ -26,12 +26,13 @@ interface TokenDetailData {
 
 interface TxItem {
   txid: string;
-  displayTxid: string;
   timestamp: string;
   status: TxStatus;
   explorerUrl: string;
   direction: "in" | "out" | "neutral";
   amountLabel: string | null;
+  kind: "transfer" | "mint" | "burn";
+  counterparty: string | null;
 }
 
 const TRANSFER_INSTRUCTION_LABELS = new Set([
@@ -96,6 +97,8 @@ interface DecodedTransfer {
   direction: "in" | "out" | "neutral";
   amount: bigint;
   decimals: number | null;
+  kind: "transfer" | "mint" | "burn";
+  counterparty: string | null;
 }
 
 function toBigInt(v: unknown): bigint | null {
@@ -125,10 +128,15 @@ function decodeTransferFromInstructions(
     const amount = toBigInt(decoded.amount);
     if (amount === null) continue;
 
-    const decimals =
-      typeof decoded.decimals === "number" ? decoded.decimals : null;
+    const decimals = typeof decoded.decimals === "number" ? decoded.decimals : null;
 
-    return { direction, amount, decimals };
+    let kind: "transfer" | "mint" | "burn" = "transfer";
+    if (action.startsWith("Token: MintTo")) kind = "mint";
+    else if (action.startsWith("Token: Burn")) kind = "burn";
+
+    const counterparty = direction === "in" ? (src || null) : (dst || null);
+
+    return { direction, amount, decimals, kind, counterparty };
   }
   return null;
 }
@@ -179,7 +187,7 @@ function deriveTransferFromRow(
   tx: any,
   tokenAccount: string,
   tokenDecimals: number,
-): { direction: "in" | "out" | "neutral"; amountLabel: string | null } | null {
+): { direction: "in" | "out" | "neutral"; amountLabel: string | null; kind: "transfer" | "mint" | "burn"; counterparty: string | null } | null {
   const tt = tx?.token_transfer;
   if (!tt || typeof tt !== "object") return null;
 
@@ -190,21 +198,23 @@ function deriveTransferFromRow(
 
   const rawAmount = (tt.amount ?? "") as string;
   const decimals = typeof tt.decimals === "number" ? tt.decimals : tokenDecimals;
-  if (!rawAmount) return { direction, amountLabel: null };
-
-  const pretty = formatRawAmountWithDecimals(String(rawAmount), decimals);
+  const pretty = rawAmount ? formatRawAmountWithDecimals(String(rawAmount), decimals) : null;
   const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
-  return { direction, amountLabel: `${sign}${pretty}` };
+  const counterparty = direction === "in" ? (src || null) : (dst || null);
+
+  return {
+    direction,
+    amountLabel: pretty ? `${sign}${pretty}` : null,
+    kind: "transfer",
+    counterparty,
+  };
 }
 
-function buildAmountLabel(
-  decoded: DecodedTransfer,
-  fallbackDecimals: number,
-): { direction: "in" | "out" | "neutral"; amountLabel: string } {
+function buildAmountLabel(decoded: DecodedTransfer, fallbackDecimals: number): string {
   const decimals = decoded.decimals ?? fallbackDecimals;
   const pretty = formatRawAmountWithDecimals(decoded.amount.toString(), decimals);
   const sign = decoded.direction === "out" ? "-" : decoded.direction === "in" ? "+" : "";
-  return { direction: decoded.direction, amountLabel: `${sign}${pretty}` };
+  return `${sign}${pretty}`;
 }
 
 function BackArrow() {
@@ -254,6 +264,7 @@ export default function TokenDetail() {
   const [loadingToken, setLoadingToken] = useState(true);
   const [loadingTxs, setLoadingTxs] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
 
   const isTestnet = state.network === "testnet4";
   const explorerBase = isTestnet
@@ -283,7 +294,8 @@ export default function TokenDetail() {
 
         const base: TokenDetailData = {
           mint: raw.mint_address as string,
-          symbol: (raw.symbol as string) || truncateAddress(raw.mint_address as string, 4),
+          // Only treat as a real symbol if the indexer/RPC gave us one.
+          symbol: (raw.symbol as string) || "",
           name: (raw.name as string) || "APL Token",
           balance: Number(raw.amount) || 0,
           decimals: raw.decimals ?? 0,
@@ -398,22 +410,28 @@ export default function TokenDetail() {
         const items: TxItem[] = kept.map(({ tx, fromRow, decoded }) => {
           let direction: "in" | "out" | "neutral" = "neutral";
           let amountLabel: string | null = null;
+          let kind: "transfer" | "mint" | "burn" = "transfer";
+          let counterparty: string | null = null;
           if (fromRow) {
             direction = fromRow.direction;
             amountLabel = fromRow.amountLabel;
+            kind = fromRow.kind;
+            counterparty = fromRow.counterparty;
           } else if (decoded) {
-            const built = buildAmountLabel(decoded, token.decimals);
-            direction = built.direction;
-            amountLabel = built.amountLabel;
+            direction = decoded.direction;
+            amountLabel = buildAmountLabel(decoded, token.decimals);
+            kind = decoded.kind;
+            counterparty = decoded.counterparty;
           }
           return {
             txid: tx.txid,
-            displayTxid: truncateAddress(formatArchId(tx.txid), 8),
             timestamp: tx.created_at || "",
             status: normalizeArchStatus(tx),
             explorerUrl: `${archExplorer}${tx.txid}`,
             direction,
             amountLabel,
+            kind,
+            counterparty,
           };
         });
 
@@ -485,21 +503,23 @@ export default function TokenDetail() {
           <BackArrow />
           <span>Tokens</span>
         </button>
-        <div className="section-title" style={{ margin: 0 }}>{token.symbol}</div>
+        <div className="section-title" style={{ margin: 0 }}>{token.symbol || token.name}</div>
         <div style={{ width: 60 }} />
       </div>
 
       <div className="token-detail-hero">
         <div className="token-detail-icon">
           {token.image ? (
-            <img src={token.image} alt={token.symbol} style={{ width: 48, height: 48, borderRadius: "50%" }} />
+            <img src={token.image} alt={token.name} style={{ width: 48, height: 48, borderRadius: "50%" }} />
           ) : (
             <ArchIcon size={28} color="#7b68ee" />
           )}
         </div>
         <div className="token-detail-name">{token.name}</div>
-        <div className="token-detail-sub">{token.symbol}</div>
-        <div className="token-detail-balance">{token.uiAmount}</div>
+        <div className="token-detail-balance">
+          {token.uiAmount}
+          {token.symbol && <span className="token-detail-balance-symbol"> {token.symbol}</span>}
+        </div>
       </div>
 
       <div className="token-detail-actions">
@@ -527,40 +547,41 @@ export default function TokenDetail() {
           transactions.map((tx) => {
             const dirClass =
               tx.direction === "in" ? "inbound" : tx.direction === "out" ? "outbound" : "apl";
-            const dirLabel =
-              tx.direction === "in" ? "Received" : tx.direction === "out" ? "Sent" : "Transfer";
             const amountClass =
               tx.direction === "in" ? "inbound" : tx.direction === "out" ? "outbound" : "";
+            const label =
+              tx.kind === "mint" ? "Minted"
+              : tx.kind === "burn" ? "Burned"
+              : tx.direction === "in" ? "Received"
+              : tx.direction === "out" ? "Sent"
+              : "Transfer";
+            const showStatus = tx.status !== "success" && tx.status !== "confirmed";
+            const arrow = tx.direction === "in" ? "↓" : tx.direction === "out" ? "↑" : "•";
             return (
               <a
                 key={tx.txid}
                 href={tx.explorerUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                style={{ textDecoration: "none", color: "inherit" }}
+                className="tx-row-link"
               >
-                <div className="tx-row" style={{ cursor: "pointer" }}>
-                  <div className={`tx-dir ${dirClass}`}>
-                    {tx.direction === "in" ? "↓" : tx.direction === "out" ? "↑" : <ArchIcon size={14} color="#7b68ee" />}
-                  </div>
+                <div className="tx-row tx-row-compact">
+                  <div className={`tx-dir ${dirClass}`}>{arrow}</div>
                   <div className="tx-info">
-                    <div className="tx-label">
-                      <span className="tx-direction-tag">{dirLabel}</span>{" "}
-                      <span style={{ color: "var(--text-muted)" }}>{tx.displayTxid}</span>
-                    </div>
+                    <div className="tx-label">{label}</div>
                     <div className="tx-time">
-                      {tx.timestamp ? formatTimestamp(tx.timestamp) : "Time unavailable"}
+                      {tx.timestamp ? formatTimestamp(tx.timestamp) : ""}
                     </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
+                  <div className="tx-amount-cell">
                     {tx.amountLabel && (
-                      <span className={`tx-amount ${amountClass}`}>
-                        {tx.amountLabel} {token.symbol}
+                      <span className={`tx-amount-big ${amountClass}`}>{tx.amountLabel}</span>
+                    )}
+                    {showStatus && (
+                      <span className={`badge ${statusBadgeClass(tx.status)}`}>
+                        {statusLabel(tx.status)}
                       </span>
                     )}
-                    <span className={`badge ${statusBadgeClass(tx.status)}`}>
-                      {statusLabel(tx.status)}
-                    </span>
                   </div>
                 </div>
               </a>
@@ -569,43 +590,33 @@ export default function TokenDetail() {
         )}
       </div>
 
-      <div className="section-title" style={{ marginTop: 16 }}>Details</div>
-      <div className="card">
-        <div className="token-detail-row">
-          <span className="token-detail-label">Mint</span>
-          <a
-            className="token-detail-value"
-            href={`${explorerBase}/tokens/${token.mint}`}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {truncateAddress(token.mint, 8)}
-          </a>
-          <CopyButton text={token.mint} />
-          <a
-            href={`${explorerBase}/tokens/${token.mint}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            title="View in explorer"
-            style={{ display: "flex", alignItems: "center", flexShrink: 0 }}
-          >
-            <ExplorerIcon />
-          </a>
-        </div>
-        {token.tokenAccount && (
+      <button
+        className="token-detail-toggle"
+        onClick={() => setShowDetails((v) => !v)}
+        aria-expanded={showDetails}
+      >
+        <span>Details</span>
+        <span className={`token-detail-toggle-chevron${showDetails ? " open" : ""}`}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </span>
+      </button>
+      {showDetails && (
+        <div className="card">
           <div className="token-detail-row">
-            <span className="token-detail-label">Account</span>
+            <span className="token-detail-label">Mint</span>
             <a
               className="token-detail-value"
-              href={`${explorerBase}/accounts/${token.tokenAccount}`}
+              href={`${explorerBase}/tokens/${token.mint}`}
               target="_blank"
               rel="noopener noreferrer"
             >
-              {truncateAddress(token.tokenAccount, 8)}
+              {truncateAddress(token.mint, 8)}
             </a>
-            <CopyButton text={token.tokenAccount} />
+            <CopyButton text={token.mint} />
             <a
-              href={`${explorerBase}/accounts/${token.tokenAccount}`}
+              href={`${explorerBase}/tokens/${token.mint}`}
               target="_blank"
               rel="noopener noreferrer"
               title="View in explorer"
@@ -614,12 +625,35 @@ export default function TokenDetail() {
               <ExplorerIcon />
             </a>
           </div>
-        )}
-        <div className="token-detail-row">
-          <span className="token-detail-label">Decimals</span>
-          <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{token.decimals}</span>
+          {token.tokenAccount && (
+            <div className="token-detail-row">
+              <span className="token-detail-label">Account</span>
+              <a
+                className="token-detail-value"
+                href={`${explorerBase}/accounts/${token.tokenAccount}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {truncateAddress(token.tokenAccount, 8)}
+              </a>
+              <CopyButton text={token.tokenAccount} />
+              <a
+                href={`${explorerBase}/accounts/${token.tokenAccount}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="View in explorer"
+                style={{ display: "flex", alignItems: "center", flexShrink: 0 }}
+              >
+                <ExplorerIcon />
+              </a>
+            </div>
+          )}
+          <div className="token-detail-row">
+            <span className="token-detail-label">Decimals</span>
+            <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{token.decimals}</span>
+          </div>
         </div>
-      </div>
+      )}
     </>
   );
 }
