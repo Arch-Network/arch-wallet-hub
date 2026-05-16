@@ -4,7 +4,6 @@ import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
 import { formatTokenAmount, truncateAddress } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
-import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 
 interface TokenHolding {
@@ -35,18 +34,6 @@ function ChevronIcon() {
   );
 }
 
-function ExplorerLink({ href }: { href: string }) {
-  return (
-    <a href={href} target="_blank" rel="noopener noreferrer" title="View in explorer" style={{ display: "flex", alignItems: "center", flexShrink: 0 }}>
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-        <polyline points="15 3 21 3 21 9" />
-        <line x1="10" y1="14" x2="21" y2="3" />
-      </svg>
-    </a>
-  );
-}
-
 function BackArrow() {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -61,7 +48,6 @@ export default function TokenList() {
   const { activeAccount, state } = useWallet();
   const [tokens, setTokens] = useState<TokenHolding[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedMint, setExpandedMint] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
@@ -158,11 +144,6 @@ export default function TokenList() {
     );
   }
 
-  const isTestnet = state.network === "testnet4";
-  const explorerBase = isTestnet
-    ? "https://explorer.arch.network/testnet"
-    : "https://explorer.arch.network/mainnet";
-
   const showSearch = tokens.length >= 5;
   const countLabel = searchQuery.trim()
     ? `${filtered.length} of ${tokens.length} tokens`
@@ -204,68 +185,37 @@ export default function TokenList() {
             No tokens match "{searchQuery}"
           </div>
         ) : (
-          filtered.map((tk) => {
-            const isExpanded = expandedMint === tk.mint;
-            return (
-              <div key={tk.mint}>
-                <div
-                  className="token-row"
-                  onClick={() => setExpandedMint(isExpanded ? null : tk.mint)}
-                >
-                  <div className="asset-icon apl" style={{ flexShrink: 0 }}>
-                    {tk.image ? (
-                      <img src={tk.image} alt={tk.symbol} style={{ width: 28, height: 28, borderRadius: "50%" }} />
-                    ) : (
-                      <ArchIcon size={18} color="#7b68ee" />
-                    )}
-                  </div>
-                  <div className="asset-info" style={{ flex: 1, minWidth: 0 }}>
-                    <div className="asset-name">{tk.name}</div>
-                    <div className="asset-sub">{tk.symbol}</div>
-                  </div>
-                  <div className="asset-balance">{tk.uiAmount}</div>
-                  <div className={`token-row-chevron${isExpanded ? " expanded" : ""}`}>
-                    <ChevronIcon />
-                  </div>
-                </div>
-
-                <div className={`token-detail-panel${isExpanded ? " open" : ""}`}>
-                  <div className="token-detail-row">
-                    <span className="token-detail-label">Mint</span>
-                    <a
-                      className="token-detail-value"
-                      href={`${explorerBase}/tokens/${tk.mint}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      {truncateAddress(tk.mint, 8)}
-                    </a>
-                    <CopyButton text={tk.mint} />
-                    <ExplorerLink href={`${explorerBase}/tokens/${tk.mint}`} />
-                  </div>
-                  {tk.tokenAccount && (
-                    <div className="token-detail-row">
-                      <span className="token-detail-label">Account</span>
-                      <a
-                        className="token-detail-value"
-                        href={`${explorerBase}/accounts/${tk.tokenAccount}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {truncateAddress(tk.tokenAccount, 8)}
-                      </a>
-                      <CopyButton text={tk.tokenAccount} />
-                      <ExplorerLink href={`${explorerBase}/accounts/${tk.tokenAccount}`} />
-                    </div>
-                  )}
-                  <div className="token-detail-row">
-                    <span className="token-detail-label">Decimals</span>
-                    <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{tk.decimals}</span>
-                  </div>
-                </div>
+          filtered.map((tk) => (
+            <div
+              key={tk.mint}
+              className="token-row"
+              role="button"
+              tabIndex={0}
+              onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  navigate(`/tokens/${encodeURIComponent(tk.mint)}`);
+                }
+              }}
+            >
+              <div className="asset-icon apl" style={{ flexShrink: 0 }}>
+                {tk.image ? (
+                  <img src={tk.image} alt={tk.symbol} style={{ width: 28, height: 28, borderRadius: "50%" }} />
+                ) : (
+                  <ArchIcon size={18} color="#7b68ee" />
+                )}
               </div>
-            );
-          })
+              <div className="asset-info" style={{ flex: 1, minWidth: 0 }}>
+                <div className="asset-name">{tk.name}</div>
+                <div className="asset-sub">{tk.symbol}</div>
+              </div>
+              <div className="asset-balance">{tk.uiAmount}</div>
+              <div className="token-row-chevron">
+                <ChevronIcon />
+              </div>
+            </div>
+          ))
         )}
       </div>
     </>

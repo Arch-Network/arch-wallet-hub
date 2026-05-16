@@ -12,6 +12,7 @@ import Send from "../../src/pages/Send/Send";
 import Receive from "../../src/pages/Receive/Receive";
 import History from "../../src/pages/History/History";
 import TokenList from "../../src/pages/TokenList/TokenList";
+import TokenDetail from "../../src/pages/TokenDetail/TokenDetail";
 import Approve from "../../src/pages/Approve/Approve";
 import Settings from "../../src/pages/Settings/Settings";
 
@@ -95,6 +96,7 @@ function AppRoutes() {
           <Route path="/receive" element={<Receive />} />
           <Route path="/history" element={<History />} />
           <Route path="/tokens" element={<TokenList />} />
+          <Route path="/tokens/:mint" element={<TokenDetail />} />
           <Route path="/approve/:requestId" element={<Approve />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/add-wallet" element={<Onboarding onComplete={refresh} addMode />} />

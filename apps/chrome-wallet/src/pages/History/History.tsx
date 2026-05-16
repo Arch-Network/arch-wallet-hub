@@ -4,11 +4,16 @@ import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { formatArchId, truncateAddress, formatTimestamp, formatBtc, timestampToMs } from "../../utils/format";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
+import {
+  type TxStatus,
+  normalizeArchStatus,
+  statusBadgeClass,
+  statusLabel,
+} from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
 
 type Tab = "all" | "arch" | "btc";
 type TxKind = "arch" | "apl" | "btc";
-type TxStatus = "success" | "failed" | "pending" | "confirmed" | "unconfirmed";
 
 interface TxItem {
   txid: string;
@@ -75,36 +80,6 @@ function isAplTransaction(tx: any): boolean {
   if (Array.isArray(tx.token_mints) && tx.token_mints.length > 0) return true;
   if (tx.token_transfer) return true;
   return false;
-}
-
-function normalizeArchStatus(tx: any): TxStatus {
-  const status = tx?.status;
-  if (typeof status === "string") {
-    const lower = status.toLowerCase();
-    if (lower.includes("fail") || lower.includes("reject") || lower.includes("error")) return "failed";
-    if (lower.includes("process") || lower.includes("success")) return "success";
-    if (lower.includes("pending")) return "pending";
-  }
-
-  if (status && typeof status === "object") {
-    const keys = Object.keys(status).map((k) => k.toLowerCase());
-    if (keys.some((k) => k.includes("fail") || k.includes("reject") || k.includes("error"))) return "failed";
-    if (keys.some((k) => k.includes("process") || k.includes("success"))) return "success";
-    if (keys.some((k) => k.includes("pending"))) return "pending";
-  }
-
-  if (tx?.block_height || tx?.confirmed_at) return "success";
-  return "pending";
-}
-
-function statusBadgeClass(status: TxStatus): string {
-  if (status === "success" || status === "confirmed") return "badge-success";
-  if (status === "failed") return "badge-failed";
-  return "badge-pending";
-}
-
-function statusLabel(status: TxStatus): string {
-  return status.toUpperCase();
 }
 
 function TxIcon({ kind, direction }: { kind: TxKind; direction: TxItem["direction"] }) {
