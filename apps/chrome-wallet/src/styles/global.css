@@ -140,6 +140,16 @@ a {
     margin: 0 auto;
     padding: 20px 24px;
   }
+
+  /* Per-route caps: forms and settings shouldn't stretch the full width
+     even when the shell allows it. Applied via bodyClassForPath in App.tsx. */
+  html[data-mode="sidepanel"] .app-body-narrow {
+    max-width: 520px;
+  }
+
+  html[data-mode="sidepanel"] .app-body-medium {
+    max-width: 640px;
+  }
 }
 
 /* Side-panel nav items */
@@ -855,6 +865,23 @@ a {
 @keyframes pulse-pending {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
+}
+
+/* ═══════════════════ Page Width Helpers ═══════════════════ */
+
+/* Forms and dense content shouldn't sprawl across a wide side panel even
+   though the shell allows up to 880px. These helpers cap individual pages
+   without touching the dashboard's wider grid. */
+.page-narrow {
+  max-width: 520px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.page-medium {
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 /* ═══════════════════ Dashboard Grid ═══════════════════ */
@@ -1774,6 +1801,30 @@ a {
 }
 
 /* ═══════════════════ Token Detail Screen ═══════════════════ */
+
+/* Narrow default: just lay children out in source order. */
+.token-detail-grid {
+  display: contents;
+}
+
+/* Wide side panel: split summary on the left from activity on the right.
+   The collapsible "Details" section follows the summary in the left
+   column so the activity feed stays full-height. */
+@media (min-width: 760px) {
+  html[data-mode="sidepanel"] .token-detail-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    grid-template-areas:
+      "summary activity"
+      "extras  activity";
+    gap: 24px;
+    align-items: start;
+  }
+
+  html[data-mode="sidepanel"] .token-detail-summary { grid-area: summary; }
+  html[data-mode="sidepanel"] .token-detail-activity { grid-area: activity; }
+  html[data-mode="sidepanel"] .token-detail-extras { grid-area: extras; }
+}
 
 .token-detail-hero {
   display: flex;

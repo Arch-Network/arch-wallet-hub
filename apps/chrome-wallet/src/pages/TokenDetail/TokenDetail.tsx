@@ -507,6 +507,8 @@ export default function TokenDetail() {
         <div style={{ width: 60 }} />
       </div>
 
+      <div className="token-detail-grid">
+      <div className="token-detail-summary">
       <div className="token-detail-hero">
         <div className="token-detail-icon">
           {token.image ? (
@@ -532,8 +534,10 @@ export default function TokenDetail() {
           <span>Receive</span>
         </button>
       </div>
+      </div>
 
-      <div className="section-title" style={{ marginTop: 16 }}>Recent Activity</div>
+      <div className="token-detail-activity">
+      <div className="section-title" style={{ marginTop: 0 }}>Recent Activity</div>
       <div className="card">
         {loadingTxs ? (
           <div className="spinner-center" style={{ padding: 12 }}>
@@ -589,7 +593,9 @@ export default function TokenDetail() {
           })
         )}
       </div>
+      </div>
 
+      <div className="token-detail-extras">
       <button
         className="token-detail-toggle"
         onClick={() => setShowDetails((v) => !v)}
@@ -654,6 +660,8 @@ export default function TokenDetail() {
           </div>
         </div>
       )}
+      </div>
+      </div>
     </>
   );
 }

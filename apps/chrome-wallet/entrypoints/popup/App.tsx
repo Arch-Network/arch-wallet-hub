@@ -46,6 +46,15 @@ function RouteRestorer() {
   return null;
 }
 
+/** Per-route layout class -- caps form/settings widths in wide side panel. */
+function bodyClassForPath(pathname: string): string {
+  if (pathname === "/send" || pathname === "/receive") return "app-body app-body-narrow";
+  if (pathname === "/settings" || pathname === "/add-wallet" || pathname === "/tokens") {
+    return "app-body app-body-medium";
+  }
+  return "app-body";
+}
+
 function AppRoutes() {
   const { state, activeAccount, loading, lock, unlock, refresh } = useWallet();
   const { status: networkStatus, retry: retryApi } = useApiStatus();
@@ -55,6 +64,8 @@ function AppRoutes() {
   const showHubWarning =
     location.pathname === "/settings" ||
     location.pathname === "/add-wallet";
+
+  const bodyClass = bodyClassForPath(location.pathname);
 
   if (loading) {
     return (
@@ -91,7 +102,7 @@ function AppRoutes() {
       <div className="app-main">
         <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} />
         <ConnectionBanner status={networkStatus} onRetry={retryApi} showHubWarning={showHubWarning} />
-        <div className="app-body">
+        <div className={bodyClass}>
           <RouteRestorer />
           <Routes>
             <Route path="/dashboard" element={<Dashboard />} />
