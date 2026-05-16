@@ -79,15 +79,107 @@ function matchesAplTokenProgram(programId: unknown): boolean {
   return lower === APL_TOKEN_PROGRAM_ID_HEX || programId === APL_TOKEN_PROGRAM_ID_BASE58;
 }
 
-function firstByteOfBase64(data: unknown): number | null {
-  if (typeof data !== "string" || !data) return null;
+function base64ToBytes(data: unknown): number[] {
+  if (typeof data !== "string" || !data) return [];
   try {
     const decoded = atob(data);
-    if (!decoded.length) return null;
-    return decoded.charCodeAt(0);
+    const bytes = new Array<number>(decoded.length);
+    for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+    return bytes;
   } catch {
-    return null;
+    return [];
   }
+}
+
+function firstByteOfBase64(data: unknown): number | null {
+  const bytes = base64ToBytes(data);
+  return bytes.length ? bytes[0] : null;
+}
+
+function readLeU64(bytes: number[], offset: number): bigint {
+  let result = 0n;
+  for (let i = 0; i < 8; i++) {
+    result |= BigInt(bytes[offset + i] ?? 0) << BigInt(8 * i);
+  }
+  return result;
+}
+
+function pubkeyFromAccount(account: unknown): string {
+  if (typeof account === "string") return account;
+  if (account && typeof account === "object") {
+    const a = account as any;
+    return (a.pubkey ?? a.address ?? a.account ?? "") as string;
+  }
+  return "";
+}
+
+interface DecodedTransfer {
+  direction: "in" | "out" | "neutral";
+  amount: bigint;
+  decimals: number | null;
+}
+
+/**
+ * Decode the first matching transfer-style instruction in a tx for our token
+ * account. Returns null when no relevant transfer is found.
+ *
+ * APL/SPL data layout (first byte is the discriminant):
+ *   3  Transfer         data=[3, amount(u64 LE)]                  accounts=[src, dst, authority]
+ *   12 TransferChecked  data=[12, amount(u64 LE), decimals(u8)]   accounts=[src, mint, dst, authority]
+ *   7  MintTo           data=[7, amount(u64 LE)]                  accounts=[mint, dst, authority]
+ *   14 MintToChecked    data=[14, amount(u64 LE), decimals(u8)]   accounts=[mint, dst, authority]
+ *   8  Burn             data=[8, amount(u64 LE)]                  accounts=[src, mint, authority]
+ *   15 BurnChecked      data=[15, amount(u64 LE), decimals(u8)]   accounts=[src, mint, authority]
+ */
+function decodeTransferFromInstructions(
+  instructions: Array<Record<string, unknown>>,
+  tokenAccount: string,
+): DecodedTransfer | null {
+  for (const ix of instructions) {
+    if (!matchesAplTokenProgram(ix?.program_id)) continue;
+    const data = base64ToBytes(ix?.data);
+    if (data.length < 9) continue;
+    const disc = data[0];
+    if (!TRANSFER_DATA_DISCRIMINANTS.has(disc)) continue;
+
+    const accounts = Array.isArray(ix?.accounts) ? (ix.accounts as unknown[]) : [];
+    const at = (i: number) => pubkeyFromAccount(accounts[i]);
+
+    let src = "";
+    let dst = "";
+    let decimals: number | null = null;
+
+    switch (disc) {
+      case 3:
+        src = at(0); dst = at(1);
+        break;
+      case 12:
+        src = at(0); dst = at(2); decimals = data[9] ?? null;
+        break;
+      case 7:
+        dst = at(1);
+        break;
+      case 14:
+        dst = at(1); decimals = data[9] ?? null;
+        break;
+      case 8:
+        src = at(0);
+        break;
+      case 15:
+        src = at(0); decimals = data[9] ?? null;
+        break;
+      default:
+        continue;
+    }
+
+    const direction: "in" | "out" | "neutral" =
+      dst === tokenAccount ? "in" : src === tokenAccount ? "out" : "neutral";
+    if (direction === "neutral") continue; // not our account; keep scanning
+
+    const amount = readLeU64(data, 1);
+    return { direction, amount, decimals };
+  }
+  return null;
 }
 
 // Returns: true if it IS a transfer, false if it's NOT, null if unknown.
@@ -132,13 +224,13 @@ function formatRawAmountWithDecimals(raw: string, decimals: number): string {
   }
 }
 
-function deriveTransfer(
+function deriveTransferFromRow(
   tx: any,
   tokenAccount: string,
   tokenDecimals: number,
-): { direction: "in" | "out" | "neutral"; amountLabel: string | null } {
+): { direction: "in" | "out" | "neutral"; amountLabel: string | null } | null {
   const tt = tx?.token_transfer;
-  if (!tt || typeof tt !== "object") return { direction: "neutral", amountLabel: null };
+  if (!tt || typeof tt !== "object") return null;
 
   const src = (tt.source_account ?? "") as string;
   const dst = (tt.destination_account ?? "") as string;
@@ -152,6 +244,16 @@ function deriveTransfer(
   const pretty = formatRawAmountWithDecimals(String(rawAmount), decimals);
   const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
   return { direction, amountLabel: `${sign}${pretty}` };
+}
+
+function buildAmountLabel(
+  decoded: DecodedTransfer,
+  fallbackDecimals: number,
+): { direction: "in" | "out" | "neutral"; amountLabel: string } {
+  const decimals = decoded.decimals ?? fallbackDecimals;
+  const pretty = formatRawAmountWithDecimals(decoded.amount.toString(), decimals);
+  const sign = decoded.direction === "out" ? "-" : decoded.direction === "in" ? "+" : "";
+  return { direction: decoded.direction, amountLabel: `${sign}${pretty}` };
 }
 
 function BackArrow() {
@@ -290,41 +392,69 @@ export default function TokenDetail() {
           { tokenAccount: token.tokenAccount, count: candidates.length, sample: candidates.slice(0, 3) },
         );
 
-        // Classify each tx. With v2 the chip labels are populated; we only
-        // need to fall back to /instructions when the labels are missing
-        // or inconclusive.
-        const classified = await Promise.all(
-          candidates.map(async (tx) => {
+        // Classify + decode in one pass. v2 already gives us chip labels and
+        // status, so the only thing we still need /instructions for is the
+        // raw amount and direction. Fetch /instructions for any tx that
+        // either (a) needs classification beyond chip labels or (b) is a
+        // transfer and the row didn't already carry a token_transfer summary.
+        type EnrichedRow = {
+          tx: any;
+          isTransfer: boolean;
+          fromRow?: { direction: "in" | "out" | "neutral"; amountLabel: string | null };
+          decoded?: DecodedTransfer | null;
+        };
+
+        const enriched: EnrichedRow[] = await Promise.all(
+          candidates.map(async (tx): Promise<EnrichedRow> => {
             const fromChip = classifyFromChipLabels(tx);
-            if (fromChip === true) return { tx, isTransfer: true };
-            if (fromChip === false) return { tx, isTransfer: false };
-            try {
-              const ixs = await indexer.getTransactionInstructions(tx.txid);
-              const verdict = classifyFromInstructions(Array.isArray(ixs) ? ixs : []);
-              return { tx, isTransfer: verdict || ixs.length === 0 };
-            } catch (e) {
-              console.debug("[TokenDetail] getTransactionInstructions failed", tx.txid, e);
-              return { tx, isTransfer: true }; // fail open
+            if (fromChip === false) return { tx, isTransfer: false, decoded: null };
+
+            let instructionsList: Array<Record<string, unknown>> | null = null;
+            const loadInstructions = async () => {
+              if (instructionsList !== null) return instructionsList;
+              try {
+                const ixs = await indexer.getTransactionInstructions(tx.txid);
+                instructionsList = Array.isArray(ixs) ? ixs : [];
+              } catch (e) {
+                console.debug("[TokenDetail] getTransactionInstructions failed", tx.txid, e);
+                instructionsList = [];
+              }
+              return instructionsList;
+            };
+
+            let isTransfer: boolean;
+            if (fromChip === true) {
+              isTransfer = true;
+            } else {
+              const loaded = await loadInstructions();
+              const verdict = classifyFromInstructions(loaded);
+              isTransfer = verdict || loaded.length === 0; // fail open
             }
+            if (!isTransfer) return { tx, isTransfer: false, decoded: null };
+
+            const fromRow = deriveTransferFromRow(tx, token.tokenAccount, token.decimals);
+            if (fromRow) return { tx, isTransfer: true, fromRow };
+
+            const loaded = await loadInstructions();
+            const decoded = decodeTransferFromInstructions(loaded, token.tokenAccount);
+            return { tx, isTransfer: true, decoded };
           })
         );
 
-        const transferOnly = classified.filter((c) => c.isTransfer).map((c) => c.tx);
-        console.debug("[TokenDetail] kept after filter", transferOnly.length);
+        const kept = enriched.filter((c) => c.isTransfer);
+        console.debug("[TokenDetail] kept after filter", kept.length);
 
-        const detailed = await Promise.all(
-          transferOnly.map(async (tx) => {
-            try {
-              const detail = await indexer.getTransactionDetail(tx.txid);
-              return { ...tx, ...(detail as Record<string, unknown>) };
-            } catch {
-              return tx;
-            }
-          })
-        );
-
-        const items: TxItem[] = detailed.map((tx: any) => {
-          const { direction, amountLabel } = deriveTransfer(tx, token.tokenAccount, token.decimals);
+        const items: TxItem[] = kept.map(({ tx, fromRow, decoded }) => {
+          let direction: "in" | "out" | "neutral" = "neutral";
+          let amountLabel: string | null = null;
+          if (fromRow) {
+            direction = fromRow.direction;
+            amountLabel = fromRow.amountLabel;
+          } else if (decoded) {
+            const built = buildAmountLabel(decoded, token.decimals);
+            direction = built.direction;
+            amountLabel = built.amountLabel;
+          }
           return {
             txid: tx.txid,
             displayTxid: truncateAddress(formatArchId(tx.txid), 8),
