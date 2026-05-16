@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
-import { formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, hexToBase58 } from "../../utils/format";
+import { formatTokenAmount, formatArchId, truncateAddress, formatTimestamp } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import {
   type TxStatus,
@@ -65,53 +65,32 @@ const NON_TRANSFER_LABELS = new Set([
   "Allocate",
 ]);
 
-// SPL/APL token program transfer-y discriminants (first byte of instruction data).
-// 3 Transfer, 7 MintTo, 8 Burn, 12 TransferChecked, 14 MintToChecked, 15 BurnChecked.
-const TRANSFER_DATA_DISCRIMINANTS = new Set([3, 7, 8, 12, 14, 15]);
-
 const APL_TOKEN_PROGRAM_ID_HEX =
   "06ddf6e1b9ea84412c10b8df021c100fc8871907c309c33535de209c341763bf";
-const APL_TOKEN_PROGRAM_ID_BASE58 = hexToBase58(APL_TOKEN_PROGRAM_ID_HEX);
 
-function matchesAplTokenProgram(programId: unknown): boolean {
-  if (typeof programId !== "string") return false;
-  const lower = programId.toLowerCase().replace(/^0x/, "");
-  return lower === APL_TOKEN_PROGRAM_ID_HEX || programId === APL_TOKEN_PROGRAM_ID_BASE58;
+function matchesAplTokenProgram(ix: Record<string, unknown> | null | undefined): boolean {
+  if (!ix) return false;
+  const hex = typeof ix.program_id_hex === "string" ? ix.program_id_hex.toLowerCase() : "";
+  if (hex === APL_TOKEN_PROGRAM_ID_HEX) return true;
+  // Legacy fallback when servers don't split the field.
+  const generic = typeof ix.program_id === "string" ? ix.program_id.toLowerCase() : "";
+  return generic === APL_TOKEN_PROGRAM_ID_HEX;
 }
 
-function base64ToBytes(data: unknown): number[] {
-  if (typeof data !== "string" || !data) return [];
-  try {
-    const decoded = atob(data);
-    const bytes = new Array<number>(decoded.length);
-    for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
-    return bytes;
-  } catch {
-    return [];
-  }
-}
+// The indexer's /transactions/:txid/instructions endpoint already decodes
+// known programs. Each item looks like:
+//   { program_id_hex, program_id_base58, action: "Token: Transfer",
+//     decoded: { source, destination, amount, authority, type, ... } }
+// We just have to look for transfer-ish actions and read the decoded fields.
 
-function firstByteOfBase64(data: unknown): number | null {
-  const bytes = base64ToBytes(data);
-  return bytes.length ? bytes[0] : null;
-}
-
-function readLeU64(bytes: number[], offset: number): bigint {
-  let result = 0n;
-  for (let i = 0; i < 8; i++) {
-    result |= BigInt(bytes[offset + i] ?? 0) << BigInt(8 * i);
-  }
-  return result;
-}
-
-function pubkeyFromAccount(account: unknown): string {
-  if (typeof account === "string") return account;
-  if (account && typeof account === "object") {
-    const a = account as any;
-    return (a.pubkey ?? a.address ?? a.account ?? "") as string;
-  }
-  return "";
-}
+const TOKEN_TRANSFER_ACTIONS = new Set([
+  "Token: Transfer",
+  "Token: TransferChecked",
+  "Token: MintTo",
+  "Token: MintToChecked",
+  "Token: Burn",
+  "Token: BurnChecked",
+]);
 
 interface DecodedTransfer {
   direction: "in" | "out" | "neutral";
@@ -119,64 +98,36 @@ interface DecodedTransfer {
   decimals: number | null;
 }
 
-/**
- * Decode the first matching transfer-style instruction in a tx for our token
- * account. Returns null when no relevant transfer is found.
- *
- * APL/SPL data layout (first byte is the discriminant):
- *   3  Transfer         data=[3, amount(u64 LE)]                  accounts=[src, dst, authority]
- *   12 TransferChecked  data=[12, amount(u64 LE), decimals(u8)]   accounts=[src, mint, dst, authority]
- *   7  MintTo           data=[7, amount(u64 LE)]                  accounts=[mint, dst, authority]
- *   14 MintToChecked    data=[14, amount(u64 LE), decimals(u8)]   accounts=[mint, dst, authority]
- *   8  Burn             data=[8, amount(u64 LE)]                  accounts=[src, mint, authority]
- *   15 BurnChecked      data=[15, amount(u64 LE), decimals(u8)]   accounts=[src, mint, authority]
- */
+function toBigInt(v: unknown): bigint | null {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number" && Number.isFinite(v)) return BigInt(Math.trunc(v));
+  if (typeof v === "string" && /^-?\d+$/.test(v)) {
+    try { return BigInt(v); } catch { return null; }
+  }
+  return null;
+}
+
 function decodeTransferFromInstructions(
   instructions: Array<Record<string, unknown>>,
   tokenAccount: string,
 ): DecodedTransfer | null {
   for (const ix of instructions) {
-    if (!matchesAplTokenProgram(ix?.program_id)) continue;
-    const data = base64ToBytes(ix?.data);
-    if (data.length < 9) continue;
-    const disc = data[0];
-    if (!TRANSFER_DATA_DISCRIMINANTS.has(disc)) continue;
+    const action = typeof ix?.action === "string" ? ix.action : "";
+    if (!TOKEN_TRANSFER_ACTIONS.has(action)) continue;
 
-    const accounts = Array.isArray(ix?.accounts) ? (ix.accounts as unknown[]) : [];
-    const at = (i: number) => pubkeyFromAccount(accounts[i]);
-
-    let src = "";
-    let dst = "";
-    let decimals: number | null = null;
-
-    switch (disc) {
-      case 3:
-        src = at(0); dst = at(1);
-        break;
-      case 12:
-        src = at(0); dst = at(2); decimals = data[9] ?? null;
-        break;
-      case 7:
-        dst = at(1);
-        break;
-      case 14:
-        dst = at(1); decimals = data[9] ?? null;
-        break;
-      case 8:
-        src = at(0);
-        break;
-      case 15:
-        src = at(0); decimals = data[9] ?? null;
-        break;
-      default:
-        continue;
-    }
-
+    const decoded = (ix?.decoded ?? {}) as Record<string, unknown>;
+    const src = typeof decoded.source === "string" ? decoded.source : "";
+    const dst = typeof decoded.destination === "string" ? decoded.destination : "";
     const direction: "in" | "out" | "neutral" =
       dst === tokenAccount ? "in" : src === tokenAccount ? "out" : "neutral";
     if (direction === "neutral") continue; // not our account; keep scanning
 
-    const amount = readLeU64(data, 1);
+    const amount = toBigInt(decoded.amount);
+    if (amount === null) continue;
+
+    const decimals =
+      typeof decoded.decimals === "number" ? decoded.decimals : null;
+
     return { direction, amount, decimals };
   }
   return null;
@@ -199,13 +150,13 @@ function classifyFromChipLabels(tx: any): boolean | null {
   return null;
 }
 
-// Authoritative classifier using per-tx `/instructions` data. Returns true if
-// any APL token instruction has a transfer-y discriminant.
+// Authoritative classifier using per-tx /instructions data. Returns true if
+// any APL token instruction's action is a transfer-y label.
 function classifyFromInstructions(instructions: Array<Record<string, unknown>>): boolean {
   for (const ix of instructions) {
-    if (!matchesAplTokenProgram(ix?.program_id)) continue;
-    const byte = firstByteOfBase64(ix?.data);
-    if (byte !== null && TRANSFER_DATA_DISCRIMINANTS.has(byte)) return true;
+    if (!matchesAplTokenProgram(ix)) continue;
+    const action = typeof ix?.action === "string" ? ix.action : "";
+    if (TOKEN_TRANSFER_ACTIONS.has(action)) return true;
   }
   return false;
 }
