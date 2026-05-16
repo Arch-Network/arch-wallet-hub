@@ -37,7 +37,12 @@
 
 html, body, #root {
   width: 400px;
-  height: 640px;
+  /* Chrome extension popups have a per-OS height cap, often ~580-600px.
+     Declaring 640px gets clipped on macOS / older Chrome and chops off
+     the bottom NavBar. 600px sits safely under every supported cap.
+     The standalone approve windows we open via chrome.windows.create()
+     still pass 640 explicitly because those are real OS windows. */
+  height: 600px;
   overflow: hidden;
   font-family: var(--font-body);
   background: var(--bg-primary);
@@ -184,14 +189,14 @@ a {
      Other routes still get -20/-24 break-out margins from the popup
      defaults further down the file, which compose correctly here. */
   html[data-mode="sidepanel"] .balance-hero {
-    margin: 0 0 28px;
-    padding: 88px 48px 72px;
+    margin: 0 0 24px;
+    padding: 56px 48px 48px;
     border-radius: 0;
   }
 
   html[data-mode="sidepanel"] .balance-amount {
-    font-size: 56px;
-    margin-bottom: 12px;
+    font-size: 52px;
+    margin-bottom: 10px;
     letter-spacing: -0.02em;
   }
 
