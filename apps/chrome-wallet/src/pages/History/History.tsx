@@ -3,6 +3,7 @@ import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatArchId, truncateAddress, formatTimestamp, formatBtc, formatBtcUsd, timestampToMs } from "../../utils/format";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { summarizeArchTx } from "../../utils/arch-tx-summary";
@@ -118,8 +119,16 @@ export default function History() {
     try {
       const indexer = await getIndexer();
       const items: TxItem[] = [];
-      const archAddr = activeAccount.archAddress || activeAccount.btcAddress;
+      // archAddress may be empty for legacy accounts -- derive from pubkey
+      // if needed. Falling back to btcAddress would just query a nonexistent
+      // Arch account and silently return empty.
+      const archAddr = activeAccount.archAddress
+        || (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
       const btcAddr = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
+
+      if (!archAddr) {
+        console.warn("[History] No arch address resolved for active account; skipping Arch tx fetch.");
+      }
 
       const tokenTxIds = new Set<string>();
       try {
@@ -143,13 +152,20 @@ export default function History() {
         // token enrichment is best-effort
       }
 
+      if (archAddr) {
       try {
         // v2 ships chip labels + decoded token_transfer summaries inline so we
         // can derive direction/amount/label without per-tx /instructions calls.
         const archRes = await indexer
           .getAccountTransactionsV2(archAddr, 20, archPage)
-          .catch(() => indexer.getAccountTransactions(archAddr, 20, archPage));
+          .catch((err) => {
+            console.warn("[History] v2 transactions failed, falling back to v1:", err?.message);
+            return indexer.getAccountTransactions(archAddr, 20, archPage);
+          });
         const archTxs = archRes?.transactions ?? [];
+        if (archTxs.length === 0 && archPage === 1) {
+          console.info("[History] No Arch transactions for", archAddr);
+        }
         setHasMoreArch(archTxs.length >= 20);
 
         const detailedArchTxs = await Promise.all(
@@ -189,10 +205,14 @@ export default function History() {
       } catch (e: any) {
         console.warn("[History] Arch transaction fetch failed:", e?.message);
       }
+      }
 
       try {
         const btcTxs = await indexer.getBtcAddressTxs(btcAddr);
         const rawList = btcTxs ?? [];
+        if (rawList.length === 0) {
+          console.info("[History] No BTC transactions for", btcAddr);
+        }
 
         const fullTxs = await Promise.all(
           rawList.map(async (entry) => {

@@ -25,14 +25,6 @@ const FAST_TIMEOUT_MS = 5_000;
 const FULL_TTL_MS = 30_000;
 const PARTIAL_TTL_MS = 10_000;
 
-const EMPTY_TX_RESPONSE: AccountTransactionsResponse = {
-  total_count: 0,
-  next_cursor: null,
-  page: null,
-  limit: null,
-  transactions: []
-};
-
 interface CacheEntry {
   ts: number;
   ttl: number;
@@ -89,18 +81,27 @@ export async function fetchWalletOverview(
   ]);
 
   const archAccountData = archAccount.timedOut ? null : archAccount.value;
-  const hasTxs = (archAccountData?.transaction_count ?? 0) > 0;
 
-  const archTxs = hasTxs
-    ? await raceWithTimeout(
-        // v2 returns the chip labels + decoded summaries we need to render
-        // a richer activity feed on the dashboard. Falls back to v1 on error.
-        client.getAccountTransactionsV2(params.archAccountAddress, 10).catch(() =>
-          client.getAccountTransactions(params.archAccountAddress, 10)
-        ),
-        FAST_TIMEOUT_MS
-      )
-    : { value: EMPTY_TX_RESPONSE, timedOut: false as const };
+  // Always attempt the transactions fetch. The previous version gated this
+  // behind `transaction_count > 0`, but that field is missing from some
+  // indexer responses (notably mainnet's account-summary right after the
+  // service cold-starts), which caused the activity feed to look empty for
+  // wallets that DO have history. The indexer handles "no txs" cheaply by
+  // returning an empty array, so skipping the call doesn't actually save
+  // anything meaningful.
+  const archTxs = await raceWithTimeout(
+    // v2 returns the chip labels + decoded summaries we need to render
+    // a richer activity feed on the dashboard. Falls back to v1 on error.
+    client.getAccountTransactionsV2(params.archAccountAddress, 10).catch((err) => {
+      console.warn("[walletOverview] v2 transactions failed, falling back to v1:", err?.message);
+      return client.getAccountTransactions(params.archAccountAddress, 10);
+    }),
+    FAST_TIMEOUT_MS
+  );
+
+  if (archTxs.timedOut) {
+    console.warn("[walletOverview] Arch transactions timed out for", params.archAccountAddress);
+  }
 
   const displayArchAddress = archAccountData?.address ?? params.archAccountAddress;
 

@@ -271,7 +271,14 @@ export default function Dashboard() {
         console.warn("[Dashboard] getBtcAddressTxs failed:", e?.message);
       }
 
-      const archTxItems: RecentTx[] = (overview?.arch?.recentTransactions?.transactions ?? [])
+      const rawArchTxs = overview?.arch?.recentTransactions?.transactions ?? [];
+      if (overview?.arch?.recentTransactionsTimedOut) {
+        console.warn("[Dashboard] Arch transactions timed out for", archAddr);
+      } else if (rawArchTxs.length === 0) {
+        console.info("[Dashboard] No Arch transactions for", archAddr);
+      }
+
+      const archTxItems: RecentTx[] = rawArchTxs
         .slice(0, 5)
         .map((tx: any): RecentTx => {
           const status = normalizeArchStatus(tx);
@@ -286,6 +293,10 @@ export default function Dashboard() {
             status,
           };
         });
+
+      if (btcTxItems.length === 0) {
+        console.info("[Dashboard] No BTC transactions for", btcAddrForNetwork);
+      }
 
       const merged = [...archTxItems, ...btcTxItems];
       merged.sort((a, b) => {
