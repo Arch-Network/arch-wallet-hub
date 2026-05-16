@@ -167,7 +167,9 @@ export default function History() {
           const isToken = isAplTransaction(tx) || tokenTxIds.has(tx.txid);
           const kind: TxKind = isToken ? "apl" : "arch";
           const status = normalizeArchStatus(tx);
-          const summary = summarizeArchTx(tx, archAddr);
+          // Pass the normalized status through so the summarizer's failure
+          // detection catches it without re-running the same logic.
+          const summary = summarizeArchTx({ ...tx, status }, archAddr);
           items.push({
             txid: tx.txid,
             displayTxid: truncateAddress(formatArchId(tx.txid), 8),

@@ -10,6 +10,7 @@ import { formatBtc, formatArch, formatTokenAmount, formatArchId, truncateAddress
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { summarizeArchTx, type ArchTxSummary } from "../../utils/arch-tx-summary";
+import { normalizeArchStatus, statusBadgeClass, statusLabel, type TxStatus } from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
 
 interface TokenBalance {
@@ -35,7 +36,8 @@ interface RecentTx {
   /** Raw amount in sats for BTC, used to compute USD lazily once price loads. */
   sats?: number;
   timestamp?: string;
-  status: string;
+  /** Normalized status (success|failed|pending|confirmed|unconfirmed). */
+  status: TxStatus;
 }
 
 function SkeletonBalance() {
@@ -238,7 +240,7 @@ export default function Dashboard() {
             label: btcLabel(direction),
             amountLabel: buildBtcAmountLabel(direction, sats),
             timestamp: timeMs != null ? String(timeMs) : undefined,
-            status: isBtcTxConfirmed(tx) ? "confirmed" : "pending",
+            status: isBtcTxConfirmed(tx) ? "confirmed" : "unconfirmed",
           });
         }
       } catch (e: any) {
@@ -248,19 +250,8 @@ export default function Dashboard() {
       const archTxItems: RecentTx[] = (overview?.arch?.recentTransactions?.transactions ?? [])
         .slice(0, 5)
         .map((tx: any): RecentTx => {
-          let statusStr = "confirmed";
-          const st = tx.status;
-          if (typeof st === "string") {
-            statusStr = st;
-          } else if (typeof st === "object" && st !== null) {
-            const keys = Object.keys(st);
-            if (keys.includes("Processing") || keys.includes("Pending")) statusStr = "pending";
-            else if (keys.includes("Failed") || keys.includes("Rejected")) statusStr = "failed";
-          } else if (!tx.block_height) {
-            statusStr = "pending";
-          }
-
-          const summary: ArchTxSummary = summarizeArchTx(tx, archAddr);
+          const status = normalizeArchStatus(tx);
+          const summary: ArchTxSummary = summarizeArchTx({ ...tx, status }, archAddr);
           return {
             txid: tx.txid,
             type: "arch",
@@ -268,7 +259,7 @@ export default function Dashboard() {
             label: summary.label,
             amountLabel: summary.amountLabel,
             timestamp: tx.created_at,
-            status: statusStr,
+            status,
           };
         });
 
@@ -603,9 +594,7 @@ function ArrowUp() {
 }
 
 function renderActivityRow(tx: RecentTx, btcUsd: number | null) {
-  const statusLower = (tx.status || "").toLowerCase();
-  const isSuccess = statusLower === "confirmed" || statusLower === "processed";
-  const isFailed = statusLower === "failed" || statusLower === "rejected";
+  const isSuccess = tx.status === "success" || tx.status === "confirmed";
   const showBadge = !isSuccess; // success rows go uncluttered
 
   const dirClass =
@@ -649,8 +638,8 @@ function renderActivityRow(tx: RecentTx, btcUsd: number | null) {
         </div>
       </div>
       {showBadge && (
-        <span className={`badge ${isFailed ? "badge-failed" : "badge-pending"}`}>
-          {isFailed ? "Failed" : tx.status}
+        <span className={`badge ${statusBadgeClass(tx.status)}`}>
+          {statusLabel(tx.status)}
         </span>
       )}
     </div>

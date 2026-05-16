@@ -91,13 +91,18 @@ function isUsableLabel(label: string): boolean {
 /**
  * Try to detect a failed status across the various shapes the indexer can
  * emit:
- *   "failed"  (v2 normalized string, any case)
- *   "FAILED"
- *   { Failed: "..." }   (legacy v1)
+ *   "failed" / "FAILED"               (v2 normalized string, any case)
+ *   '{"FAILED":"..."}'                (raw JSON string the indexer sometimes
+ *                                      embeds without parsing)
+ *   { Failed: "..." }                 (legacy v1)
  *   { failed: true }
  */
 function isFailedStatus(status: unknown): boolean {
-  if (typeof status === "string") return /^(failed|rejected)$/i.test(status);
+  if (typeof status === "string") {
+    if (/^(failed|rejected)$/i.test(status)) return true;
+    // Raw JSON failure object that hasn't been parsed yet
+    if (/^\s*\{[^}]*\b(FAILED|Failed|failed|REJECTED|Rejected|rejected)\b/.test(status)) return true;
+  }
   if (status && typeof status === "object") {
     const keys = Object.keys(status as Record<string, unknown>);
     return keys.some((k) => /^(Failed|Rejected|failed|rejected)$/.test(k));
