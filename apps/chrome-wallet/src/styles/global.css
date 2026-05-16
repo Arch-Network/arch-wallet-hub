@@ -150,6 +150,108 @@ a {
   html[data-mode="sidepanel"] .app-body-medium {
     max-width: 640px;
   }
+
+  /* ═══════════════════ Wide-mode typography + spacing ═══════════════════
+     The whole design system is sized for a 360px popup. When the side panel
+     opens up at >= 560px viewport, scale everything up so the UI doesn't
+     read as a tiny postage stamp in the middle of a big canvas. */
+
+  html[data-mode="sidepanel"] {
+    font-size: 15px;
+  }
+
+  html[data-mode="sidepanel"] .section-title {
+    font-size: 13px;
+    margin-bottom: 12px;
+    letter-spacing: 0.1em;
+  }
+
+  html[data-mode="sidepanel"] .section {
+    margin-bottom: 22px;
+  }
+
+  /* Hero balance card -- bigger headline and breathing room */
+  html[data-mode="sidepanel"] .balance-hero {
+    margin: -20px -24px 22px;
+    padding: 48px 32px 40px;
+    border-radius: 0;
+  }
+
+  html[data-mode="sidepanel"] .balance-amount {
+    font-size: 44px;
+    margin-bottom: 10px;
+    letter-spacing: -0.015em;
+  }
+
+  html[data-mode="sidepanel"] .balance-label {
+    font-size: 14px;
+    gap: 8px;
+  }
+
+  /* Quick actions row -- pill-style buttons feel less cramped */
+  html[data-mode="sidepanel"] .action-bar {
+    gap: 12px;
+    padding: 0 0 22px;
+  }
+
+  html[data-mode="sidepanel"] .action-btn {
+    flex-direction: row;
+    justify-content: center;
+    gap: 10px;
+    padding: 16px 14px;
+    font-size: 14px;
+    border-radius: 14px;
+  }
+
+  html[data-mode="sidepanel"] .action-btn-icon {
+    font-size: 20px;
+  }
+
+  /* Portfolio asset rows */
+  html[data-mode="sidepanel"] .asset-row {
+    padding: 16px 4px;
+    gap: 16px;
+  }
+
+  html[data-mode="sidepanel"] .asset-icon {
+    width: 44px;
+    height: 44px;
+    font-size: 19px;
+  }
+
+  html[data-mode="sidepanel"] .asset-name {
+    font-size: 16px;
+  }
+
+  html[data-mode="sidepanel"] .asset-sub {
+    font-size: 12px;
+  }
+
+  html[data-mode="sidepanel"] .asset-balance {
+    font-size: 16px;
+  }
+
+  html[data-mode="sidepanel"] .asset-balance-usd {
+    font-size: 12px;
+  }
+
+  html[data-mode="sidepanel"] .asset-confirmed,
+  html[data-mode="sidepanel"] .asset-pending-line {
+    font-size: 11px;
+  }
+
+  /* Activity rows in the recent activity card */
+  html[data-mode="sidepanel"] .tx-activity-label {
+    font-size: 15px;
+  }
+
+  html[data-mode="sidepanel"] .tx-activity-meta {
+    font-size: 12px;
+  }
+
+  html[data-mode="sidepanel"] .tx-activity-amount {
+    font-size: 15px;
+  }
 }
 
 /* Side-panel nav items */
