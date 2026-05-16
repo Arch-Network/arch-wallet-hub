@@ -162,6 +162,20 @@ export class ArchIndexerClient {
     return this.getJson(`/accounts/${encodeURIComponent(archAddress)}/transactions?${qs.toString()}`);
   }
 
+  /**
+   * Richer per-account transactions endpoint that returns chip labels
+   * (`instructions: string[]`), `programs`, `status`, `fee_payer`, etc.
+   * The legacy v1 path returns only minimal fields.
+   */
+  getAccountTransactionsV2(
+    archAddress: string,
+    limit = 50,
+    page = 1
+  ): Promise<AccountTransactionsResponse> {
+    const qs = new URLSearchParams({ limit: String(limit), page: String(page) });
+    return this.getJson(`/accounts/${encodeURIComponent(archAddress)}/transactions/v2?${qs.toString()}`);
+  }
+
   // ── Arch Transactions ────────────────────────────────────────────────────
   getTransactionDetail(txid: string): Promise<Record<string, unknown>> {
     return this.getJson(`/transactions/${encodeURIComponent(txid)}`);
