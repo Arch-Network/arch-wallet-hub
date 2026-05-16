@@ -189,7 +189,7 @@ export default defineBackground(() => {
         });
 
         const url = chrome.runtime.getURL(`/popup.html#/approve/${reqId}`);
-        await chrome.windows.create({ url, type: "popup", width: 380, height: 620, focused: true });
+        await chrome.windows.create({ url, type: "popup", width: 400, height: 640, focused: true });
 
         // Return a "pending" marker -- the content script will wait for the
         // broadcast from the approve/reject handler above.
@@ -218,7 +218,7 @@ export default defineBackground(() => {
         });
 
         const url = chrome.runtime.getURL(`/popup.html#/approve/${reqId}`);
-        await chrome.windows.create({ url, type: "popup", width: 380, height: 620, focused: true });
+        await chrome.windows.create({ url, type: "popup", width: 400, height: 640, focused: true });
 
         return { id: msg.id, success: false, error: "__PENDING__", requestId: reqId };
       }

@@ -4,6 +4,7 @@ import { useWallet } from "../../src/hooks/useWallet";
 import Header from "../../src/components/Header";
 import ConnectionBanner from "../../src/components/ConnectionBanner";
 import NavBar from "../../src/components/NavBar";
+import SideNav from "../../src/components/SideNav";
 import { useApiStatus } from "../../src/hooks/useApiStatus";
 import Onboarding from "../../src/pages/Onboarding/Onboarding";
 import Unlock from "../../src/pages/Unlock/Unlock";
@@ -86,24 +87,27 @@ function AppRoutes() {
 
   return (
     <div className="app-container">
-      <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} />
-      <ConnectionBanner status={networkStatus} onRetry={retryApi} showHubWarning={showHubWarning} />
-      <div className="app-body">
-        <RouteRestorer />
-        <Routes>
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/send" element={<Send networkStatus={networkStatus} />} />
-          <Route path="/receive" element={<Receive />} />
-          <Route path="/history" element={<History />} />
-          <Route path="/tokens" element={<TokenList />} />
-          <Route path="/tokens/:mint" element={<TokenDetail />} />
-          <Route path="/approve/:requestId" element={<Approve />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/add-wallet" element={<Onboarding onComplete={refresh} addMode />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
-        </Routes>
+      <SideNav network={state.network} />
+      <div className="app-main">
+        <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} />
+        <ConnectionBanner status={networkStatus} onRetry={retryApi} showHubWarning={showHubWarning} />
+        <div className="app-body">
+          <RouteRestorer />
+          <Routes>
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/send" element={<Send networkStatus={networkStatus} />} />
+            <Route path="/receive" element={<Receive />} />
+            <Route path="/history" element={<History />} />
+            <Route path="/tokens" element={<TokenList />} />
+            <Route path="/tokens/:mint" element={<TokenDetail />} />
+            <Route path="/approve/:requestId" element={<Approve />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/add-wallet" element={<Onboarding onComplete={refresh} addMode />} />
+            <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          </Routes>
+        </div>
+        <NavBar />
       </div>
-      <NavBar />
     </div>
   );
 }

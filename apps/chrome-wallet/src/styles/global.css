@@ -36,8 +36,8 @@
 }
 
 html, body, #root {
-  width: 360px;
-  height: 600px;
+  width: 400px;
+  height: 640px;
   overflow: hidden;
   font-family: var(--font-body);
   background: var(--bg-primary);
@@ -47,7 +47,7 @@ html, body, #root {
 }
 
 /* When mounted inside Chrome's side panel the container fills the panel
-   width (typically 280-500px) and the full viewport height. */
+   width (typically 280-1000px+) and the full viewport height. */
 html[data-mode="sidepanel"],
 html[data-mode="sidepanel"] body,
 html[data-mode="sidepanel"] #root {
@@ -58,6 +58,8 @@ html[data-mode="sidepanel"] #root {
   overflow: hidden;
 }
 
+/* Narrow side panel keeps the popup-style centered column.
+   Wide side panel takes over and switches to the sidebar shell below. */
 html[data-mode="sidepanel"] .app-body {
   max-width: 480px;
   margin: 0 auto;
@@ -93,6 +95,138 @@ a {
   height: 100%;
   overflow: hidden;
   background: var(--bg-primary);
+}
+
+.app-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-sidebar {
+  display: none;
+}
+
+/* Wide side panel: persistent left sidebar nav, content fills the right column.
+   Activated only in sidepanel mode at >= 560px viewport width so the regular
+   popup (400px) and narrow side panels keep their bottom tab nav. */
+@media (min-width: 560px) {
+  html[data-mode="sidepanel"] .app-container {
+    flex-direction: row;
+  }
+
+  html[data-mode="sidepanel"] .app-sidebar {
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    width: 220px;
+    border-right: 1px solid var(--border-primary);
+    background: var(--bg-secondary);
+    padding: 10px 8px;
+    gap: 4px;
+    overflow-y: auto;
+  }
+
+  html[data-mode="sidepanel"] .app-nav {
+    display: none;
+  }
+
+  /* Body breathing room: the side panel can be much taller and wider than
+     the popup, so let content use it. */
+  html[data-mode="sidepanel"] .app-body {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 20px 24px;
+  }
+}
+
+/* Side-panel nav items */
+.side-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 14px;
+  border-bottom: 1px solid var(--border-primary);
+  margin-bottom: 6px;
+}
+
+.side-nav-brand-logo {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.side-nav-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.side-nav-brand-name {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 14px;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.side-nav-brand-network {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.side-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  text-align: left;
+}
+
+.side-nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.side-nav-item.active {
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+
+.side-nav-item .side-nav-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.side-nav-spacer {
+  flex: 1;
+}
+
+.side-nav-footer {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-primary);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
 }
 
 .app-header {
