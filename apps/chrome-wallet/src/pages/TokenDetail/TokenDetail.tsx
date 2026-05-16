@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
-import { formatTokenAmount, formatArchId, truncateAddress, formatTimestamp } from "../../utils/format";
+import { formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, hexToBase58 } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
 import {
   type TxStatus,
@@ -34,7 +34,7 @@ interface TxItem {
   amountLabel: string | null;
 }
 
-const TRANSFER_INSTRUCTIONS = new Set([
+const TRANSFER_INSTRUCTION_LABELS = new Set([
   "Transfer",
   "TransferChecked",
   "MintTo",
@@ -43,11 +43,73 @@ const TRANSFER_INSTRUCTIONS = new Set([
   "BurnChecked",
 ]);
 
-function isTokenTransferTx(tx: any): boolean {
+// Labels we know are purely account/admin operations -- not balance movements.
+const NON_TRANSFER_LABELS = new Set([
+  "CreateAssociatedTokenAccount",
+  "InitializeAccount",
+  "InitializeAccount2",
+  "InitializeAccount3",
+  "InitializeMint",
+  "InitializeMint2",
+  "CloseAccount",
+  "Approve",
+  "ApproveChecked",
+  "Revoke",
+  "SetAuthority",
+  "FreezeAccount",
+  "ThawAccount",
+  "SyncNative",
+]);
+
+// SPL/APL token program transfer-y discriminants (first byte of instruction data).
+// 3 Transfer, 7 MintTo, 8 Burn, 12 TransferChecked, 14 MintToChecked, 15 BurnChecked.
+const TRANSFER_DATA_DISCRIMINANTS = new Set([3, 7, 8, 12, 14, 15]);
+
+const APL_TOKEN_PROGRAM_ID_HEX =
+  "06ddf6e1b9ea84412c10b8df021c100fc8871907c309c33535de209c341763bf";
+const APL_TOKEN_PROGRAM_ID_BASE58 = hexToBase58(APL_TOKEN_PROGRAM_ID_HEX);
+
+function matchesAplTokenProgram(programId: unknown): boolean {
+  if (typeof programId !== "string") return false;
+  const lower = programId.toLowerCase().replace(/^0x/, "");
+  return lower === APL_TOKEN_PROGRAM_ID_HEX || programId === APL_TOKEN_PROGRAM_ID_BASE58;
+}
+
+function firstByteOfBase64(data: unknown): number | null {
+  if (typeof data !== "string" || !data) return null;
+  try {
+    const decoded = atob(data);
+    if (!decoded.length) return null;
+    return decoded.charCodeAt(0);
+  } catch {
+    return null;
+  }
+}
+
+// Returns: true if it IS a transfer, false if it's NOT, null if unknown.
+function classifyFromChipLabels(tx: any): boolean | null {
   if (tx?.token_transfer && typeof tx.token_transfer === "object") return true;
-  const instructions = tx?.instructions;
-  if (Array.isArray(instructions)) {
-    return instructions.some((label) => typeof label === "string" && TRANSFER_INSTRUCTIONS.has(label));
+  const labels = tx?.instructions;
+  if (!Array.isArray(labels) || labels.length === 0) return null;
+  let sawTransfer = false;
+  let sawNonTransfer = false;
+  for (const label of labels) {
+    if (typeof label !== "string") continue;
+    if (TRANSFER_INSTRUCTION_LABELS.has(label)) sawTransfer = true;
+    else if (NON_TRANSFER_LABELS.has(label)) sawNonTransfer = true;
+  }
+  if (sawTransfer) return true;
+  if (sawNonTransfer) return false;
+  return null;
+}
+
+// Authoritative classifier using per-tx `/instructions` data. Returns true if
+// any APL token instruction has a transfer-y discriminant.
+function classifyFromInstructions(instructions: Array<Record<string, unknown>>): boolean {
+  for (const ix of instructions) {
+    if (!matchesAplTokenProgram(ix?.program_id)) continue;
+    const byte = firstByteOfBase64(ix?.data);
+    if (byte !== null && TRANSFER_DATA_DISCRIMINANTS.has(byte)) return true;
   }
   return false;
 }
@@ -217,7 +279,25 @@ export default function TokenDetail() {
         const res = await indexer.getAccountTransactions(token.tokenAccount, 50);
         const txs = (res?.transactions ?? []) as any[];
 
-        const transferOnly = txs.filter(isTokenTransferTx);
+        // Classify each tx. When chip labels don't decide, hit the per-tx
+        // /instructions endpoint to look at program ids + first data byte.
+        const classified = await Promise.all(
+          txs.map(async (tx) => {
+            let verdict = classifyFromChipLabels(tx);
+            if (verdict === null) {
+              try {
+                const ixs = await indexer.getTransactionInstructions(tx.txid);
+                verdict = classifyFromInstructions(Array.isArray(ixs) ? ixs : []);
+              } catch {
+                // Ambiguous and we couldn't fetch -- err on the side of showing.
+                verdict = true;
+              }
+            }
+            return { tx, isTransfer: verdict };
+          })
+        );
+
+        const transferOnly = classified.filter((c) => c.isTransfer).map((c) => c.tx);
 
         const detailed = await Promise.all(
           transferOnly.map(async (tx) => {

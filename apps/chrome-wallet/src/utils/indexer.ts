@@ -167,6 +167,10 @@ export class ArchIndexerClient {
     return this.getJson(`/transactions/${encodeURIComponent(txid)}`);
   }
 
+  getTransactionInstructions(txid: string): Promise<Array<Record<string, unknown>>> {
+    return this.getJson(`/transactions/${encodeURIComponent(txid)}/instructions`);
+  }
+
   // ── Tokens ───────────────────────────────────────────────────────────────
   getTokenList(params?: { q?: string; sort?: string; limit?: number }): Promise<unknown> {
     const qs = new URLSearchParams();
