@@ -27,18 +27,26 @@ export type ArchTxKind =
   | "compute_budget"
   | "other";
 
+// The indexer's v2 endpoint emits both the prefixed and bare forms ("Transfer"
+// vs "System: Transfer"), so we match against either. Comparisons are done
+// against the lowercase tail of the colon, so callers can throw any case at us.
 const TRANSFER_LABELS = new Set([
+  "Transfer",
+  "TransferChecked",
   "System: Transfer",
   "Token: Transfer",
   "Token: TransferChecked",
 ]);
-const MINT_LABELS = new Set(["Token: MintTo", "Token: MintToChecked"]);
-const BURN_LABELS = new Set(["Token: Burn", "Token: BurnChecked"]);
+const MINT_LABELS = new Set(["MintTo", "MintToChecked", "Token: MintTo", "Token: MintToChecked"]);
+const BURN_LABELS = new Set(["Burn", "BurnChecked", "Token: Burn", "Token: BurnChecked"]);
 const ATA_LABELS = new Set([
+  "Create",
   "Associated Token Account: Create",
   "AssociatedTokenAccount: Create",
 ]);
 const CREATE_ACCOUNT_LABELS = new Set([
+  "CreateAccount",
+  "Create",
   "System: CreateAccount",
   "System: Create",
   "System: CreateAccountWithSeed",
@@ -61,6 +69,40 @@ function asString(v: unknown): string {
 
 function asArray<T = unknown>(v: unknown): T[] {
   return Array.isArray(v) ? (v as T[]) : [];
+}
+
+/**
+ * Heuristics for filtering garbage labels. The indexer's /transactions/v2
+ * endpoint reuses the `instructions` field as a chip-display field, and for
+ * failed transactions it can dump the raw failure JSON in there as a single
+ * string (e.g. '{"FAILED":"Error processing Instruction 0..."}'). Those
+ * strings should never be shown to a user as if they were an action label.
+ */
+function isUsableLabel(label: string): boolean {
+  if (!label) return false;
+  if (label.length > 60) return false; // sanity cap -- real labels are short
+  const trimmed = label.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) return false;
+  if (/^\s*(FAILED|Failed|failed|ERROR|Error|error)\b/.test(trimmed)) return false;
+  if (/error processing instruction/i.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * Try to detect a failed status across the various shapes the indexer can
+ * emit:
+ *   "failed"  (v2 normalized string, any case)
+ *   "FAILED"
+ *   { Failed: "..." }   (legacy v1)
+ *   { failed: true }
+ */
+function isFailedStatus(status: unknown): boolean {
+  if (typeof status === "string") return /^(failed|rejected)$/i.test(status);
+  if (status && typeof status === "object") {
+    const keys = Object.keys(status as Record<string, unknown>);
+    return keys.some((k) => /^(Failed|Rejected|failed|rejected)$/.test(k));
+  }
+  return false;
 }
 
 function formatRawAmountWithDecimals(raw: string, decimals: number): string {
@@ -115,15 +157,19 @@ function summarizeTokenTransfer(
  * assume they always have a label suitable for display.
  */
 export function summarizeArchTx(tx: any, archAddress: string): ArchTxSummary {
+  const failed = isFailedStatus(tx?.status);
   const labels = asArray<string>(tx?.instructions).filter((s) => typeof s === "string");
 
-  // Token transfer takes priority when the row carries decoded data.
+  // Token transfer takes priority when the row carries decoded data, even
+  // for failed txs -- we still want to know "Sent Token (failed)" rather
+  // than just "Failed Transaction" with no context.
   const tokenSummary = summarizeTokenTransfer(tx, archAddress);
   if (tokenSummary) {
     return { kind: "token_transfer", ...tokenSummary };
   }
 
-  // Otherwise consult the chip labels.
+  // Consult the chip labels (best-effort match against both prefixed and
+  // bare forms emitted by v2).
   let sawTransfer = false;
   let sawMint = false;
   let sawBurn = false;
@@ -153,8 +199,18 @@ export function summarizeArchTx(tx: any, archAddress: string): ArchTxSummary {
     return { kind: "create_account", label: "Create Account", direction: "neutral" };
   }
 
-  // Fall back to the first sane label or a generic name.
-  const firstLabel = labels.find((l) => l && !l.startsWith("Compute Budget"));
+  // For failed txs we have no clean instruction labels to fall back on
+  // (the indexer often stuffs the failure JSON into `instructions[0]`), so
+  // skip the noisy fallback path entirely.
+  if (failed) {
+    return { kind: "other", label: "Failed Transaction", direction: "unknown" };
+  }
+
+  // Fall back to the first sane label or a generic name. isUsableLabel
+  // rejects JSON-shaped failure dumps and overlong strings.
+  const firstLabel = labels.find(
+    (l) => l && !l.startsWith("Compute Budget") && isUsableLabel(l)
+  );
   if (firstLabel) {
     return { kind: "other", label: firstLabel, direction: "unknown" };
   }

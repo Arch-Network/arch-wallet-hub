@@ -603,8 +603,9 @@ function ArrowUp() {
 }
 
 function renderActivityRow(tx: RecentTx, btcUsd: number | null) {
-  const isSuccess = tx.status === "confirmed" || tx.status === "processed";
-  const isFailed = tx.status === "failed" || tx.status === "rejected";
+  const statusLower = (tx.status || "").toLowerCase();
+  const isSuccess = statusLower === "confirmed" || statusLower === "processed";
+  const isFailed = statusLower === "failed" || statusLower === "rejected";
   const showBadge = !isSuccess; // success rows go uncluttered
 
   const dirClass =
@@ -649,7 +650,7 @@ function renderActivityRow(tx: RecentTx, btcUsd: number | null) {
       </div>
       {showBadge && (
         <span className={`badge ${isFailed ? "badge-failed" : "badge-pending"}`}>
-          {tx.status}
+          {isFailed ? "Failed" : tx.status}
         </span>
       )}
     </div>
