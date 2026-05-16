@@ -8,6 +8,7 @@ import ArchIcon from "../../components/ArchIcon";
 
 type Tab = "all" | "arch" | "btc";
 type TxKind = "arch" | "apl" | "btc";
+type TxStatus = "success" | "failed" | "pending" | "confirmed" | "unconfirmed";
 
 interface TxItem {
   txid: string;
@@ -16,7 +17,7 @@ interface TxItem {
   direction: "in" | "out" | "self" | "unknown";
   amount?: string;
   timestamp: string;
-  status: string;
+  status: TxStatus;
   explorerUrl: string;
 }
 
@@ -74,6 +75,36 @@ function isAplTransaction(tx: any): boolean {
   if (Array.isArray(tx.token_mints) && tx.token_mints.length > 0) return true;
   if (tx.token_transfer) return true;
   return false;
+}
+
+function normalizeArchStatus(tx: any): TxStatus {
+  const status = tx?.status;
+  if (typeof status === "string") {
+    const lower = status.toLowerCase();
+    if (lower.includes("fail") || lower.includes("reject") || lower.includes("error")) return "failed";
+    if (lower.includes("process") || lower.includes("success")) return "success";
+    if (lower.includes("pending")) return "pending";
+  }
+
+  if (status && typeof status === "object") {
+    const keys = Object.keys(status).map((k) => k.toLowerCase());
+    if (keys.some((k) => k.includes("fail") || k.includes("reject") || k.includes("error"))) return "failed";
+    if (keys.some((k) => k.includes("process") || k.includes("success"))) return "success";
+    if (keys.some((k) => k.includes("pending"))) return "pending";
+  }
+
+  if (tx?.block_height || tx?.confirmed_at) return "success";
+  return "pending";
+}
+
+function statusBadgeClass(status: TxStatus): string {
+  if (status === "success" || status === "confirmed") return "badge-success";
+  if (status === "failed") return "badge-failed";
+  return "badge-pending";
+}
+
+function statusLabel(status: TxStatus): string {
+  return status.toUpperCase();
 }
 
 function TxIcon({ kind, direction }: { kind: TxKind; direction: TxItem["direction"] }) {
@@ -134,27 +165,28 @@ export default function History() {
         const archTxs = archRes?.transactions ?? [];
         setHasMoreArch(archTxs.length >= 20);
 
-        for (const tx of archTxs as any[]) {
+        const detailedArchTxs = await Promise.all(
+          (archTxs as any[]).map(async (tx) => {
+            try {
+              const detail = await indexer.getTransactionDetail(tx.txid);
+              return { ...tx, ...(detail as Record<string, unknown>) };
+            } catch {
+              return tx;
+            }
+          })
+        );
+
+        for (const tx of detailedArchTxs) {
           const isToken = isAplTransaction(tx) || tokenTxIds.has(tx.txid);
           const kind: TxKind = isToken ? "apl" : "arch";
-          let statusStr = "confirmed";
-          const st = tx.status;
-          if (typeof st === "string") {
-            statusStr = st;
-          } else if (typeof st === "object" && st !== null) {
-            const keys = Object.keys(st);
-            if (keys.includes("Processing") || keys.includes("Pending")) statusStr = "pending";
-            else if (keys.includes("Failed") || keys.includes("Rejected")) statusStr = "failed";
-          } else if (!tx.block_height) {
-            statusStr = "pending";
-          }
+          const status = normalizeArchStatus(tx);
           items.push({
             txid: tx.txid,
             displayTxid: truncateAddress(formatArchId(tx.txid), 8),
             type: kind,
             direction: "unknown",
             timestamp: tx.created_at || "",
-            status: statusStr,
+            status,
             explorerUrl: `${archExplorer}${tx.txid}`,
           });
         }
@@ -307,15 +339,9 @@ export default function History() {
                     </div>
                   </div>
                   <span
-                    className={`badge ${
-                      tx.status === "confirmed" || tx.status === "processed"
-                        ? "badge-success"
-                        : tx.status === "failed"
-                          ? "badge-failed"
-                          : "badge-pending"
-                    }`}
+                    className={`badge ${statusBadgeClass(tx.status)}`}
                   >
-                    {tx.status}
+                    {statusLabel(tx.status)}
                   </span>
                 </div>
               </a>
