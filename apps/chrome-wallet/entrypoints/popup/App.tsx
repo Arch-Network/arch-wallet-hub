@@ -52,6 +52,9 @@ function bodyClassForPath(pathname: string): string {
   if (pathname === "/settings" || pathname === "/add-wallet" || pathname === "/tokens") {
     return "app-body app-body-medium";
   }
+  // Dashboard lets the hero bleed edge-to-edge of the main column and
+  // manages its own inner padding via .dashboard-shell.
+  if (pathname === "/dashboard" || pathname === "/") return "app-body app-body-full";
   return "app-body";
 }
 

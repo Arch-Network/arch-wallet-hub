@@ -151,6 +151,15 @@ a {
     max-width: 640px;
   }
 
+  /* Dashboard body: strip the centered-column constraints so the city
+     hero can bleed edge-to-edge of the main column. Inner content
+     manages its own max-width via .dashboard-shell. */
+  html[data-mode="sidepanel"] .app-body-full {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
   /* ═══════════════════ Wide-mode typography + spacing ═══════════════════
      The whole design system is sized for a 360px popup. When the side panel
      opens up at >= 560px viewport, scale everything up so the UI doesn't
@@ -161,83 +170,95 @@ a {
   }
 
   html[data-mode="sidepanel"] .section-title {
-    font-size: 13px;
-    margin-bottom: 12px;
+    font-size: 14px;
+    margin-bottom: 14px;
     letter-spacing: 0.1em;
   }
 
   html[data-mode="sidepanel"] .section {
-    margin-bottom: 22px;
+    margin-bottom: 28px;
   }
 
-  /* Hero balance card -- bigger headline and breathing room */
+  /* Hero balance card -- spans the full main column width because
+     .app-body-full (Dashboard route) has zero padding/max-width.
+     Other routes still get -20/-24 break-out margins from the popup
+     defaults further down the file, which compose correctly here. */
   html[data-mode="sidepanel"] .balance-hero {
-    margin: -20px -24px 22px;
-    padding: 48px 32px 40px;
+    margin: 0 0 28px;
+    padding: 88px 48px 72px;
     border-radius: 0;
   }
 
   html[data-mode="sidepanel"] .balance-amount {
-    font-size: 44px;
-    margin-bottom: 10px;
-    letter-spacing: -0.015em;
+    font-size: 56px;
+    margin-bottom: 12px;
+    letter-spacing: -0.02em;
   }
 
   html[data-mode="sidepanel"] .balance-label {
-    font-size: 14px;
+    font-size: 15px;
     gap: 8px;
+  }
+
+  /* Inner content cap on dashboard. Wider than other routes (920px)
+     so the 2-col grid below has plenty of room to breathe. */
+  html[data-mode="sidepanel"] .dashboard-shell {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 0 32px 40px;
+    width: 100%;
   }
 
   /* Quick actions row -- pill-style buttons feel less cramped */
   html[data-mode="sidepanel"] .action-bar {
     gap: 12px;
-    padding: 0 0 22px;
+    padding: 0 0 28px;
   }
 
   html[data-mode="sidepanel"] .action-btn {
     flex-direction: row;
     justify-content: center;
-    gap: 10px;
-    padding: 16px 14px;
-    font-size: 14px;
+    gap: 12px;
+    padding: 18px 16px;
+    font-size: 15px;
     border-radius: 14px;
   }
 
   html[data-mode="sidepanel"] .action-btn-icon {
-    font-size: 20px;
+    font-size: 22px;
   }
 
   /* Portfolio asset rows */
   html[data-mode="sidepanel"] .asset-row {
-    padding: 16px 4px;
-    gap: 16px;
+    padding: 18px 4px;
+    gap: 18px;
   }
 
   html[data-mode="sidepanel"] .asset-icon {
-    width: 44px;
-    height: 44px;
-    font-size: 19px;
+    width: 48px;
+    height: 48px;
+    font-size: 21px;
   }
 
   html[data-mode="sidepanel"] .asset-name {
-    font-size: 16px;
+    font-size: 17px;
   }
 
   html[data-mode="sidepanel"] .asset-sub {
-    font-size: 12px;
+    font-size: 13px;
   }
 
   html[data-mode="sidepanel"] .asset-balance {
-    font-size: 16px;
+    font-size: 18px;
   }
 
   html[data-mode="sidepanel"] .asset-balance-usd {
-    font-size: 12px;
+    font-size: 13px;
   }
 
   html[data-mode="sidepanel"] .asset-confirmed,
   html[data-mode="sidepanel"] .asset-pending-line {
-    font-size: 11px;
+    font-size: 12px;
   }
 
   /* Activity rows in the recent activity card */
@@ -649,10 +670,20 @@ a {
 .balance-hero::before {
   content: "";
   position: absolute;
-  inset: 0;
+  /* Extend the background layer above and below the hero so it has
+     room to slide on scroll without revealing empty edges. */
+  top: -60px;
+  left: 0;
+  right: 0;
+  bottom: -240px;
   background: url("/hero-bg.png") center 60% / cover no-repeat;
   opacity: 0.45;
   filter: saturate(0.8) brightness(0.7);
+  /* Parallax: drive by --parallax-y (set by Dashboard's scroll handler
+     on .app-body). Hero moves at 100% scroll speed; this layer at 35%,
+     producing a 65% relative shift -- a subtle depth cue. */
+  transform: translate3d(0, var(--parallax-y, 0px), 0);
+  will-change: transform;
 }
 
 .balance-hero::after {

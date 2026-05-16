@@ -164,6 +164,30 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [airdropLoading, setAirdropLoading] = useState(false);
 
+  // Parallax: drive a CSS variable on .app-body so the hero's city
+  // background pans slower than the foreground as you scroll.
+  // rAF-throttled to keep scrolling buttery even on cheap devices.
+  useEffect(() => {
+    const body = document.querySelector(".app-body") as HTMLElement | null;
+    if (!body) return;
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
+      body.style.setProperty("--parallax-y", `${body.scrollTop * 0.35}px`);
+    };
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(apply);
+    };
+    apply();
+    body.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      body.removeEventListener("scroll", onScroll);
+      body.style.removeProperty("--parallax-y");
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
+
   const fetchAll = useCallback(async (opts?: { noCache?: boolean }) => {
     if (!activeAccount) return;
     setError(null);
@@ -366,9 +390,9 @@ export default function Dashboard() {
 
   return (
     <>
-      {error && <div className="error-banner">{error}</div>}
-
-      {/* Balance hero -- skeleton until overview loads */}
+      {/* Balance hero -- bleeds edge-to-edge of the main column in wide
+          side panel mode. Lives outside .dashboard-shell so it isn't
+          constrained by the inner max-width. */}
       {balancesReady ? (
         <div className="balance-hero">
           <div className="balance-amount">{formatArch(archLamports ?? 0)}</div>
@@ -387,6 +411,9 @@ export default function Dashboard() {
       ) : (
         <SkeletonBalance />
       )}
+
+      <div className="dashboard-shell">
+      {error && <div className="error-banner">{error}</div>}
 
       {/* Action bar */}
       {balancesReady ? (
@@ -569,6 +596,7 @@ export default function Dashboard() {
             </>
           )}
         </div>
+      </div>
       </div>
       </div>
     </>
