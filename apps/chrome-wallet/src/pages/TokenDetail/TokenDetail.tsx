@@ -4,6 +4,7 @@ import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
 import { formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, hexToBase58 } from "../../utils/format";
 import { enrichTokenFromRpc } from "../../utils/arch-rpc";
+import { deriveArchAccountAddress } from "../../utils/sdk";
 import {
   type TxStatus,
   normalizeArchStatus,
@@ -110,6 +111,26 @@ function classifyFromInstructions(instructions: Array<Record<string, unknown>>):
     if (!matchesAplTokenProgram(ix?.program_id)) continue;
     const byte = firstByteOfBase64(ix?.data);
     if (byte !== null && TRANSFER_DATA_DISCRIMINANTS.has(byte)) return true;
+  }
+  return false;
+}
+
+// Check whether a tx's instructions touch our specific token account. Used
+// to filter txs returned by the wallet's main address down to ones for this
+// mint.
+function instructionsTouchAccount(
+  instructions: Array<Record<string, unknown>>,
+  tokenAccount: string,
+  mint: string,
+): boolean {
+  for (const ix of instructions) {
+    const accounts = ix?.accounts;
+    if (!Array.isArray(accounts)) continue;
+    for (const a of accounts) {
+      const pubkey = typeof a === "string" ? a : (a as any)?.pubkey;
+      if (typeof pubkey !== "string") continue;
+      if (pubkey === tokenAccount || pubkey === mint) return true;
+    }
   }
   return false;
 }
@@ -262,7 +283,7 @@ export default function TokenDetail() {
   }, [activeAccount, mint, state.network]);
 
   useEffect(() => {
-    if (!token?.tokenAccount) {
+    if (!token) {
       setTransactions([]);
       setLoadingTxs(false);
       return;
@@ -274,30 +295,101 @@ export default function TokenDetail() {
       try {
         const indexer = await getIndexer();
         const archExplorer = `${explorerBase}/tx/`;
-        // Fetch a deeper page so we have enough material after filtering out
-        // non-transfer instructions like CreateAssociatedTokenAccount.
-        const res = await indexer.getAccountTransactions(token.tokenAccount, 50);
-        const txs = (res?.transactions ?? []) as any[];
+
+        // The indexer indexes a tx against every account it touches, but
+        // coverage varies: the wallet's main archAddress is the most reliable
+        // bucket (signer/fee-payer), the token account ATA is also a candidate
+        // when transfers move balance through it. Fetch both and dedupe.
+        const walletArch =
+          activeAccount?.archAddress ||
+          (activeAccount?.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
+
+        const sources = [
+          token.tokenAccount,
+          walletArch && walletArch !== token.tokenAccount ? walletArch : "",
+        ].filter(Boolean) as string[];
+
+        const allResponses = await Promise.all(
+          sources.map(async (addr) => {
+            try {
+              const res = await indexer.getAccountTransactions(addr, 50);
+              return (res?.transactions ?? []) as any[];
+            } catch (e) {
+              console.debug("[TokenDetail] getAccountTransactions failed", addr, e);
+              return [];
+            }
+          })
+        );
+
+        const seen = new Set<string>();
+        const merged: any[] = [];
+        for (const arr of allResponses) {
+          for (const tx of arr) {
+            if (!tx?.txid || seen.has(tx.txid)) continue;
+            seen.add(tx.txid);
+            merged.push(tx);
+          }
+        }
+        console.debug(
+          "[TokenDetail] candidate txs",
+          { sources, count: merged.length, sample: merged.slice(0, 3) },
+        );
 
         // Classify each tx. When chip labels don't decide, hit the per-tx
         // /instructions endpoint to look at program ids + first data byte.
+        // We also require the tx to actually touch this token's account or
+        // mint -- since we're now pulling from the wallet address too, the
+        // list can contain unrelated activity (BTC sends, other tokens).
         const classified = await Promise.all(
-          txs.map(async (tx) => {
-            let verdict = classifyFromChipLabels(tx);
-            if (verdict === null) {
+          merged.map(async (tx) => {
+            const fromChip = classifyFromChipLabels(tx);
+            let ixs: Array<Record<string, unknown>> = [];
+            let ixsLoaded = false;
+
+            const loadIxs = async () => {
+              if (ixsLoaded) return ixs;
               try {
-                const ixs = await indexer.getTransactionInstructions(tx.txid);
-                verdict = classifyFromInstructions(Array.isArray(ixs) ? ixs : []);
-              } catch {
-                // Ambiguous and we couldn't fetch -- err on the side of showing.
-                verdict = true;
+                const res = await indexer.getTransactionInstructions(tx.txid);
+                ixs = Array.isArray(res) ? res : [];
+              } catch (e) {
+                console.debug("[TokenDetail] getTransactionInstructions failed", tx.txid, e);
+                ixs = [];
+              }
+              ixsLoaded = true;
+              return ixs;
+            };
+
+            let isTransfer: boolean;
+            if (fromChip === true) {
+              isTransfer = true;
+            } else if (fromChip === false) {
+              isTransfer = false;
+            } else {
+              const loaded = await loadIxs();
+              isTransfer = classifyFromInstructions(loaded);
+              if (!isTransfer && loaded.length === 0) {
+                // Couldn't classify at all -- be conservative and keep it.
+                isTransfer = true;
               }
             }
-            return { tx, isTransfer: verdict };
+            if (!isTransfer) return { tx, isTransfer: false };
+
+            // Confirm the tx is relevant to *this* mint/token account.
+            const mintHits =
+              Array.isArray(tx?.token_mints) && tx.token_mints.includes(token.mint);
+            const ttHits =
+              tx?.token_transfer && (tx.token_transfer.mint === token.mint);
+            let relevant = mintHits || ttHits;
+            if (!relevant) {
+              const loaded = await loadIxs();
+              relevant = instructionsTouchAccount(loaded, token.tokenAccount, token.mint);
+            }
+            return { tx, isTransfer: relevant };
           })
         );
 
         const transferOnly = classified.filter((c) => c.isTransfer).map((c) => c.tx);
+        console.debug("[TokenDetail] kept after filter", transferOnly.length);
 
         const detailed = await Promise.all(
           transferOnly.map(async (tx) => {
@@ -336,7 +428,7 @@ export default function TokenDetail() {
     })();
 
     return () => { cancelled = true; };
-  }, [token?.tokenAccount, token?.decimals, explorerBase]);
+  }, [token?.mint, token?.tokenAccount, token?.decimals, explorerBase, activeAccount?.archAddress, activeAccount?.publicKeyHex]);
 
   const handleSend = useCallback(() => {
     if (!token) return;
