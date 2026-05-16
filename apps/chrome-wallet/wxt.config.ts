@@ -13,8 +13,11 @@ export default defineConfig({
       48: "icon/48.png",
       128: "icon/128.png",
     },
-    permissions: ["storage", "activeTab", "tabs"],
+    permissions: ["storage", "activeTab", "tabs", "sidePanel"],
     host_permissions: ["<all_urls>"],
+    side_panel: {
+      default_path: "sidepanel.html",
+    },
     web_accessible_resources: [
       {
         resources: ["injected.js"],

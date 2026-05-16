@@ -1,5 +1,6 @@
 import { walletStore } from "../src/state/wallet-store";
 import type { PendingRequest } from "../src/messaging/types";
+import type { OpenAsMode } from "../src/state/types";
 
 const pendingRequests = new Map<string, PendingRequest>();
 
@@ -7,8 +8,48 @@ function genId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Configure the toolbar action so clicking the icon opens either the popup
+ * window or the Chrome side panel, per the user's preference.
+ *
+ *  popup     -> action has popup.html attached, no side-panel hijack
+ *  sidepanel -> action has no popup; chrome.sidePanel intercepts the click
+ */
+async function applyOpenAsPreference(mode: OpenAsMode): Promise<void> {
+  try {
+    if (mode === "sidepanel" && chrome.sidePanel?.setPanelBehavior) {
+      await chrome.action.setPopup({ popup: "" });
+      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    } else {
+      if (chrome.sidePanel?.setPanelBehavior) {
+        await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
+      }
+      await chrome.action.setPopup({ popup: "popup.html" });
+    }
+  } catch (err) {
+    console.warn("[arch-wallet] applyOpenAsPreference failed", err);
+  }
+}
+
+async function syncOpenAsFromStorage(): Promise<void> {
+  const state = await walletStore.getState();
+  await applyOpenAsPreference(state.openAs ?? "sidepanel");
+}
+
 export default defineBackground(() => {
   walletStore.initialize();
+
+  syncOpenAsFromStorage();
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (!changes.arch_wallet_state) return;
+    const next = changes.arch_wallet_state.newValue as { openAs?: OpenAsMode } | undefined;
+    const prev = changes.arch_wallet_state.oldValue as { openAs?: OpenAsMode } | undefined;
+    if (next?.openAs && next.openAs !== prev?.openAs) {
+      applyOpenAsPreference(next.openAs);
+    }
+  });
 
   chrome.runtime.onMessage.addListener(
     (message: any, sender, sendResponse: (r: any) => void) => {
@@ -91,10 +132,10 @@ export default defineBackground(() => {
     }
   );
 
-  chrome.runtime.onInstalled.addListener((details) => {
-    if (details.reason === "install") {
-      chrome.action.setPopup({ popup: "popup.html" });
-    }
+  chrome.runtime.onInstalled.addListener(() => {
+    // Apply the user's stored open-as preference; first-run will default
+    // to sidepanel via DEFAULT_STATE.
+    syncOpenAsFromStorage();
   });
 
   async function handleProviderRequest(msg: any, sender: chrome.runtime.MessageSender) {

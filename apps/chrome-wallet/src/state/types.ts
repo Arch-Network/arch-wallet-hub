@@ -1,4 +1,5 @@
 export type NetworkId = "testnet4" | "mainnet";
+export type OpenAsMode = "popup" | "sidepanel";
 
 export interface WalletAccount {
   id: string;
@@ -27,6 +28,9 @@ export interface AppState {
   // Arch Explorer Indexer API (reads + faucet + BTC + Arch RPC compat)
   indexerBaseUrl: string;
   indexerApiKey: string;
+
+  // How the toolbar icon opens the wallet UI.
+  openAs: OpenAsMode;
 }
 
 export interface ConnectedSite {
@@ -51,4 +55,5 @@ export const DEFAULT_STATE: AppState = {
   hubApiKey: DEFAULT_HUB_API_KEY,
   indexerBaseUrl: "",
   indexerApiKey: "",
+  openAs: "sidepanel",
 };

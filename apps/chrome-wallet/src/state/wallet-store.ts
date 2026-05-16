@@ -76,6 +76,11 @@ export const walletStore = {
 
     if (migrateApiConfig(state)) migrated = true;
 
+    if (state.openAs !== "popup" && state.openAs !== "sidepanel") {
+      state.openAs = "sidepanel";
+      migrated = true;
+    }
+
     if (migrated) await saveState(state);
     return state as AppState;
   },
@@ -177,6 +182,12 @@ export const walletStore = {
     const state = await loadState();
     state.indexerBaseUrl = indexerBaseUrl;
     state.indexerApiKey = indexerApiKey;
+    await saveState(state);
+  },
+
+  async setOpenAs(mode: "popup" | "sidepanel"): Promise<void> {
+    const state = await loadState();
+    state.openAs = mode;
     await saveState(state);
   },
 

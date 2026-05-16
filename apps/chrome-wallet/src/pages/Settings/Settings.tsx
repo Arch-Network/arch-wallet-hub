@@ -104,6 +104,31 @@ export default function Settings() {
       </div>
 
       <div className="section">
+        <div className="section-title">Open Wallet As</div>
+        <div className="card">
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              className={`btn btn-sm ${state.openAs === "sidepanel" ? "btn-primary" : "btn-secondary"}`}
+              onClick={() => walletStore.setOpenAs("sidepanel")}
+              style={{ flex: 1 }}
+            >
+              Side Panel
+            </button>
+            <button
+              className={`btn btn-sm ${state.openAs === "popup" ? "btn-primary" : "btn-secondary"}`}
+              onClick={() => walletStore.setOpenAs("popup")}
+              style={{ flex: 1 }}
+            >
+              Popup
+            </button>
+          </div>
+          <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "8px 0 0" }}>
+            Side panel stays open while you browse. Popup closes when you click away.
+          </p>
+        </div>
+      </div>
+
+      <div className="section">
         <div className="section-title">Wallets ({state.accounts.length})</div>
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           {state.accounts.map((acct: WalletAccount) => {
