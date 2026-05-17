@@ -139,11 +139,12 @@ a {
   }
 
   /* Body breathing room: the side panel can be much taller and wider than
-     the popup, so let content use it. */
+     the popup, so let content use it. Horizontal padding slimmed from 24
+     to 16 -- the cards inside provide their own visual containment. */
   html[data-mode="sidepanel"] .app-body {
     max-width: 880px;
     margin: 0 auto;
-    padding: 20px 24px;
+    padding: 20px 16px;
   }
 
   /* Per-route caps: forms and settings shouldn't stretch the full width
@@ -206,11 +207,12 @@ a {
   }
 
   /* Inner content cap on dashboard. Wider than other routes (920px)
-     so the 2-col grid below has plenty of room to breathe. */
+     so the 2-col grid below has plenty of room to breathe. Slimmer
+     horizontal gutter so rows fill more of the column. */
   html[data-mode="sidepanel"] .dashboard-shell {
     max-width: 920px;
     margin: 0 auto;
-    padding: 0 32px 40px;
+    padding: 0 16px 32px;
     width: 100%;
   }
 
@@ -461,7 +463,9 @@ a {
 .app-body {
   flex: 1;
   overflow-y: auto;
-  padding: 14px;
+  /* Slim horizontal gutter so the cards inside have room to breathe.
+     The card adds its own internal padding for content separation. */
+  padding: 14px 10px;
 }
 
 /* ═══════════════════ Bottom Nav ═══════════════════ */
@@ -529,7 +533,10 @@ a {
   background: var(--bg-card);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
-  padding: 14px;
+  /* Vertical 14 keeps rows comfortable; horizontal 12 gives the row
+     contents an extra 4px of width on each side without crowding the
+     card chrome. */
+  padding: 14px 12px;
   backdrop-filter: blur(8px);
 }
 
