@@ -220,15 +220,24 @@ a {
   html[data-mode="sidepanel"] .action-bar {
     gap: 12px;
     padding: 0 0 28px;
+    /* Allow pill buttons to wrap to a second row when the main column
+       isn't wide enough for all four side-by-side. The flex-basis on
+       each button below means we get 4-per-row at >= ~580px content
+       width and a 2x2 grid below that. */
+    flex-wrap: wrap;
   }
 
   html[data-mode="sidepanel"] .action-btn {
     flex-direction: row;
     justify-content: center;
-    gap: 12px;
-    padding: 18px 16px;
+    gap: 10px;
+    padding: 16px 14px;
     font-size: 15px;
     border-radius: 14px;
+    /* basis 130px is just above the natural pill content width so the
+       buttons fit four-up at wide widths and wrap to 2-up at narrow
+       widths, distributing leftover space evenly via flex-grow. */
+    flex: 1 1 130px;
   }
 
   html[data-mode="sidepanel"] .action-btn-icon {
