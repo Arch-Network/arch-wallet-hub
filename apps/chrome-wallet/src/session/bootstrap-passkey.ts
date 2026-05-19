@@ -36,6 +36,32 @@ import type { WalletAccount } from "../state/types";
 import { TURNKEY_API_BASE_URL } from "./constants";
 import type { SessionBootstrap } from "./types";
 
+function base64UrlToBytes(value: string): Uint8Array {
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(
+    normalized.length + ((4 - (normalized.length % 4)) % 4),
+    "=",
+  );
+  const binary = globalThis.atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function allowCredentialsForAccount(
+  account: WalletAccount,
+): PublicKeyCredentialDescriptor[] | undefined {
+  if (!account.passkeyCredentialId) return undefined;
+  return [
+    {
+      id: base64UrlToBytes(account.passkeyCredentialId),
+      type: "public-key",
+    },
+  ];
+}
+
 function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
   // rpId must match the WebAuthn relying party recorded at
   // registration. In dev that's localhost; in production it's
@@ -63,7 +89,9 @@ export class PasskeyBootstrap implements SessionBootstrap {
     // authenticator. Turnkey's policy engine pins the new "Login
     // API key" to the same user that owns the stamping credential,
     // so we don't have to pass userId explicitly.
-    await tk.passkeyClient().stampLogin({
+    await tk.passkeyClient({
+      allowCredentials: allowCredentialsForAccount(args.account),
+    }).stampLogin({
       publicKey: args.publicKeyHex,
       expirationSeconds: String(args.expirationSeconds),
       // Don't invalidate prior keys -- if we did, recovering on a

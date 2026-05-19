@@ -389,8 +389,8 @@ export default function Settings() {
             </div>
             <div style={{ marginBottom: 8 }}>
               <div className="input-label">Bitcoin Address</div>
-              <div className="address-chip" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>
+              <div className="address-chip address-chip-wrap">
+                <span className="mono address-chip-value" style={{ fontSize: 11 }}>
                   {displayBtcAddress}
                 </span>
                 <CopyButton text={displayBtcAddress} />
@@ -398,8 +398,8 @@ export default function Settings() {
             </div>
             <div>
               <div className="input-label">Public Key</div>
-              <div className="address-chip" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>
+              <div className="address-chip address-chip-wrap">
+                <span className="mono address-chip-value" style={{ fontSize: 11 }}>
                   {truncateAddress(activeAccount.publicKeyHex, 12)}
                 </span>
                 <CopyButton text={activeAccount.publicKeyHex} />

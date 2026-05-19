@@ -39,7 +39,7 @@
  * behaviour anyway.
  */
 
-import type { RecoveryEmailCandidate } from "@arch/wallet-hub-sdk";
+import type { RecoveryEmailCandidate } from "@arch-network/wallet-hub-sdk";
 
 const KEY = "arch_wallet_recovery_session";
 const TTL_MS = 10 * 60 * 1000;

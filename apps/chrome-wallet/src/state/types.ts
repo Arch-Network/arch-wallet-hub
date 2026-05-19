@@ -75,6 +75,8 @@ export interface WalletAccount {
   organizationId: string;
   /** How this wallet bootstraps a Turnkey IndexedDB session. */
   authMethod: WalletAuthMethod;
+  /** WebAuthn credential id registered with Turnkey for this passkey wallet. */
+  passkeyCredentialId?: string;
   /** Email captured at sign-up for recovery; never sent to dapps. */
   recoveryEmail?: string;
   /**

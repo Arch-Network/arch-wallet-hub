@@ -69,7 +69,7 @@ jobs:
         working-directory: apps/chrome-wallet
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          sed -i "s/version: \".*\"/version: \"$VERSION\"/" wxt.config.ts
+          npm pkg set version="$VERSION"
 
       - name: Build extension
         working-directory: apps/chrome-wallet

@@ -48,6 +48,7 @@ import {
   swapTransactionSignerForAccount,
   walletStateForEngine,
 } from "../../utils/swap-engine";
+import { ensureSwapSigningSession } from "../../utils/swap-onboarding";
 
 import { DirectionToggle } from "./components/DirectionToggle";
 import { FaucetPanel } from "./components/FaucetPanel";
@@ -442,6 +443,35 @@ export default function Swap() {
     [],
   );
 
+  const handleInitialize = useCallback(async () => {
+    if (!sidePanelMode) {
+      await onboarding.initialize();
+      return;
+    }
+
+    setError(null);
+    try {
+      await openWalletPopup({
+        path: "/swap",
+        query: {
+          sell: pair.sell,
+          buy: pair.buy,
+          ...(rawInput ? { amount: rawInput } : {}),
+          resume: "1",
+        },
+      });
+      setStatusMsg(
+        "Continue in the popup window to initialize swaps. The side panel can't show passkey prompts.",
+      );
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? `Could not open the wallet popup: ${e.message}`
+          : "Could not open the wallet popup.",
+      );
+    }
+  }, [sidePanelMode, onboarding.initialize, pair.sell, pair.buy, rawInput]);
+
   const handleSubmit = useCallback(async () => {
     if (validation.kind === "quote-failed") {
       refreshQuote();
@@ -485,6 +515,7 @@ export default function Swap() {
     setSuccessTxid(null);
 
     try {
+      await ensureSwapSigningSession(activeAccount);
       const signer = swapTransactionSignerForAccount(activeAccount);
       const txHash = await signAndSendTransaction(quote.runtimeTx, signer, {
         label: SWAP_LABEL,
@@ -598,7 +629,7 @@ export default function Swap() {
           phase={onboarding.phase}
           error={onboarding.error}
           isInitializing={onboarding.isInitializing}
-          onInitialize={onboarding.initialize}
+          onInitialize={handleInitialize}
         />
 
         {resumedFromSidePanel && (

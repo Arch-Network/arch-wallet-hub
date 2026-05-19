@@ -1,10 +1,11 @@
 import { useState, useCallback, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
 import { walletStore } from "../../state/wallet-store";
 import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
+import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
 import { type WalletAccount } from "../../state/types";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 
@@ -41,6 +42,16 @@ type WizardStep = 0 | 1 | 2;
 type WizardMethod = "passkey" | "email" | null;
 
 const MIN_PASSWORD_LENGTH = 8;
+const ONBOARDING_HANDOFF_PREFIX = "arch_wallet_onboarding_handoff:";
+
+interface OnboardingHandoff {
+  method: "passkey" | "email";
+  walletName: string;
+  email: string;
+  password: string;
+  confirmPassword: string;
+  wizardStep: WizardStep;
+}
 
 function withTimeout<T>(
   promise: Promise<T>,
@@ -108,6 +119,7 @@ function PasswordFields({ password, confirm, onPassword, onConfirm }: PasswordFi
 
 export default function Onboarding({ onComplete, addMode, secureLegacyState }: OnboardingProps) {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [step, setStep] = useState<Step>(secureLegacyState ? "secure" : "welcome");
   const [error, setError] = useState<string | null>(null);
   const [walletName, setWalletName] = useState("");
@@ -133,6 +145,40 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   useEffect(() => {
     invalidateClientCache();
   }, []);
+
+  useEffect(() => {
+    if (secureLegacyState) return;
+    const handoffId = searchParams.get("resumeOnboarding");
+    if (!handoffId) return;
+
+    let cancelled = false;
+    (async () => {
+      const key = `${ONBOARDING_HANDOFF_PREFIX}${handoffId}`;
+      const result = await chrome.storage.session.get(key);
+      const payload = result[key] as OnboardingHandoff | undefined;
+      await chrome.storage.session.remove(key);
+      if (cancelled || !payload) return;
+
+      setWizardMethod(payload.method);
+      setWalletName(payload.walletName);
+      setEmail(payload.email);
+      setPassword(payload.password);
+      setConfirmPassword(payload.confirmPassword);
+      setWizardStep(Math.min(payload.wizardStep, lastWizardStep) as WizardStep);
+
+      const next = new URLSearchParams(searchParams);
+      next.delete("resumeOnboarding");
+      setSearchParams(next, { replace: true });
+    })().catch(() => {
+      const next = new URLSearchParams(searchParams);
+      next.delete("resumeOnboarding");
+      setSearchParams(next, { replace: true });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [secureLegacyState, searchParams, setSearchParams, lastWizardStep]);
 
   const buildClient = useCallback(async () => {
     const state = await walletStore.getState().catch(() => null);
@@ -180,6 +226,40 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       setError(err);
       return;
     }
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setError("Recovery email is required for passkey wallets");
+      return;
+    }
+    if (isInSidePanel()) {
+      try {
+        const handoffId =
+          self.crypto?.randomUUID?.() ??
+          `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        await chrome.storage.session.set({
+          [`${ONBOARDING_HANDOFF_PREFIX}${handoffId}`]: {
+            method: "passkey",
+            walletName,
+            email: trimmedEmail,
+            password,
+            confirmPassword,
+            wizardStep: lastWizardStep,
+          } satisfies OnboardingHandoff,
+        });
+        await openWalletPopup({
+          path: addMode ? "/add-wallet" : "/",
+          query: {
+            resumeOnboarding: handoffId,
+          },
+        });
+        setError(
+          "Continue in the popup window to create a passkey. The side panel can't show passkey prompts.",
+        );
+      } catch (e: any) {
+        setError(e?.message || "Could not open the wallet popup");
+      }
+      return;
+    }
     setStep("creating");
     setError(null);
     setStatusMessage("Fetching server configuration...");
@@ -207,12 +287,16 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       });
 
       const displayName = walletName.trim() || "Arch Wallet";
-      const passkey = await tk.passkeyClient().createUserPasskey({
-        publicKey: {
-          rp: { id: rpId, name: "Arch Wallet" },
-          user: { name: `${externalUserId}-${Date.now()}`, displayName },
-        },
-      });
+      const passkey = await withTimeout(
+        tk.passkeyClient().createUserPasskey({
+          publicKey: {
+            rp: { id: rpId, name: "Arch Wallet" },
+            user: { name: `${externalUserId}-${Date.now()}`, displayName },
+          },
+        }),
+        30_000,
+        "Creating passkey",
+      );
 
       setStatusMessage("Creating your wallet on the server...");
 
@@ -225,7 +309,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
           idempotencyKey,
           body: {
             externalUserId,
-            userEmail: email.trim() || undefined,
+            userEmail: trimmedEmail,
             passkey: {
               challenge: passkey.encodedChallenge,
               attestation: passkey.attestation,
@@ -247,9 +331,10 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         turnkeyResourceId: result.resourceId,
         organizationId: result.organizationId,
         authMethod: "passkey",
-        recoveryEmail: email.trim() || undefined,
+        passkeyCredentialId: passkey.attestation.credentialId,
+        recoveryEmail: trimmedEmail,
         // Passkey wallets recover by re-attaching a new passkey via
-        // the email recovery flow when a recovery email is present.
+        // the email recovery flow.
         createdAt: Date.now(),
       };
 
@@ -369,8 +454,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   }, [wizardMethod, createNonCustodialWallet, createEmailWallet]);
 
   // Per-step validity drives the Next button's disabled state.
-  const detailsValid =
-    wizardMethod === "email" ? email.trim().length > 0 : true;
+  const detailsValid = email.trim().length > 0;
   const passwordValid =
     addMode ||
     (password.length >= MIN_PASSWORD_LENGTH && password === confirmPassword);
@@ -470,7 +554,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     if (wizardStep === 1) {
       return wizardMethod === "email"
         ? "We'll email a one-time code to this address whenever you unlock."
-        : "Give the wallet a name and (optionally) a recovery email.";
+        : "Give the wallet a name and recovery email.";
     }
     return "You'll use this every time you open the wallet on this device.";
   })();
@@ -659,7 +743,6 @@ function DetailsStep({
   onWalletName,
   onEmail,
 }: DetailsStepProps) {
-  const emailRequired = method === "email";
   return (
     <div className="onboarding-card">
       <div className="onboarding-field">
@@ -682,20 +765,7 @@ function DetailsStep({
 
       <div className="onboarding-field">
         <label className="onboarding-field-label">
-          {emailRequired ? "Email" : "Recovery email"}
-          {!emailRequired && (
-            <span
-              style={{
-                color: "var(--text-muted)",
-                fontWeight: 400,
-                marginLeft: 6,
-                textTransform: "none",
-                letterSpacing: 0,
-              }}
-            >
-              (optional)
-            </span>
-          )}
+          {method === "email" ? "Email" : "Recovery email"}
         </label>
         <input
           className="input"
@@ -706,9 +776,9 @@ function DetailsStep({
           autoComplete="email"
         />
         <p className="onboarding-field-hint">
-          {emailRequired
-            ? "Required — we'll send a verification code here at every unlock."
-            : "Strongly recommended. Without it you can't recover this wallet if you lose your passkey."}
+          {method === "email"
+            ? "Required - we'll send a verification code here at every unlock."
+            : "Required - this is how you recover the wallet if you lose your passkey."}
         </p>
       </div>
     </div>

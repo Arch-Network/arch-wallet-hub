@@ -38,7 +38,7 @@ function labelFor(validation: SwapValidation, isSubmitting: boolean): ReactNode 
     case "quote-failed":
       return "Retry quote";
     case "custodial-unsupported":
-      return "Custodial swap coming soon";
+      return "Email wallet swaps coming soon";
     case "valid":
       return "Confirm swap";
   }

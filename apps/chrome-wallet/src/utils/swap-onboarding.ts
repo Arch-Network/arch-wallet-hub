@@ -32,6 +32,7 @@ import {
 } from "@arch/swap-engine";
 
 import type { WalletAccount } from "../state/types";
+import { walletStore } from "../state/wallet-store";
 import {
   swapTransactionSignerForAccount,
   walletStateForEngine,
@@ -95,6 +96,20 @@ export interface EnsureOnboardingInput {
 }
 
 /**
+ * Button-driven swap actions may run after the wallet password unlock
+ * succeeded but the bounded Turnkey signing session expired or was never
+ * opened. Re-open it at the signing boundary so retrying can recover with
+ * a fresh passkey prompt instead of replaying SessionLockedError.
+ */
+export async function ensureSwapSigningSession(account: WalletAccount): Promise<void> {
+  if (account.authMethod !== "passkey") {
+    throw new Error("Swaps with email wallets are not supported yet.");
+  }
+  if (await walletStore.hasActiveSession()) return;
+  await walletStore.openPasskeySession();
+}
+
+/**
  * Idempotent: probes eligibility, creates the account if needed, then
  * creates any missing ATAs. Triggers 1–2 passkey prompts depending on
  * what's missing. Throws with actionable copy on failure (the message is
@@ -110,6 +125,7 @@ export async function ensureSwapOnboardingForAccount({
   config,
   onPhase,
 }: EnsureOnboardingInput): Promise<void> {
+  await ensureSwapSigningSession(account);
   const signChallenge = swapTransactionSignerForAccount(account);
   const pubkeyHex = xOnlyPubkeyHexForAccount(account);
   // `ensureOnboarding` itself handles the "already done" early-exit at

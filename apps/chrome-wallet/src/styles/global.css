@@ -122,6 +122,78 @@ a {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+  position: relative;
+}
+
+.sidepanel-default-toast {
+  position: absolute;
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 80;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: min(680px, calc(100% - 32px));
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(31, 29, 31, 0.96);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+  color: #fff;
+}
+
+.sidepanel-default-toast-icon {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  margin-top: 2px;
+}
+
+.sidepanel-default-toast-copy {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.sidepanel-default-toast-copy button {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+}
+
+.sidepanel-default-toast-copy button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.sidepanel-default-toast-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 24px;
+  line-height: 20px;
+}
+
+.sidepanel-default-toast-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 
 .app-sidebar {
@@ -2450,6 +2522,27 @@ a {
   color: var(--text-secondary);
   letter-spacing: 0.02em;
   white-space: nowrap;
+}
+
+.address-chip-wrap {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.address-chip-value {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.4;
+}
+
+.address-chip-wrap .copy-btn {
+  flex: 0 0 auto;
+  margin-top: 1px;
 }
 
 @media (min-width: 720px) {

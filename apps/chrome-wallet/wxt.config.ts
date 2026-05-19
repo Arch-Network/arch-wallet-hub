@@ -1,4 +1,9 @@
 import { defineConfig } from "wxt";
+import { readFileSync } from "node:fs";
+
+const packageJson = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+) as { version: string };
 
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
@@ -6,7 +11,7 @@ export default defineConfig({
   manifest: {
     name: "Arch Wallet",
     description: "A Bitcoin, ARCH & APL wallet for Arch Network",
-    version: "0.2.0",
+    version: packageJson.version,
     icons: {
       16: "icon/16.png",
       32: "icon/32.png",
@@ -38,4 +43,9 @@ export default defineConfig({
   runner: {
     startUrls: ["https://explorer.arch.network"],
   },
+  vite: () => ({
+    define: {
+      "import.meta.env.WXT_APP_VERSION": JSON.stringify(packageJson.version),
+    },
+  }),
 });

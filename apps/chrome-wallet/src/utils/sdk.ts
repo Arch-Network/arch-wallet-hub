@@ -1,5 +1,5 @@
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { ArchNetwork } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import bs58 from "bs58";
 import { walletStore } from "../state/wallet-store";
 import type { NetworkId } from "../state/types";

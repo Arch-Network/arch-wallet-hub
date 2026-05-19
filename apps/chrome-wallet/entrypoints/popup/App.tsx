@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useWallet } from "../../src/hooks/useWallet";
+import { walletStore } from "../../src/state/wallet-store";
 import Header from "../../src/components/Header";
 import ConnectionBanner from "../../src/components/ConnectionBanner";
 import NavBar from "../../src/components/NavBar";
@@ -19,8 +20,10 @@ import Settings from "../../src/pages/Settings/Settings";
 import Recover from "../../src/pages/Recover/Recover";
 import Swap from "../../src/pages/Swap/Swap";
 import { hasActiveRecoveryCheckpoint } from "../../src/state/recovery-session";
+import { isInSidePanel } from "../../src/utils/runtime-context";
 
 const ROUTE_STORAGE_KEY = "arch_wallet_last_route";
+const SIDE_PANEL_NOTICE_DISMISSED_KEY = "arch_wallet_sidepanel_default_notice_dismissed";
 const VALID_ROUTES = [
   "/dashboard",
   "/send",
@@ -46,7 +49,12 @@ function RouteRestorer() {
     // last-visited route here we'd nuke those params and the popup
     // would land on /dashboard with nothing to sign. Respect explicit
     // navigation whenever the URL is carrying state.
-    if (location.search.includes("resume=1")) return;
+    if (
+      location.search.includes("resume=1") ||
+      location.search.includes("resumeOnboarding=")
+    ) {
+      return;
+    }
 
     // Recovery checkpoint takes priority over the saved last-route:
     // if the user is in the middle of OTP verification and stepped
@@ -95,6 +103,63 @@ function ActivityPinger() {
     }
   }, [location.pathname]);
   return null;
+}
+
+function SidePanelDefaultNotice({
+  openAs,
+  onChanged,
+}: {
+  openAs: "popup" | "sidepanel";
+  onChanged: () => Promise<void>;
+}) {
+  const [dismissed, setDismissed] = useState(true);
+  const [switching, setSwitching] = useState(false);
+
+  useEffect(() => {
+    if (!isInSidePanel() || openAs !== "sidepanel") return;
+    setDismissed(localStorage.getItem(SIDE_PANEL_NOTICE_DISMISSED_KEY) === "1");
+  }, [openAs]);
+
+  if (!isInSidePanel() || openAs !== "sidepanel" || dismissed) return null;
+
+  const dismiss = () => {
+    localStorage.setItem(SIDE_PANEL_NOTICE_DISMISSED_KEY, "1");
+    setDismissed(true);
+  };
+
+  const switchToPopup = async () => {
+    setSwitching(true);
+    try {
+      await walletStore.setOpenAs("popup");
+      dismiss();
+      await onChanged();
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  return (
+    <div className="sidepanel-default-toast" role="status">
+      <div className="sidepanel-default-toast-icon" aria-hidden="true">
+        i
+      </div>
+      <div className="sidepanel-default-toast-copy">
+        Arch Wallet now opens in the side panel by default.{" "}
+        <button type="button" onClick={switchToPopup} disabled={switching}>
+          Switch back to popup
+        </button>{" "}
+        any time from the menu.
+      </div>
+      <button
+        type="button"
+        className="sidepanel-default-toast-close"
+        aria-label="Dismiss"
+        onClick={dismiss}
+      >
+        ×
+      </button>
+    </div>
+  );
 }
 
 /** Per-route layout class -- caps form/settings widths in wide side panel. */
@@ -199,6 +264,7 @@ function AppRoutes() {
     <div className="app-container" data-network={state.network}>
       <SideNav network={state.network} />
       <div className="app-main">
+        <SidePanelDefaultNotice openAs={state.openAs} onChanged={refresh} />
         <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} onNetworkChange={setNetwork} />
         <ConnectionBanner status={networkStatus} onRetry={retryApi} showHubWarning={showHubWarning} />
         <div className={bodyClass}>

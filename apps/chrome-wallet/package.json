@@ -1,6 +1,6 @@
 {
   "name": "@arch/chrome-wallet",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,7 +14,7 @@
   "dependencies": {
     "@arch-network/arch-sdk": "^0.0.26",
     "@arch/swap-engine": "file:../../packages/arch-swap-engine",
-    "@arch/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
+    "@arch-network/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
     "@bitcoinerlab/secp256k1": "^1.2.0",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",

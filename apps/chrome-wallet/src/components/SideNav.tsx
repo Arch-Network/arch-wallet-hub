@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { NAV_ITEMS } from "./nav-items";
 import type { NetworkId } from "../state/types";
+import { APP_VERSION } from "../utils/version";
 
 const NETWORK_LABELS: Record<NetworkId, string> = {
   testnet4: "Testnet",
@@ -42,7 +43,7 @@ export default function SideNav({ network }: SideNavProps) {
       })}
 
       <div className="side-nav-spacer" />
-      <div className="side-nav-footer">v0.1.5</div>
+      <div className="side-nav-footer">v{APP_VERSION}</div>
     </aside>
   );
 }

@@ -51,7 +51,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   WalletHubClient,
   type RecoveryEmailCandidate,
-} from "@arch/wallet-hub-sdk";
+} from "@arch-network/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
 import { TurnkeyClient } from "@turnkey/http";
 import { ApiKeyStamper } from "@turnkey/api-key-stamper";
@@ -138,6 +138,50 @@ function candidateCreatedLabel(candidate: RecoveryEmailCandidate): string {
     hour: "numeric",
     minute: "2-digit",
   })}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    }),
+  ]);
+}
+
+async function waitForTurnkeyActivity(
+  client: TurnkeyClient,
+  organizationId: string,
+  activityId: string,
+): Promise<void> {
+  const maxAttempts = 60;
+  const delayMs = 500;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const res = await client.getActivity({ organizationId, activityId });
+    const activity = res.activity;
+    if (activity.status === "ACTIVITY_STATUS_COMPLETED") return;
+    if (
+      activity.status === "ACTIVITY_STATUS_FAILED" ||
+      activity.status === "ACTIVITY_STATUS_REJECTED" ||
+      activity.status === "ACTIVITY_STATUS_CONSENSUS_NEEDED"
+    ) {
+      throw new Error(`Turnkey recovery passkey registration failed: ${activity.status}`);
+    }
+    await sleep(delayMs);
+  }
+
+  throw new Error("Timed out waiting for Turnkey to register the recovery passkey");
 }
 
 export default function Recover({ onRecovered }: RecoverProps) {
@@ -451,15 +495,19 @@ export default function Recover({ onRecovered }: RecoverProps) {
           defaultOrganizationId: verifyResult.organizationId,
           rpId,
         });
-        const passkey = await tk.passkeyClient().createUserPasskey({
-          publicKey: {
-            rp: { id: rpId, name: "Arch Wallet" },
-            user: {
-              name: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
-              displayName,
+        const passkey = await withTimeout(
+          tk.passkeyClient().createUserPasskey({
+            publicKey: {
+              rp: { id: rpId, name: "Arch Wallet" },
+              user: {
+                name: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
+                displayName,
+              },
             },
-          },
-        });
+          }),
+          30_000,
+          "Creating passkey",
+        );
 
         setStatusMessage("Registering new passkey with Turnkey...");
         const stamper = new ApiKeyStamper({
@@ -487,7 +535,18 @@ export default function Recover({ onRecovered }: RecoverProps) {
             ],
           },
         });
-        void createRes;
+        const activityId = createRes?.activity?.id;
+        if (!activityId) {
+          throw new Error("Turnkey did not return a passkey registration activity id");
+        }
+
+        setStatusMessage("Confirming passkey registration...");
+        await waitForTurnkeyActivity(
+          tkHttp,
+          verifyResult.organizationId,
+          activityId,
+        );
+        baseAccount.passkeyCredentialId = passkey.attestation.credentialId;
       }
 
       // Common tail: seal the keystore, persist the account, rebind

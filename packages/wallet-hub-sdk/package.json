@@ -1,13 +1,38 @@
 {
-  "name": "@arch/wallet-hub-sdk",
+  "name": "@arch-network/wallet-hub-sdk",
   "version": "0.1.0",
-  "private": true,
+  "description": "TypeScript client for the Arch Wallet Hub API",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Arch-Network/arch-wallet-hub.git",
+    "directory": "packages/wallet-hub-sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/Arch-Network/arch-wallet-hub/issues"
+  },
+  "homepage": "https://github.com/Arch-Network/arch-wallet-hub/tree/main/packages/wallet-hub-sdk#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepare": "npm run build",
+    "prepublishOnly": "npm run typecheck && npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {},

@@ -2,8 +2,6 @@
 
 TypeScript client for the Arch Wallet Hub API. It wraps the Hub's HTTP surface with typed request and response objects for wallet linking, Turnkey wallet management, signing requests, Bitcoin helper endpoints, and email recovery flows.
 
-> Package status: this package is currently marked `"private": true` in `package.json`. Remove that flag and publish it before third-party consumers can install it from npm.
-
 ## Installation
 
 From this monorepo:
@@ -16,13 +14,13 @@ npm run build
 Once published:
 
 ```bash
-npm install @arch/wallet-hub-sdk
+npm install @arch-network/wallet-hub-sdk
 ```
 
 ## Quick Start
 
 ```ts
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 
 const walletHub = new WalletHubClient({
   baseUrl: "https://your-wallet-hub.example.com/v1",
@@ -241,3 +239,21 @@ npm run build
 ```
 
 The public entrypoint is `src/index.ts`, which re-exports `WalletHubClient` and all SDK types.
+
+## Publishing
+
+The package is configured for public npm publishing as `@arch-network/wallet-hub-sdk`.
+
+Before publishing for the first time:
+
+1. Make sure the npm account or automation token has publish access to the `@arch` npm scope.
+2. Decide and add the package license.
+3. Add an `NPM_TOKEN` repository secret for the npm publish workflow.
+
+Manual publish from a local authenticated npm session:
+
+```bash
+cd packages/wallet-hub-sdk
+npm version 0.1.0 --no-git-tag-version
+npm publish --access public
+```

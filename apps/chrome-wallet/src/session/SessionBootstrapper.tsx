@@ -34,8 +34,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { RecoveryEmailCandidate } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import type { RecoveryEmailCandidate } from "@arch-network/wallet-hub-sdk";
 import { useNavigate } from "react-router-dom";
 import { walletStore } from "../state/wallet-store";
 import { generateRecoveryKeypair } from "../crypto/turnkey-bundle";
