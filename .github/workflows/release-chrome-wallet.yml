@@ -136,9 +136,14 @@ jobs:
     steps:
       - name: Check CWS secrets are configured
         run: |
-          if [ -z "$CWS_EXTENSION_ID" ]; then
-            echo "::warning::CWS_EXTENSION_ID secret not set — skipping Chrome Web Store upload."
-            echo "::warning::Complete the first manual upload, then add CWS_EXTENSION_ID, CWS_CLIENT_ID, CWS_CLIENT_SECRET, and CWS_REFRESH_TOKEN as repository secrets."
+          missing=""
+          [ -z "$CWS_EXTENSION_ID" ] && missing="$missing CWS_EXTENSION_ID"
+          [ -z "$CWS_PUBLISHER_ID" ] && missing="$missing CWS_PUBLISHER_ID"
+          [ -z "$CWS_CLIENT_ID" ] && missing="$missing CWS_CLIENT_ID"
+          [ -z "$CWS_CLIENT_SECRET" ] && missing="$missing CWS_CLIENT_SECRET"
+          [ -z "$CWS_REFRESH_TOKEN" ] && missing="$missing CWS_REFRESH_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::warning::Missing Chrome Web Store secret(s):$missing — skipping Chrome Web Store upload."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -146,6 +151,10 @@ jobs:
         id: check
         env:
           CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
 
       - name: Download zip artifact
         if: steps.check.outputs.skip != 'true'
@@ -171,9 +180,11 @@ jobs:
           chrome-webstore-upload upload \
             --source "$ZIP_FILE" \
             --extension-id "$CWS_EXTENSION_ID" \
+            --publisher-id "$CWS_PUBLISHER_ID" \
             --auto-publish
         env:
           CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
           CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
