@@ -4,38 +4,19 @@ import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
-import { formatArchId, truncateAddress, formatTimestamp, formatBtc, formatBtcUsd, timestampToMs } from "../../utils/format";
+import { formatArchId, truncateAddress, formatBtc, timestampToMs } from "../../utils/format";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { summarizeArchTx } from "../../utils/arch-tx-summary";
-import {
-  type TxStatus,
-  normalizeArchStatus,
-  statusBadgeClass,
-  statusLabel,
-} from "../../utils/tx-status";
+import { normalizeArchStatus } from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
+import { ActivityRow, type ActivityRowTx } from "../../components/ActivityRow";
 
 type Tab = "all" | "arch" | "btc";
-type TxKind = "arch" | "apl" | "btc";
+type TxKind = ActivityRowTx["type"];
 
-interface TxItem {
-  txid: string;
-  displayTxid: string;
-  type: TxKind;
-  direction: "in" | "out" | "self" | "neutral" | "unknown";
-  /** Primary label, e.g. "Sent BTC", "Token Transfer", "Arch Transaction". */
-  label: string;
-  /** Pre-signed amount string, e.g. "+0.001 BTC" or "-1024". */
-  amount?: string;
-  /** Raw sats for BTC, used for USD conversion. */
+interface TxItem extends ActivityRowTx {
+  /** Raw sats for BTC, kept for future USD conversion / filters. */
   amountSats?: number;
-  timestamp: string;
-  status: TxStatus;
-  explorerUrl: string;
-}
-
-function BtcIcon({ size = 14 }: { size?: number }) {
-  return <span style={{ fontSize: size, lineHeight: 1 }}>₿</span>;
 }
 
 function parseBtcTx(tx: any, walletAddress: string): { direction: "in" | "out" | "self" | "unknown"; amountSats: number } {
@@ -90,16 +71,6 @@ function isAplTransaction(tx: any): boolean {
   return false;
 }
 
-function TxIcon({ kind, direction }: { kind: TxKind; direction: TxItem["direction"] }) {
-  if (kind === "btc") {
-    return <BtcIcon size={16} />;
-  }
-  if (kind === "apl") {
-    return <ArchIcon size={16} color="#7b68ee" />;
-  }
-  return <ArchIcon size={16} color="#c19a5b" />;
-}
-
 export default function History() {
   const { activeAccount, state } = useWallet();
   const { price: btcUsd } = useBtcUsdPrice();
@@ -131,11 +102,18 @@ export default function History() {
       }
 
       const tokenTxIds = new Set<string>();
+      // We also keep the user's ATA addresses so the per-tx classifier
+      // can recognize CPI'd token movements into / out of them. The
+      // tree endpoint emits source/destination as ATA addresses (not
+      // the user's archAddress), so without this set we'd miss the
+      // incoming leg of a swap entirely.
+      const tokenAccounts: string[] = [];
       try {
         const tokensRes = await indexer.getAccountTokens(archAddr);
-        const tokenAccounts: string[] = (tokensRes?.tokens ?? [])
-          .map((t) => t.token_account_address as string | undefined)
-          .filter((s): s is string => !!s);
+        for (const t of tokensRes?.tokens ?? []) {
+          const acct = t.token_account_address as string | undefined;
+          if (acct) tokenAccounts.push(acct);
+        }
 
         const tokenTxResults = await Promise.allSettled(
           tokenAccounts.map((acct) => indexer.getAccountTransactions(acct, 50))
@@ -168,24 +146,35 @@ export default function History() {
         }
         setHasMoreArch(archTxs.length >= 20);
 
+        // Fetch detail + tree per tx in parallel. The tree gives us
+        // the full CPI hierarchy (children array) — without it, swaps
+        // and other custom-instruction transactions can't be classified
+        // as APL token movements and would fall back to the generic
+        // "Custom Instruction" label.
         const detailedArchTxs = await Promise.all(
           (archTxs as any[]).map(async (tx) => {
-            try {
-              const detail = await indexer.getTransactionDetail(tx.txid);
-              return { ...tx, ...(detail as Record<string, unknown>) };
-            } catch {
-              return tx;
-            }
+            const [detail, tree] = await Promise.all([
+              indexer.getTransactionDetail(tx.txid).catch(() => null),
+              indexer.getTransactionTree(tx.txid).catch(() => null),
+            ]);
+            return {
+              merged: { ...tx, ...(detail ?? {}) },
+              tree,
+            };
           })
         );
 
-        for (const tx of detailedArchTxs) {
+        for (const { merged: tx, tree } of detailedArchTxs) {
           const isToken = isAplTransaction(tx) || tokenTxIds.has(tx.txid);
           const kind: TxKind = isToken ? "apl" : "arch";
           const status = normalizeArchStatus(tx);
           // Pass the normalized status through so the summarizer's failure
           // detection catches it without re-running the same logic.
-          const summary = summarizeArchTx({ ...tx, status }, archAddr);
+          const summary = summarizeArchTx(
+            { ...tx, status },
+            archAddr,
+            { tree, tokenAccounts },
+          );
           items.push({
             txid: tx.txid,
             displayTxid: truncateAddress(formatArchId(tx.txid), 8),
@@ -196,7 +185,7 @@ export default function History() {
               : summary.direction === "neutral" ? "neutral"
               : "unknown",
             label: summary.label,
-            amount: summary.amountLabel,
+            amountLabel: summary.amountLabel,
             timestamp: tx.created_at || "",
             status,
             explorerUrl: `${archExplorer}${tx.txid}`,
@@ -255,8 +244,9 @@ export default function History() {
             type: "btc",
             direction,
             label: btcLabel,
-            amount: amountSats > 0 ? `${sign}${formatBtc(amountSats)}` : undefined,
+            amountLabel: amountSats > 0 ? `${sign}${formatBtc(amountSats)}` : undefined,
             amountSats: amountSats > 0 ? amountSats : undefined,
+            sats: amountSats > 0 ? amountSats : undefined,
             timestamp: timeMs != null ? String(timeMs) : "",
             status: isConfirmed ? "confirmed" : "pending",
             explorerUrl: `${btcExplorer}${txid}`,
@@ -320,7 +310,14 @@ export default function History() {
         </div>
       ) : (
         <div className="card">
-          {filtered.map((tx) => renderHistoryRow(tx, btcUsd))}
+          {filtered.map((tx) => (
+            <ActivityRow
+              key={`${tx.type}-${tx.txid}`}
+              tx={tx}
+              variant="activity"
+              btcUsd={btcUsd}
+            />
+          ))}
         </div>
       )}
 
@@ -337,80 +334,3 @@ export default function History() {
   );
 }
 
-function ArrowDown() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 5v14" />
-      <path d="M19 12l-7 7-7-7" />
-    </svg>
-  );
-}
-
-function ArrowUp() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 19V5" />
-      <path d="M5 12l7-7 7 7" />
-    </svg>
-  );
-}
-
-function renderHistoryRow(tx: TxItem, btcUsd: number | null) {
-  const isSuccess = tx.status === "confirmed" || tx.status === "processed";
-  const showBadge = !isSuccess; // success rows go uncluttered
-
-  const dirClass =
-    tx.direction === "in" ? "inbound"
-    : tx.direction === "out" ? "outbound"
-    : tx.type === "btc" ? "neutral"
-    : tx.type === "apl" ? "apl"
-    : "arch";
-
-  const usdSubtitle = tx.type === "btc" && tx.amountSats != null
-    ? formatBtcUsd(tx.amountSats, btcUsd)
-    : null;
-
-  return (
-    <a
-      key={`${tx.type}-${tx.txid}`}
-      href={tx.explorerUrl}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="tx-row-link"
-    >
-      <div className="tx-row tx-row-activity">
-        <div className={`tx-dir ${dirClass}`}>
-          {tx.direction === "in" ? <ArrowDown />
-            : tx.direction === "out" ? <ArrowUp />
-            : <TxIcon kind={tx.type} direction={tx.direction} />}
-        </div>
-        <div className="tx-info">
-          <div className="tx-activity-title">
-            <span className="tx-activity-label">{tx.label}</span>
-            {tx.amount && (
-              <span className={`tx-activity-amount ${tx.direction === "out" ? "outbound" : tx.direction === "in" ? "inbound" : ""}`}>
-                {tx.amount}
-              </span>
-            )}
-          </div>
-          <div className="tx-activity-meta">
-            <span className="tx-time">
-              {tx.timestamp
-                ? formatTimestamp(tx.timestamp)
-                : tx.status === "pending" || tx.status === "unconfirmed"
-                  ? "Pending"
-                  : "Time unavailable"}
-            </span>
-            {usdSubtitle && <span className="tx-activity-usd">{usdSubtitle}</span>}
-            <span className="tx-activity-ref mono">{tx.displayTxid}</span>
-          </div>
-        </div>
-        {showBadge && (
-          <span className={`badge ${statusBadgeClass(tx.status)}`}>
-            {statusLabel(tx.status)}
-          </span>
-        )}
-      </div>
-    </a>
-  );
-}

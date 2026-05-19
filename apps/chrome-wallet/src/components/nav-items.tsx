@@ -62,6 +62,16 @@ function IconSettings({ active }: NavIconProps) {
   );
 }
 
+function IconSwap({ active }: NavIconProps) {
+  const s = active ? "#c19a5b" : "currentColor";
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+      <path d="M7 4v12M3 12l4 4 4-4" stroke={s} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M17 20V8M13 12l4-4 4 4" stroke={s} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export interface NavItem {
   path: string;
   label: string;
@@ -72,6 +82,7 @@ export const NAV_ITEMS: NavItem[] = [
   { path: "/dashboard", label: "Home", Icon: IconHome },
   { path: "/send", label: "Send", Icon: IconSend },
   { path: "/receive", label: "Receive", Icon: IconReceive },
+  { path: "/swap", label: "Swap", Icon: IconSwap },
   { path: "/history", label: "History", Icon: IconHistory },
   { path: "/settings", label: "Settings", Icon: IconSettings },
 ];

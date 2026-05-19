@@ -67,12 +67,47 @@ export interface ArchTxSummary {
   counterparty?: string;
 }
 
+import bs58 from "bs58";
+
 function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
 function asArray<T = unknown>(v: unknown): T[] {
   return Array.isArray(v) ? (v as T[]) : [];
+}
+
+/**
+ * Compute all address forms (base58 + 64-char hex) a given account
+ * might appear under across the indexer's endpoints. The v2 row uses
+ * base58; the `/tree` endpoint returns hex. Without normalizing,
+ * CPI'd token transfers silently fail to match the user's account
+ * (same root cause as the BTC-balance mismatch fixed earlier).
+ */
+export function addressForms(addr: string): Set<string> {
+  const out = new Set<string>();
+  if (!addr) return out;
+  out.add(addr);
+  if (/^[0-9a-fA-F]{64}$/.test(addr)) {
+    try {
+      const bytes = new Uint8Array(32);
+      for (let i = 0; i < 32; i += 1) {
+        bytes[i] = parseInt(addr.slice(i * 2, i * 2 + 2), 16);
+      }
+      out.add(bs58.encode(bytes));
+    } catch { /* ignore */ }
+  } else {
+    try {
+      const bytes = bs58.decode(addr);
+      if (bytes.length === 32) {
+        const hex = Array.from(bytes)
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+        out.add(hex);
+      }
+    } catch { /* ignore */ }
+  }
+  return out;
 }
 
 /**
@@ -138,31 +173,83 @@ const TOKEN_TRANSFER_ACTIONS = new Set([
 ]);
 
 /**
+ * Flatten an indexer instructions response across whatever nesting
+ * convention the server uses (top-level array, `inner_instructions`,
+ * `cpi`, `children`, or a flat list with `stack_height`). Annotates each
+ * node with `__depth` so callers can distinguish CPI movements (swaps,
+ * routed transfers, …) from direct top-level calls.
+ */
+function flattenInstructions(
+  instructions: unknown,
+): Array<Record<string, unknown> & { __depth: number }> {
+  if (!Array.isArray(instructions)) return [];
+  const out: Array<Record<string, unknown> & { __depth: number }> = [];
+  const walk = (item: unknown, depth: number) => {
+    if (!item || typeof item !== "object") return;
+    const obj = item as Record<string, unknown>;
+    out.push({ ...obj, __depth: depth });
+    for (const key of ["inner_instructions", "innerInstructions", "cpi", "children"]) {
+      const c = obj[key];
+      if (Array.isArray(c)) {
+        for (const sub of c) walk(sub, depth + 1);
+      }
+    }
+  };
+  for (const ix of instructions) walk(ix, 0);
+  for (const node of out) {
+    if (node.__depth === 0) {
+      const sh = node.stack_height ?? node.stackHeight;
+      if (typeof sh === "number" && sh > 1) node.__depth = sh - 1;
+    }
+  }
+  return out;
+}
+
+/**
  * Look through decoded instruction objects (from `/transactions/:txid`)
  * for the first transfer-like instruction we can classify against the
  * caller's archAddress. Returns null when the input isn't decoded
  * instructions or no transfer was found.
+ *
+ * Walks both top-level instructions AND inner CPIs so AMM / router
+ * swaps (where the Transfer happens via CPI from a custom program)
+ * surface as "Swap" with the correct direction and amount instead of
+ * a generic "Custom Instruction" row.
  */
 function summarizeFromDecodedInstructions(
   instructions: unknown,
-  archAddress: string
+  archAddress: string,
+  archAccountForms?: Set<string>,
+  tokenAccountForms?: Set<string>,
 ): { kind: ArchTxKind; label: string; direction: "in" | "out" | "neutral"; amountLabel?: string; counterparty?: string } | null {
-  if (!Array.isArray(instructions)) return null;
+  const flat = flattenInstructions(instructions);
+  if (flat.length === 0) return null;
 
-  for (const raw of instructions) {
-    if (!raw || typeof raw !== "object") continue;
-    const ix = raw as Record<string, unknown>;
+  // Pre-compute hex+base58 forms of the user's archAddress so we can
+  // match `decoded.authority` / source/destination regardless of which
+  // form the indexer emits. The /tree endpoint uses hex; v2 row fields
+  // use base58.
+  const ownerForms = archAccountForms ?? addressForms(archAddress);
+  // Token-account forms are optional but valuable: a swap CPI moves
+  // funds into the user's ATA (NOT their archAddress), so without
+  // knowing the ATAs we can't detect the incoming leg.
+  const ataForms = tokenAccountForms ?? new Set<string>();
+
+  for (const ix of flat) {
     const action = typeof ix.action === "string" ? ix.action : "";
     if (!action) continue;
 
     const decoded = (ix.decoded ?? {}) as Record<string, unknown>;
     const src = asString(decoded.source) || asString(decoded.from);
     const dst = asString(decoded.destination) || asString(decoded.to);
+    const srcOwner = asString(decoded.source_owner) || asString(decoded.sourceOwner)
+      || asString(decoded.authority) || asString(decoded.owner);
+    const dstOwner = asString(decoded.destination_owner) || asString(decoded.destinationOwner);
     if (!src && !dst) continue;
 
     if (SYSTEM_TRANSFER_ACTIONS.has(action)) {
       const direction: "in" | "out" | "neutral" =
-        src === archAddress ? "out" : dst === archAddress ? "in" : "neutral";
+        ownerForms.has(src) ? "out" : ownerForms.has(dst) ? "in" : "neutral";
       if (direction === "neutral") continue;
 
       // System Transfer amounts come in lamports. Try `lamports` first,
@@ -192,10 +279,20 @@ function summarizeFromDecodedInstructions(
     }
 
     if (TOKEN_TRANSFER_ACTIONS.has(action)) {
-      // Token transfers can fail-over to this path when the v2 row didn't
-      // include token_transfer (some indexer versions).
-      const direction: "in" | "out" | "neutral" =
-        src === archAddress ? "out" : dst === archAddress ? "in" : "neutral";
+      // Token transfers can fail-over to this path when the v2 row
+      // didn't include token_transfer. Match against both the user's
+      // ATAs (for CPI'd source/destination) AND their archAddress (for
+      // authority/owner fields). The tree endpoint emits hex; v2 emits
+      // base58 — the *Forms helpers handle both.
+      const isOut =
+        ataForms.has(src) ||
+        ownerForms.has(srcOwner) ||
+        ownerForms.has(src);
+      const isIn =
+        ataForms.has(dst) ||
+        ownerForms.has(dstOwner) ||
+        ownerForms.has(dst);
+      const direction: "in" | "out" | "neutral" = isOut ? "out" : isIn ? "in" : "neutral";
       if (direction === "neutral") continue;
 
       const rawAmount = asString(decoded.amount);
@@ -204,9 +301,15 @@ function summarizeFromDecodedInstructions(
       const sign = direction === "out" ? "-" : "+";
       const amountLabel = pretty ? `${sign}${pretty}` : undefined;
 
+      const viaCpi = ix.__depth > 0;
+      const kind: ArchTxKind = viaCpi ? "swap" : "token_transfer";
+      const label = viaCpi
+        ? "Swap"
+        : direction === "in" ? "Received Token" : "Sent Token";
+
       return {
-        kind: "token_transfer",
-        label: direction === "in" ? "Received Token" : "Sent Token",
+        kind,
+        label,
         direction,
         amountLabel,
         counterparty: direction === "in" ? src || undefined : dst || undefined,
@@ -257,6 +360,22 @@ function summarizeTokenTransfer(
   return { label, direction, amountLabel, counterparty };
 }
 
+export interface SummarizeOptions {
+  /**
+   * Optional /transactions/:txid/tree response. When provided, the
+   * decoder walks this in addition to `tx.instructions` so it can see
+   * Token: Transfer CPIs nested inside custom-program instructions
+   * (the source-of-truth signal for AMM/router swaps).
+   */
+  tree?: unknown;
+  /**
+   * The user's known token accounts (ATA addresses) — needed to
+   * classify the "incoming" leg of a CPI'd swap, where the destination
+   * is the user's ATA rather than their archAddress.
+   */
+  tokenAccounts?: ReadonlyArray<string>;
+}
+
 /**
  * Derive a one-line summary from a v2 transaction row.
  *
@@ -264,7 +383,11 @@ function summarizeTokenTransfer(
  * "Arch Transaction" rather than throwing or returning null. Callers can
  * assume they always have a label suitable for display.
  */
-export function summarizeArchTx(tx: any, archAddress: string): ArchTxSummary {
+export function summarizeArchTx(
+  tx: any,
+  archAddress: string,
+  options?: SummarizeOptions,
+): ArchTxSummary {
   const failed = isFailedStatus(tx?.status);
 
   // Token transfer takes priority when the row carries decoded data, even
@@ -275,10 +398,35 @@ export function summarizeArchTx(tx: any, archAddress: string): ArchTxSummary {
     return { kind: "token_transfer", ...tokenSummary };
   }
 
+  const ownerForms = addressForms(archAddress);
+  const ataForms = new Set<string>();
+  for (const ata of options?.tokenAccounts ?? []) {
+    for (const form of addressForms(ata)) ataForms.add(form);
+  }
+
+  // Prefer the tree (full CPI hierarchy with decoded children) over the
+  // top-level-only `tx.instructions`. The tree is what lets us classify
+  // CPI'd token movements correctly as "Swap" rather than the generic
+  // "Custom Instruction" fallback.
+  if (options?.tree) {
+    const fromTree = summarizeFromDecodedInstructions(
+      options.tree,
+      archAddress,
+      ownerForms,
+      ataForms,
+    );
+    if (fromTree) return fromTree;
+  }
+
   // After being merged with /transactions/:txid detail, `instructions`
   // becomes an array of decoded objects. When that's the case we can read
   // source/destination/amount directly for system + token transfers.
-  const decodedSummary = summarizeFromDecodedInstructions(tx?.instructions, archAddress);
+  const decodedSummary = summarizeFromDecodedInstructions(
+    tx?.instructions,
+    archAddress,
+    ownerForms,
+    ataForms,
+  );
   if (decodedSummary) {
     return decodedSummary;
   }

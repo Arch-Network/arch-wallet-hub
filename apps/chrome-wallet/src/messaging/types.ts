@@ -1,5 +1,6 @@
 export type MessageType =
   | "GET_STATE"
+  | "PING"
   | "CONNECT"
   | "DISCONNECT"
   | "GET_ACCOUNT"
@@ -52,7 +53,7 @@ export interface SignMessageMessage extends BaseMessage {
 
 export interface SignPsbtMessage extends BaseMessage {
   type: "SIGN_PSBT";
-  payload: { psbt: string; signInputs: Record<string, number[]> };
+  payload: { psbt: string; signInputs?: Record<string, number[]> };
 }
 
 export interface ApproveRequestMessage extends BaseMessage {
@@ -84,10 +85,25 @@ export interface MessageResponse {
   error?: string;
 }
 
+/**
+ * A queued dapp request awaiting user action in the Approve popup.
+ * Persisted to chrome.storage.session so it survives MV3 service-worker
+ * restarts.
+ */
 export interface PendingRequest {
   id: string;
   type: MessageType;
   origin: string;
   payload?: unknown;
+  /** Tab title at the time of the request, used to label the dapp. */
+  dappName?: string;
+  /** Favicon URL of the source tab. */
+  dappIconUrl?: string;
+  /** Source tab id, used so background can route reject-broadcasts. */
+  sourceTabId?: number;
+  /** Popup window id created for this request; used by onRemoved auto-reject. */
+  windowId?: number;
+  /** True when the user has previously granted blanket auto-approval for this method. */
+  autoApproveAllowed?: boolean;
   createdAt: number;
 }

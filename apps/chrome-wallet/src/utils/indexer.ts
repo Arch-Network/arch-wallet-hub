@@ -78,9 +78,17 @@ export interface BtcBlockResponse {
   [k: string]: unknown;
 }
 
+const AUTH_FAILURE_COOLDOWN_MS = 2 * 60_000;
+const authFailureUntilByCacheKey = new Map<string, number>();
+
+function authCacheKey(baseUrl: string, network: IndexerNetwork, apiKey: string): string {
+  return `${baseUrl}|${network}|${apiKey}`;
+}
+
 export class ArchIndexerClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  private readonly authCacheKey: string;
   public readonly network: IndexerNetwork;
   private readonly fetchImpl: typeof fetch;
 
@@ -88,8 +96,20 @@ export class ArchIndexerClient {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, "");
     this.network = opts.network;
     this.apiKey = opts.apiKey;
+    this.authCacheKey = authCacheKey(this.baseUrl, this.network, this.apiKey);
     const f = (opts.fetchImpl ?? fetch) as any;
     this.fetchImpl = typeof f?.bind === "function" ? f.bind(globalThis) : f;
+  }
+
+  private assertAuthAvailable(): void {
+    const blockedUntil = authFailureUntilByCacheKey.get(this.authCacheKey) ?? 0;
+    if (blockedUntil > Date.now()) {
+      throw new IndexerApiKeyRejectedError();
+    }
+  }
+
+  private rememberAuthFailure(): void {
+    authFailureUntilByCacheKey.set(this.authCacheKey, Date.now() + AUTH_FAILURE_COOLDOWN_MS);
   }
 
   private url(path: string): string {
@@ -107,15 +127,18 @@ export class ArchIndexerClient {
   }
 
   private async getJson<T>(path: string): Promise<T> {
+    this.assertAuthAvailable();
     const res = await this.fetchImpl(this.url(path), { headers: this.headers() });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      if (res.status === 401) this.rememberAuthFailure();
       throw new Error(`Indexer GET ${path} ${res.status} ${res.statusText}: ${text}`);
     }
     return (await res.json()) as T;
   }
 
   private async postJson<T>(path: string, body: unknown): Promise<T> {
+    this.assertAuthAvailable();
     const headers = this.headers({ "content-type": "application/json" });
     const res = await this.fetchImpl(this.url(path), {
       method: "POST",
@@ -124,12 +147,14 @@ export class ArchIndexerClient {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      if (res.status === 401) this.rememberAuthFailure();
       throw new Error(`Indexer POST ${path} ${res.status} ${res.statusText}: ${text}`);
     }
     return (await res.json()) as T;
   }
 
   private async postText(path: string, body: string): Promise<string> {
+    this.assertAuthAvailable();
     const headers = this.headers({ "content-type": "text/plain" });
     const res = await this.fetchImpl(this.url(path), {
       method: "POST",
@@ -138,6 +163,7 @@ export class ArchIndexerClient {
     });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
+      if (res.status === 401) this.rememberAuthFailure();
       throw new Error(`Indexer POST ${path} ${res.status} ${res.statusText}: ${t}`);
     }
     return await res.text();
@@ -183,6 +209,31 @@ export class ArchIndexerClient {
 
   getTransactionInstructions(txid: string): Promise<Array<Record<string, unknown>>> {
     return this.getJson(`/transactions/${encodeURIComponent(txid)}/instructions`);
+  }
+
+  /**
+   * Full instruction tree for a transaction, including CPI children.
+   * Each node is shaped:
+   *   { index, inner_index, depth, program_id_hex, program_id_base58,
+   *     action, decoded, accounts, children: TreeNode[] }
+   *
+   * `/instructions` (singular) returns only the flat top-level rows;
+   * use `/tree` whenever you need to inspect nested CPIs — e.g. AMM /
+   * router swaps where the actual Token: Transfer happens inside a
+   * custom-program top-level instruction.
+   */
+  getTransactionTree(txid: string): Promise<Array<Record<string, unknown>>> {
+    return this.getJson(`/transactions/${encodeURIComponent(txid)}/tree`);
+  }
+
+  /**
+   * Execution metadata for a transaction: status, logs, `has_cpi`,
+   * `cpi_count`, compute-units, and the raw runtime tx. Useful as a
+   * fallback when the tree endpoint doesn't decode a CPI but the logs
+   * still witness "Program log: Instruction: Transfer".
+   */
+  getTransactionExecution(txid: string): Promise<Record<string, unknown>> {
+    return this.getJson(`/transactions/${encodeURIComponent(txid)}/execution`);
   }
 
   // ── Tokens ───────────────────────────────────────────────────────────────
@@ -279,6 +330,32 @@ export class ArchIndexerClient {
   }
 }
 
+export class MissingIndexerApiKeyError extends Error {
+  constructor() {
+    super("Missing Indexer API key. Add one in Settings > Indexer API.");
+    this.name = "MissingIndexerApiKeyError";
+  }
+}
+
+export class IndexerApiKeyRejectedError extends Error {
+  constructor() {
+    super("Indexer rejected the API key. Update it in Settings > Indexer API.");
+    this.name = "IndexerApiKeyRejectedError";
+  }
+}
+
+export function isIndexerAuthError(err: unknown): boolean {
+  if (err instanceof MissingIndexerApiKeyError || err instanceof IndexerApiKeyRejectedError) return true;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  const lower = message.toLowerCase();
+  return message.includes("401") || lower.includes("missing_credentials") || lower.includes("api key");
+}
+
+export function isIndexerNotFoundError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return message.includes("404") || message.toLowerCase().includes("not found");
+}
+
 function networkIdToIndexer(n: NetworkId): IndexerNetwork {
   return n === "mainnet" ? "mainnet" : "testnet";
 }
@@ -290,8 +367,11 @@ export async function getIndexer(): Promise<ArchIndexerClient> {
   const state = await walletStore.getState();
   const baseUrl = state.indexerBaseUrl || INDEXER_BASE_URL;
   const apiKey = state.indexerApiKey || DEFAULT_INDEXER_API_KEY;
+  if (!apiKey) throw new MissingIndexerApiKeyError();
   const network = networkIdToIndexer(state.network);
   const cacheKey = `${baseUrl}|${apiKey}|${network}`;
+  const blockedUntil = authFailureUntilByCacheKey.get(authCacheKey(baseUrl.replace(/\/+$/, ""), network, apiKey)) ?? 0;
+  if (blockedUntil > Date.now()) throw new IndexerApiKeyRejectedError();
   if (cachedClient && cachedKey === cacheKey) return cachedClient;
   cachedClient = new ArchIndexerClient({ baseUrl, network, apiKey });
   cachedKey = cacheKey;

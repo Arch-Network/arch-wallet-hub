@@ -1,4 +1,5 @@
 {
+  "extends": "./.wxt/tsconfig.json",
   "compilerOptions": {
     "target": "ESNext",
     "module": "ESNext",
@@ -16,6 +17,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src", "entrypoints", "**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", ".output", ".wxt"]
+  "include": ["src", "entrypoints", "**/*.ts", "**/*.tsx", ".wxt/wxt.d.ts"],
+  "exclude": ["node_modules", ".output"]
 }

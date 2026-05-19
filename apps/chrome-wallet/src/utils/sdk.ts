@@ -15,11 +15,32 @@ function networkIdToArch(n: NetworkId): ArchNetwork {
   return n === "mainnet" ? "mainnet" : "testnet";
 }
 
+/**
+ * Refuse to talk to a plaintext-HTTP Hub on mainnet. Devs can override
+ * by setting `WXT_ALLOW_INSECURE_HUB=1` in the build env, but this
+ * never reaches a published build.
+ */
+function assertSecureUrl(url: string, network: ArchNetwork): void {
+  if (network !== "mainnet") return;
+  if (((import.meta as any)?.env?.WXT_ALLOW_INSECURE_HUB as string) === "1") return;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("Invalid Hub URL");
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error("Refusing to use a non-HTTPS Hub on mainnet");
+  }
+}
+
 export async function getClient(): Promise<WalletHubClient> {
   const state = await walletStore.getState();
   const baseUrl = state.hubBaseUrl || DEFAULT_HUB_BASE_URL;
-  const apiKey = state.hubApiKey || "";
+  const apiKey = state.hubApiKey || DEFAULT_HUB_API_KEY || "";
   const network = networkIdToArch(state.network);
+
+  assertSecureUrl(baseUrl, network);
 
   if (cachedClient && cachedBaseUrl === baseUrl && cachedApiKey === apiKey && cachedNetwork === network) {
     return cachedClient;
@@ -48,8 +69,14 @@ export function invalidateClientCache(): void {
   invalidateIndexerCache();
 }
 
-export function getExternalUserId(): string {
-  return "arch-chrome-wallet-user";
+/**
+ * The Wallet Hub external user id is a per-install UUID generated on
+ * first launch and persisted to chrome.storage.local. This replaces the
+ * previous hardcoded shared string (which made every install share one
+ * Hub identity and let installed users enumerate each other's wallets).
+ */
+export async function getExternalUserId(): Promise<string> {
+  return walletStore.getInstallId();
 }
 
 export function isWalletHubAuthError(err: unknown): boolean {

@@ -73,3 +73,29 @@ export function reEncodeTaprootAddress(
   const newHrp = network === "mainnet" ? "bc" : "tb";
   return encode(newHrp, decoded.data5bit);
 }
+
+/**
+ * Phase 2.4: detect a destination address that targets the opposite
+ * network so the Send flow can interstitial before submitting.
+ *
+ * We only return a non-null result when the input is plausibly a real
+ * Bitcoin address (bech32/bech32m or a base58 string of typical
+ * length). This avoids false positives for arbitrary text the user
+ * is mid-typing.
+ */
+export function detectBtcNetwork(address: string): NetworkId | null {
+  if (!address) return null;
+  // Bech32 / bech32m are unambiguous.
+  if (address.startsWith("bc1")) return "mainnet";
+  if (address.startsWith("tb1") || address.startsWith("bcrt1")) return "testnet4";
+  // Legacy base58 addresses: 25-35 chars, base58 alphabet.
+  if (!/^[1-9A-HJ-NP-Za-km-z]{20,40}$/.test(address)) return null;
+  if (/^[13]/.test(address)) return "mainnet";
+  if (/^[2mn]/.test(address)) return "testnet4";
+  return null;
+}
+
+export function isWrongNetworkAddress(address: string, current: NetworkId): boolean {
+  const detected = detectBtcNetwork(address);
+  return detected !== null && detected !== current;
+}

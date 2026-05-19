@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Turnkey } from "@turnkey/sdk-browser";
 import * as bitcoin from "bitcoinjs-lib";
+import { signerForAccount } from "../../signers/Signer";
 import { useWallet } from "../../hooks/useWallet";
 import type { NetworkStatus } from "../../hooks/useApiStatus";
 import {
@@ -15,13 +15,15 @@ import {
 } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
-import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { reEncodeTaprootAddress, isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
+import QrScanner from "../../components/QrScanner";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd } from "../../utils/format";
+import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, truncateAddress } from "../../utils/format";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
-import { enrichTokenFromRpc } from "../../utils/arch-rpc";
+import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { walletStore } from "../../state/wallet-store";
 import ArchIcon from "../../components/ArchIcon";
+import { TokenIcon } from "../../components/TokenIcon";
 
 type AssetType = "btc" | "arch" | "apl";
 
@@ -34,6 +36,61 @@ interface TokenHolding {
   symbol?: string;
   name?: string;
   uiAmount: string;
+  image?: string;
+}
+
+/**
+ * Single source of truth for the asset chip rendered in every Send step.
+ *
+ * Keeps the native-asset glyphs (BTC `₿`, ARCH letter mark) intact while
+ * routing APL tokens through `TokenIcon` so registry-supplied images
+ * (USDC, USDT, aBTC, etc.) match what Dashboard / Tokens / Token Detail
+ * already render. Previously the Send flow hardcoded the generic Arch
+ * glyph for every APL token, which made USDC/aBTC look "generic" only
+ * here — a visible inconsistency the user flagged.
+ *
+ * The `inline` variant returns a compact 20px chip with no surrounding
+ * circle for the review row, where the larger `.asset-icon` (36px)
+ * would dominate the value column.
+ */
+function renderAssetIcon(
+  asset: AssetType | null,
+  token: TokenHolding | null,
+  options?: { inline?: boolean }
+): React.ReactNode {
+  if (options?.inline) {
+    if (asset === "btc") {
+      return <span className="send-inline-icon btc" aria-hidden>₿</span>;
+    }
+    if (asset === "arch") {
+      return (
+        <span className="send-inline-icon arch" aria-hidden>
+          <ArchIcon size={14} />
+        </span>
+      );
+    }
+    return (
+      <TokenIcon
+        image={token?.image}
+        symbol={token?.symbol || "APL"}
+        size={20}
+      />
+    );
+  }
+  if (asset === "btc") {
+    return <div className="asset-icon btc">₿</div>;
+  }
+  if (asset === "arch") {
+    return <div className="asset-icon arch"><ArchIcon size={18} /></div>;
+  }
+  return (
+    <TokenIcon
+      image={token?.image}
+      symbol={token?.symbol || "APL"}
+      size={28}
+      wrapperClassName="asset-icon apl"
+    />
+  );
 }
 
 interface BtcPrepareResult {
@@ -45,10 +102,10 @@ interface BtcPrepareResult {
   inputCount: number;
 }
 
-const ASSET_META: Record<AssetType, { icon: React.ReactNode; label: string; unit: string }> = {
-  btc: { icon: "₿", label: "Bitcoin", unit: "BTC" },
-  arch: { icon: <ArchIcon size={14} />, label: "ARCH", unit: "ARCH" },
-  apl: { icon: <ArchIcon size={14} color="#7b68ee" />, label: "APL Token", unit: "tokens" },
+const ASSET_META: Record<AssetType, { label: string; unit: string }> = {
+  btc: { label: "Bitcoin", unit: "BTC" },
+  arch: { label: "ARCH", unit: "ARCH" },
+  apl: { label: "APL Token", unit: "tokens" },
 };
 
 interface SendProps {
@@ -63,12 +120,13 @@ function btcUsdSubtitle(sats: number, btcUsd: number | null): string | null {
 export default function Send({ networkStatus }: SendProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { activeAccount, state } = useWallet();
+  const { activeAccount, state, addRecentRecipient, removeRecentRecipient } = useWallet();
   const { price: btcUsd } = useBtcUsdPrice();
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [asset, setAsset] = useState<AssetType | null>(null);
   const [selectedToken, setSelectedToken] = useState<TokenHolding | null>(null);
   const [recipient, setRecipient] = useState("");
+  const [showQrScanner, setShowQrScanner] = useState(false);
   const [amount, setAmount] = useState("");
   const presetMint = searchParams.get("mint");
   const presetAsset = searchParams.get("asset");
@@ -141,31 +199,24 @@ export default function Send({ networkStatus }: SendProps) {
         const tokenAddr = archAddr || activeAccount.btcAddress;
         const tokens = await indexer.getAccountTokens(tokenAddr);
         const rawTokens = tokens?.tokens ?? [];
-        const enriched = await Promise.all(
-          rawTokens.map(async (t) => {
-            const base = {
-              mint: t.mint_address as string,
-              tokenAccount: t.token_account_address as string | undefined,
-              balance: Number(t.amount) || 0,
-              rawAmount: String(t.amount ?? "0"),
-              decimals: t.decimals ?? 0,
-              symbol: t.symbol as string | undefined,
-              name: (t.name || "APL Token") as string,
-              uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
-            };
-            const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
-            if (!needsEnrich) return base;
-            try {
-              const rpc = await enrichTokenFromRpc(indexer, t);
-              if (rpc.name) base.name = rpc.name;
-              if (rpc.symbol) base.symbol = rpc.symbol;
-              if (rpc.decimals != null) base.decimals = rpc.decimals;
-              if (rpc.uiAmount) base.uiAmount = rpc.uiAmount;
-            } catch { /* best-effort */ }
-            return base;
-          }),
-        );
-        setTokensHeld(enriched);
+        // Route through the shared enrichment pipeline so the wallet's
+        // known-mints registry (e.g. wrapped BTC → "aBTC") wins over
+        // raw indexer fields. This keeps the asset picker, send form,
+        // and confirmation step consistent with the Tokens/Dashboard
+        // pages.
+        const enriched = await enrichIndexerTokens(rawTokens, state.network, indexer);
+        const held: TokenHolding[] = enriched.map((e) => ({
+          mint: e.mint,
+          tokenAccount: e.tokenAccount || undefined,
+          balance: e.balance,
+          rawAmount: String(e.balance),
+          decimals: e.decimals,
+          symbol: e.symbol,
+          name: e.name,
+          uiAmount: e.uiAmount,
+          image: e.image,
+        }));
+        setTokensHeld(held);
       } catch {
         setTokensHeld([]);
       }
@@ -200,21 +251,18 @@ export default function Send({ networkStatus }: SendProps) {
     async (signingRequestId: string, payloadHex: string): Promise<string> => {
       if (!activeAccount?.organizationId)
         throw new Error("Missing organization ID for passkey wallet");
-      const tk = new Turnkey({
-        apiBaseUrl: "https://api.turnkey.com",
-        defaultOrganizationId: activeAccount.organizationId,
-        rpId: globalThis.location?.hostname === "localhost" ? "localhost" : globalThis.location?.hostname ?? "localhost",
+      // Route through the session-stamped signer so the prompt the
+      // user already accepted at unlock covers this signature too.
+      // The signer's IndexedDbStamper signs the payload locally; we
+      // hand the resulting (r||s) to the Hub which broadcasts the
+      // server-side signing request.
+      const signer = signerForAccount(activeAccount);
+      const { signature64Hex } = await signer.signArchPayload({
+        signingRequestId,
+        payloadHex,
       });
-      const pc = tk.passkeyClient();
-      const signResult = await pc.signRawPayload({
-        signWith: activeAccount.btcAddress,
-        payload: payloadHex,
-        encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-        hashFunction: "HASH_FUNCTION_NO_OP",
-      });
-      const signature64Hex = `${signResult.r}${signResult.s}`;
       const client = await getClient();
-      const externalUserId = getExternalUserId();
+      const externalUserId = await getExternalUserId();
       const submitRes = await client.submitSigningRequest(signingRequestId, {
         externalUserId,
         signature64Hex,
@@ -236,44 +284,24 @@ export default function Send({ networkStatus }: SendProps) {
 
       const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
 
-      if (activeAccount.isCustodial) {
-        // Custodial sends are still server-built (Turnkey signs server-side and
-        // broadcasts via the Hub), so we just compute a local fee estimate to
-        // show the user. We don't need an actual PSBT here.
-        const indexer = await getIndexer();
-        let feeRate = 5;
-        try {
-          const est = await indexer.getBtcFeeEstimates();
-          feeRate = est["6"] ?? est["3"] ?? 5;
-        } catch { /* fallback */ }
-        const utxos = await indexer.getBtcAddressUtxos(fromAddress);
-        if (!utxos?.length) throw new Error("No UTXOs available for this address");
-        const feeSats = Math.ceil((10.5 + 1 * 57.5 + 2 * 43) * feeRate);
-        setBtcPrepare({
-          psbtHex: "",
-          psbtBase64: "",
-          feeSats,
-          feeRate,
-          changeSats: 0,
-          inputCount: 1,
-        });
-      } else {
-        const indexer = await getIndexer();
-        const built = await buildUnsignedPsbt({
-          indexer,
-          fromAddress,
-          toAddress: recipient,
-          amountSats,
-        });
-        setBtcPrepare({
-          psbtHex: built.psbt.toHex(),
-          psbtBase64: built.psbt.toBase64(),
-          feeSats: built.feeSats,
-          feeRate: built.feeRate,
-          changeSats: built.changeSats,
-          inputCount: built.inputCount,
-        });
-      }
+      // Build the PSBT locally regardless of auth method -- both
+      // passkey and email wallets sign with the session-stamped
+      // signer now, so there's no asymmetry to model here.
+      const indexer = await getIndexer();
+      const built = await buildUnsignedPsbt({
+        indexer,
+        fromAddress,
+        toAddress: recipient,
+        amountSats,
+      });
+      setBtcPrepare({
+        psbtHex: built.psbt.toHex(),
+        psbtBase64: built.psbt.toBase64(),
+        feeSats: built.feeSats,
+        feeRate: built.feeRate,
+        changeSats: built.changeSats,
+        inputCount: built.inputCount,
+      });
       setStep(3);
     } catch (err: any) {
       setError(err.message || "Failed to prepare transaction");
@@ -287,54 +315,33 @@ export default function Send({ networkStatus }: SendProps) {
     setLoading(true);
     setError("");
     try {
-      const externalUserId = getExternalUserId();
-      const amountSats = Math.round((Number(amount) || 0) * 1e8);
+      if (!activeAccount.organizationId)
+        throw new Error("Missing organization ID for this wallet");
 
-      if (activeAccount.isCustodial) {
-        const client = await getClient();
-        const result = await client.sendBitcoin({
-          externalUserId,
-          turnkeyResourceId: activeAccount.turnkeyResourceId,
-          toAddress: recipient,
-          amountSats,
-          feeRate: btcPrepare.feeRate,
-        });
-        setTxResult({ txid: result.txid, rawTxid: result.txid });
-      } else {
-        if (!activeAccount.organizationId)
-          throw new Error("Missing organization ID for passkey wallet");
+      // Unified path: locally-built PSBT, session-stamped signer,
+      // local broadcast. The signer figures out whether the active
+      // session was bootstrapped via WebAuthn (passkey) or OTP
+      // (email); the call site doesn't need to care.
+      const { signedPsbtHex } = await signerForAccount(activeAccount).signPsbt({
+        psbtHex: btcPrepare.psbtHex,
+      });
 
-        const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
-        const tk = new Turnkey({
-          apiBaseUrl: "https://api.turnkey.com",
-          defaultOrganizationId: activeAccount.organizationId,
-          rpId: globalThis.location?.hostname === "localhost" ? "localhost" : globalThis.location?.hostname ?? "localhost",
-        });
-        const signResult = await tk.passkeyClient().signTransaction({
-          signWith: fromAddress,
-          unsignedTransaction: btcPrepare.psbtHex,
-          type: "TRANSACTION_TYPE_BITCOIN",
-        });
+      const isTestnet = state.network === "testnet4";
+      const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+      const rawTxHex = finalizeSignedPsbt(hexToBase64(signedPsbtHex), network);
 
-        const signedPsbtHex = (signResult as any)?.signedTransaction;
-        if (!signedPsbtHex) throw new Error("Turnkey did not return a signed transaction");
-
-        const isTestnet = state.network === "testnet4";
-        const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
-        const rawTxHex = finalizeSignedPsbt(hexToBase64(signedPsbtHex), network);
-
-        const indexer = await getIndexer();
-        const txid = await indexer.broadcastBtc(rawTxHex);
-        setTxResult({ txid, rawTxid: txid });
-      }
+      const indexer = await getIndexer();
+      const txid = await indexer.broadcastBtc(rawTxHex);
+      setTxResult({ txid, rawTxid: txid });
+      void addRecentRecipient({ address: recipient.trim(), asset: "btc", network: state.network });
 
       setStep(4);
     } catch (err: any) {
-      setError(activeAccount?.isCustodial ? formatWalletHubError(err, "Transaction signing failed") : err.message || "Transaction signing failed");
+      setError(err.message || "Transaction signing failed");
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, btcPrepare, state.network, amount, recipient]);
+  }, [activeAccount, btcPrepare, state.network, recipient, addRecentRecipient]);
 
   const handleSubmit = useCallback(async () => {
     if (!activeAccount) return;
@@ -358,7 +365,7 @@ export default function Send({ networkStatus }: SendProps) {
 
       const submitViaHub = async (): Promise<string> => {
         const client = await getClient();
-        const externalUserId = getExternalUserId();
+        const externalUserId = await getExternalUserId();
         const action =
           asset === "apl" && selectedToken
             ? {
@@ -381,12 +388,10 @@ export default function Send({ networkStatus }: SendProps) {
           action,
         });
 
-        if (activeAccount.isCustodial) {
-          const serverResult = await client.signWithTurnkey(sr.signingRequestId, { externalUserId });
-          const res = (serverResult as any).result ?? serverResult;
-          return res?.txid || res?.txidHex || sr.signingRequestId;
-        }
-
+        // Unified local-sign path for both passkey and email wallets.
+        // The session-stamped signer takes care of whichever bootstrap
+        // (WebAuthn or OTP) opened the IndexedDB session; the Hub
+        // never sees the signing key.
         const payloadHex = (sr.payloadToSign as any)?.payloadHex;
         if (!payloadHex) throw new Error("No payload available for signing");
         return await signWithPasskey(sr.signingRequestId, payloadHex);
@@ -398,10 +403,10 @@ export default function Send({ networkStatus }: SendProps) {
       } catch (err) {
         if (isWalletHubAuthError(err)) {
           await resetHubConfigToDefaults();
-        } else if (isWalletHubUnknownResourceError(err) && !activeAccount.isCustodial) {
+        } else if (isWalletHubUnknownResourceError(err) && activeAccount.authMethod !== "email") {
           const client = await getClient();
           const registered = await client.registerExistingPasskeyWallet({
-            externalUserId: getExternalUserId(),
+            externalUserId: await getExternalUserId(),
             organizationId: activeAccount.organizationId,
             defaultAddress: activeAccount.btcAddress,
             defaultPublicKeyHex: activeAccount.publicKeyHex,
@@ -423,13 +428,21 @@ export default function Send({ networkStatus }: SendProps) {
 
       const displayTxid = formatArchId(txid);
       setTxResult({ txid: displayTxid, rawTxid: txid });
+      if (asset === "apl" || asset === "arch") {
+        void addRecentRecipient({
+          address: recipient.trim(),
+          asset,
+          network: state.network,
+          mint: asset === "apl" ? selectedToken?.mint : undefined,
+        });
+      }
       setStep(4);
     } catch (err: any) {
       setError(formatWalletHubError(err, "Transaction failed"));
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, handleBtcSign]);
+  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, handleBtcSign, addRecentRecipient, state.network]);
 
   const resetFlow = useCallback(() => {
     setStep(1);
@@ -454,12 +467,15 @@ export default function Send({ networkStatus }: SendProps) {
   if (step === 1) {
     return (
       <>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Choose Asset</h2>
+        <div className="page-header" style={{ marginBottom: 18 }}>
+          <h2 className="page-title">Send</h2>
+          <div className="page-subtitle">Choose which asset you want to send.</div>
+        </div>
         {error && <div className="error-banner">{error}</div>}
         <div className="send-asset-list">
           <button className="card send-asset-card" onClick={() => { setAsset("btc"); setStep(2); }}>
             <div className="asset-row send-asset-row">
-              <div className="asset-icon btc">₿</div>
+              {renderAssetIcon("btc", null)}
               <div className="asset-info">
                 <div className="asset-name">Bitcoin</div>
                 <div className="asset-sub">BTC</div>
@@ -486,7 +502,7 @@ export default function Send({ networkStatus }: SendProps) {
           </button>
           <button className="card send-asset-card" onClick={() => { setAsset("arch"); setStep(2); }}>
             <div className="asset-row send-asset-row">
-              <div className="asset-icon arch"><ArchIcon size={18} /></div>
+              {renderAssetIcon("arch", null)}
               <div className="asset-info">
                 <div className="asset-name">ARCH</div>
                 <div className="asset-sub">Native gas token</div>
@@ -504,7 +520,7 @@ export default function Send({ networkStatus }: SendProps) {
               onClick={() => { setSelectedToken(tk); setAsset("apl"); setStep(2); }}
             >
               <div className="asset-row send-asset-row">
-                <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
+                {renderAssetIcon("apl", tk)}
                 <div className="asset-info">
                   <div className="asset-name">{tk.name || "APL Token"}</div>
                   <div className="asset-sub">{tk.symbol || "APL Token"}</div>
@@ -519,7 +535,7 @@ export default function Send({ networkStatus }: SendProps) {
           {tokensHeld.length === 0 && (
             <div className="card send-asset-card send-asset-card-disabled">
               <div className="asset-row send-asset-row">
-                <div className="asset-icon apl"><ArchIcon size={18} color="#7b68ee" /></div>
+                {renderAssetIcon("apl", null)}
                 <div className="asset-info">
                   <div className="asset-name">APL Tokens</div>
                   <div className="asset-sub">No tokens held</div>
@@ -553,117 +569,210 @@ export default function Send({ networkStatus }: SendProps) {
       }
     };
 
+    const assetLabel = asset === "apl" && selectedToken
+      ? (selectedToken.symbol || selectedToken.name || "APL Token")
+      : meta.label;
+    const assetSub = asset === "btc"
+      ? "Bitcoin"
+      : asset === "arch"
+        ? "Native gas token"
+        : selectedToken?.name || "APL token";
+    const availableValue = asset === "btc" && btcLoaded
+      ? `${((btcConfirmed + btcPending) / 1e8).toFixed(8)} BTC`
+      : asset === "arch" && archBalance
+        ? formatArch(archBalance)
+        : asset === "apl" && selectedToken
+          ? `${selectedToken.uiAmount} ${selectedToken.symbol || ""}`.trim()
+          : "—";
+    const showMax = (asset === "btc" && btcLoaded && (btcConfirmed + btcPending) > 0)
+      || (asset === "arch" && archBalance && Number(archBalance) > 0);
+    const handleMax = () => {
+      if (asset === "btc") {
+        setAmount(((btcConfirmed + btcPending) / 1e8).toFixed(8));
+      } else if (asset === "arch" && archBalance) {
+        setAmount((Number(archBalance) / 1e9).toFixed(4));
+      }
+    };
+    const btcUsdLine = asset === "btc" && Number(amount) > 0
+      ? btcUsdSubtitle(Math.round(Number(amount) * 1e8), btcUsd)
+      : null;
+
+    // Recent recipients for the current asset / network / mint context.
+    // The store keeps them MRU-sorted; we cap to 6 here to keep the chip
+    // strip from overflowing the form column.
+    const recentMatches = (state.recentRecipients || [])
+      .filter((r) => {
+        if (r.network !== state.network) return false;
+        if (asset === "btc") return r.asset === "btc";
+        if (asset === "arch") return r.asset === "arch";
+        if (asset === "apl") {
+          return r.asset === "apl" && r.mint === selectedToken?.mint;
+        }
+        return false;
+      })
+      .slice(0, 6);
+
     return (
-      <>
-        <button className="btn btn-sm btn-secondary" onClick={() => setStep(1)} style={{ marginBottom: 12 }}>
-          ← Back
+      <div className="send-form-shell">
+        <button className="back-link" onClick={() => setStep(1)}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+          Back
         </button>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Send {meta.label}</h2>
-        {error && <div className="error-banner">{error}</div>}
-        <div className="input-group">
-          <label className="input-label">Recipient Address</label>
-          <input
-            className="input-field mono"
-            placeholder={asset === "btc" ? "tb1p..." : "Base58 address"}
-            value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
-          />
+        <div className="page-header">
+          <h2 className="page-title">Send {assetLabel}</h2>
+          <div className="page-subtitle">Enter the recipient address and the amount to send.</div>
         </div>
-        <div className="input-group">
-          <label className="input-label">
-            Amount ({meta.unit})
-            {asset === "arch" && archBalance && (
-              <span style={{ float: "right", color: "var(--text-muted)" }}>
-                Available: {formatArch(archBalance)}
-              </span>
+
+        <div className="asset-summary-chip">
+          {renderAssetIcon(asset, asset === "apl" ? selectedToken : null)}
+          <div className="asset-summary-chip-info">
+            <div className="asset-summary-chip-name">{assetLabel}</div>
+            <div className="asset-summary-chip-sub">{assetSub}</div>
+          </div>
+          <div className="asset-summary-chip-balance">
+            <div className="asset-summary-chip-balance-label">Available</div>
+            <div className="asset-summary-chip-balance-value">{availableValue}</div>
+          </div>
+        </div>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <div className="form-field">
+          <div className="form-field-header">
+            <label className="form-field-label">Recipient address</label>
+            {recentMatches.length > 0 && (
+              <span className="form-field-meta">{recentMatches.length} recent</span>
             )}
-            {asset === "btc" && btcLoaded && (
-              <span style={{ float: "right", color: "var(--text-muted)" }}>
-                Available: {((btcConfirmed + btcPending) / 1e8).toFixed(8)} BTC
-              </span>
-            )}
-            {asset === "apl" && selectedToken && (
-              <span style={{ float: "right", color: "var(--text-muted)" }}>
-                Available: {selectedToken.uiAmount}
-              </span>
-            )}
-          </label>
-          <div style={{ position: "relative" }}>
+          </div>
+          <div className="form-field-input" style={{ display: "flex", gap: 4, alignItems: "stretch" }}>
             <input
-              className="input-field mono"
+              placeholder={asset === "btc" ? "tb1p…" : "Base58 address"}
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value)}
+              spellCheck={false}
+              autoComplete="off"
+              style={{ flex: 1 }}
+            />
+            <button
+              type="button"
+              className="qr-scan-btn"
+              onClick={() => setShowQrScanner(true)}
+              title="Scan QR code"
+              aria-label="Scan QR code"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="6" height="6" rx="1" />
+                <rect x="15" y="3" width="6" height="6" rx="1" />
+                <rect x="3" y="15" width="6" height="6" rx="1" />
+                <path d="M15 15h2v2h-2zM19 19h2v2h-2zM15 19h2v2h-2zM19 15h2v2h-2z" />
+              </svg>
+            </button>
+          </div>
+          {showQrScanner && (
+            <QrScanner
+              onResult={(text) => {
+                setRecipient(text);
+                setShowQrScanner(false);
+              }}
+              onClose={() => setShowQrScanner(false)}
+            />
+          )}
+          {asset === "btc" && recipient.trim() && isWrongNetworkAddress(recipient.trim(), state.network) && (
+            <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+              This address looks like {detectBtcNetwork(recipient.trim()) === "mainnet" ? "Mainnet" : "Testnet"} but you are on {state.network === "mainnet" ? "Mainnet" : "Testnet"}. Sending will fail or burn funds.
+            </div>
+          )}
+          {recentMatches.length > 0 && (
+            <div className="recent-recipients" role="list" aria-label="Recent recipients">
+              {recentMatches.map((r) => {
+                const selected = recipient.trim() === r.address;
+                return (
+                  <div
+                    key={`${r.address}-${r.mint || ""}`}
+                    className={`recent-chip${selected ? " selected" : ""}`}
+                    role="listitem"
+                  >
+                    <button
+                      type="button"
+                      className="recent-chip-fill"
+                      onClick={() => setRecipient(r.address)}
+                      title={`${r.address}\nUsed ${r.useCount}x • ${new Date(r.lastUsedAt).toLocaleDateString()}`}
+                    >
+                      <span className="recent-chip-address mono">
+                        {truncateAddress(r.address, 6)}
+                      </span>
+                      {r.useCount > 1 && (
+                        <span className="recent-chip-count">×{r.useCount}</span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="recent-chip-remove"
+                      aria-label="Remove from recents"
+                      title="Remove from recents"
+                      onClick={() => void removeRecentRecipient({
+                        address: r.address,
+                        asset: r.asset,
+                        network: r.network,
+                        mint: r.mint,
+                      })}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="form-field">
+          <div className="form-field-header">
+            <label className="form-field-label">Amount</label>
+            <span className="form-field-meta">
+              Available <strong>{availableValue}</strong>
+            </span>
+          </div>
+          <div className="form-field-input">
+            <input
               type="number"
               step={asset === "btc" ? "0.00000001" : asset === "arch" ? "0.0001" : tokenInputStep(selectedToken?.decimals ?? 0)}
-              placeholder="0"
+              placeholder="0.00"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              style={{ paddingRight: 50 }}
+              inputMode="decimal"
             />
-            {asset === "btc" && btcLoaded && (btcConfirmed + btcPending) > 0 && (
-              <button
-                type="button"
-                onClick={() => setAmount(((btcConfirmed + btcPending) / 1e8).toFixed(8))}
-                style={{
-                  position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
-                  background: "rgba(193,154,91,0.15)", border: "1px solid rgba(193,154,91,0.3)",
-                  borderRadius: 6, padding: "3px 8px", fontSize: 10, fontWeight: 700,
-                  color: "var(--accent)", cursor: "pointer",
-                }}
-              >
-                MAX
-              </button>
-            )}
-            {asset === "arch" && archBalance && Number(archBalance) > 0 && (
-              <button
-                type="button"
-                onClick={() => setAmount((Number(archBalance) / 1e9).toFixed(4))}
-                style={{
-                  position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
-                  background: "rgba(193,154,91,0.15)", border: "1px solid rgba(193,154,91,0.3)",
-                  borderRadius: 6, padding: "3px 8px", fontSize: 10, fontWeight: 700,
-                  color: "var(--accent)", cursor: "pointer",
-                }}
-              >
+            <span className="form-field-suffix">{meta.unit}</span>
+            {showMax && (
+              <button type="button" className="form-field-action" onClick={handleMax}>
                 MAX
               </button>
             )}
           </div>
-          {asset === "btc" && Number(amount) > 0 && (() => {
-            const sats = Math.round(Number(amount) * 1e8);
-            const usd = btcUsdSubtitle(sats, btcUsd);
-            return usd ? (
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, fontFamily: "var(--font-mono)" }}>
-                {"\u2248"} {usd}
-              </div>
-            ) : null;
-          })()}
+          {btcUsdLine && (
+            <div className="form-field-hint">{"\u2248"} {btcUsdLine}</div>
+          )}
         </div>
+
         {asset === "btc" && btcPending !== 0 && (
-          <div style={{
-            fontSize: 11,
-            color: "var(--text-muted)",
-            background: "rgba(193, 154, 91, 0.06)",
-            border: "1px solid rgba(193, 154, 91, 0.12)",
-            borderRadius: 8,
-            padding: "8px 10px",
-            marginBottom: 12,
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-          }}>
+          <div className="form-field-pending">
             <span style={{ color: "var(--warning)", fontSize: 14 }}>⏳</span>
             <span>
-              Includes <strong style={{ color: "var(--success)" }}>{(btcPending / 1e8).toFixed(8)} BTC</strong> unconfirmed.
+              Includes <strong>{(btcPending / 1e8).toFixed(8)} BTC</strong> unconfirmed.
             </span>
           </div>
         )}
+
         <button
           className="btn btn-primary btn-full"
           disabled={!recipient || !amount || preparing}
           onClick={handleReview}
         >
-          {preparing ? "Preparing..." : "Review"}
+          {preparing ? "Preparing…" : "Review"}
         </button>
-      </>
+      </div>
     );
   }
 
@@ -676,103 +785,107 @@ export default function Send({ networkStatus }: SendProps) {
         ? tryParseTokenDisplayAmountToRaw(amount, selectedToken.decimals)
         : null;
 
+    const reviewAssetLabel = asset === "apl" && selectedToken
+      ? (selectedToken.symbol || selectedToken.name || "APL")
+      : meta.label;
+    const amountPrimary = asset === "btc"
+      ? `${Number(amount) || 0} BTC`
+      : asset === "arch"
+        ? `${Number(amount) || 0} ARCH`
+        : selectedToken
+          ? `${amount} ${selectedToken.symbol || "APL"}`
+          : amount;
+    const amountSubline = asset === "arch" && Number(amount) > 0
+      ? `${Math.round((Number(amount) || 0) * 1e9).toLocaleString()} lamports`
+      : asset === "btc" && amountSats > 0
+        ? `${amountSats.toLocaleString()} sats`
+        : asset === "apl" && aplRawAmount !== null
+          ? `${aplRawAmount.toLocaleString()} raw units`
+          : null;
+
     return (
-      <>
-        <button className="btn btn-sm btn-secondary" onClick={() => { setStep(2); setBtcPrepare(null); }} style={{ marginBottom: 12 }}>
-          ← Back
+      <div className="send-form-shell">
+        <button className="back-link" onClick={() => { setStep(2); setBtcPrepare(null); }}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+          Back
         </button>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Review Transaction</h2>
+        <div className="page-header">
+          <h2 className="page-title">Review</h2>
+          <div className="page-subtitle">Double-check the details before signing this transaction.</div>
+        </div>
         {networkStatus?.api === "disconnected" && asset !== "btc" && (
           <div className="warning-banner">
             This {asset === "apl" ? "APL token" : "ARCH"} send uses Wallet Hub for signing orchestration. Check Wallet Hub API in Settings if signing fails.
           </div>
         )}
-        {networkStatus?.api === "disconnected" && asset === "btc" && activeAccount?.isCustodial && (
-          <div className="warning-banner">
-            Custodial BTC sends use Wallet Hub for server-side signing. Check Wallet Hub API in Settings if signing fails.
-          </div>
-        )}
         {error && <div className="error-banner">{error}</div>}
-        <div className="card" style={{ marginBottom: 12 }}>
-          <div style={{ marginBottom: 8 }}>
-            <div className="input-label">Asset</div>
-            <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>{meta.icon} {meta.label}</div>
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <div className="input-label">To</div>
-            <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{recipient}</div>
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <div className="input-label">Amount</div>
-            <div style={{ fontWeight: 600 }}>
-              {asset === "btc" ? `${Number(amount) || 0} BTC`
-                : asset === "arch" ? `${Number(amount) || 0} ARCH`
-                : selectedToken ? `${amount} ${selectedToken.symbol || "APL"}`
-                : amount}
+
+        <div className="review-card">
+          <div className="review-row">
+            <div className="review-row-label">Asset</div>
+            <div className="review-row-value">
+              <span className="review-row-primary">
+                <span style={{ display: "inline-flex", alignItems: "center", marginRight: 6 }}>
+                  {renderAssetIcon(asset, asset === "apl" ? selectedToken : null, { inline: true })}
+                </span>
+                {reviewAssetLabel}
+              </span>
             </div>
-            {asset === "arch" && Number(amount) > 0 && (
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                {Math.round((Number(amount) || 0) * 1e9).toLocaleString()} lamports
-              </div>
-            )}
-            {asset === "btc" && amountSats > 0 && (
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                {amountSats.toLocaleString()} sats
-              </div>
-            )}
-            {asset === "apl" && aplRawAmount !== null && (
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, fontFamily: "var(--font-mono)" }}>
-                {aplRawAmount.toLocaleString()} raw units
-              </div>
-            )}
+          </div>
+          <div className="review-row">
+            <div className="review-row-label">To</div>
+            <div className="review-row-value">
+              <span className="review-row-mono">{recipient}</span>
+            </div>
+          </div>
+          <div className="review-row">
+            <div className="review-row-label">Amount</div>
+            <div className="review-row-value">
+              <span className="review-row-primary">{amountPrimary}</span>
+              {amountSubline && <span className="review-row-sub">{amountSubline}</span>}
+            </div>
           </div>
           {asset === "apl" && selectedToken && (
-            <div>
-              <div className="input-label">Token Mint</div>
-              <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{selectedToken.mint}</div>
+            <div className="review-row">
+              <div className="review-row-label">Mint</div>
+              <div className="review-row-value">
+                <span className="review-row-mono">{selectedToken.mint}</span>
+              </div>
             </div>
           )}
-
           {asset === "btc" && btcPrepare && (
-            <div style={{
-              marginTop: 10,
-              paddingTop: 10,
-              borderTop: "1px solid rgba(193,154,91,0.12)",
-            }}>
-              <div className="input-label" style={{ marginBottom: 6 }}>Network Fee</div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-                <span style={{ color: "var(--text-muted)" }}>Fee</span>
-                <span className="mono" style={{ color: "var(--text-primary)" }}>
+            <div className="review-section">
+              <div className="review-section-label">Network Fee</div>
+              <div className="review-section-row">
+                <span className="label">Fee</span>
+                <span className="value">
                   {btcPrepare.feeSats.toLocaleString()} sats ({(btcPrepare.feeSats / 1e8).toFixed(8)} BTC)
                 </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-                <span style={{ color: "var(--text-muted)" }}>Fee Rate</span>
-                <span className="mono" style={{ color: "var(--text-primary)" }}>
-                  {btcPrepare.feeRate.toFixed(1)} sat/vB
-                </span>
+              <div className="review-section-row">
+                <span className="label">Fee rate</span>
+                <span className="value">{btcPrepare.feeRate.toFixed(1)} sat/vB</span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-                <span style={{ color: "var(--text-muted)" }}>Inputs</span>
-                <span className="mono" style={{ color: "var(--text-primary)" }}>{btcPrepare.inputCount}</span>
+              <div className="review-section-row">
+                <span className="label">Inputs</span>
+                <span className="value">{btcPrepare.inputCount}</span>
               </div>
               {btcPrepare.changeSats > 0 && (
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-                  <span style={{ color: "var(--text-muted)" }}>Change</span>
-                  <span className="mono" style={{ color: "var(--text-primary)" }}>
-                    {btcPrepare.changeSats.toLocaleString()} sats
-                  </span>
+                <div className="review-section-row">
+                  <span className="label">Change</span>
+                  <span className="value">{btcPrepare.changeSats.toLocaleString()} sats</span>
                 </div>
               )}
-              <div style={{
-                display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700,
-                marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(193,154,91,0.12)",
-              }}>
-                <span style={{ color: "var(--accent)" }}>Total</span>
-                <span className="mono" style={{ color: "var(--accent)" }}>
-                  {((amountSats + btcPrepare.feeSats) / 1e8).toFixed(8)} BTC
-                </span>
-              </div>
+            </div>
+          )}
+          {asset === "btc" && btcPrepare && (
+            <div className="review-total-row">
+              <span className="label">Total</span>
+              <span className="value">
+                {((amountSats + btcPrepare.feeSats) / 1e8).toFixed(8)} BTC
+              </span>
             </div>
           )}
         </div>
@@ -782,9 +895,9 @@ export default function Send({ networkStatus }: SendProps) {
           onClick={handleSubmit}
           disabled={loading}
         >
-          {loading ? "Signing..." : "Confirm & Sign"}
+          {loading ? "Signing…" : "Confirm & Sign"}
         </button>
-      </>
+      </div>
     );
   }
 
@@ -794,34 +907,36 @@ export default function Send({ networkStatus }: SendProps) {
     : `${archExplorerBase}${txResult?.rawTxid}`;
 
   return (
-    <>
-      <div style={{ textAlign: "center", padding: "24px 0" }}>
-        <div style={{ fontSize: 48, marginBottom: 12 }}>✅</div>
-        <h2 style={{ fontSize: 18, marginBottom: 8 }}>Transaction Sent!</h2>
-        <div className="mono" style={{ wordBreak: "break-all", fontSize: 11, marginBottom: 16 }}>
-          {txResult?.txid}
+    <div className="send-form-shell">
+      <div className="send-success">
+        <div className="send-success-badge" aria-hidden>✓</div>
+        <h2 className="send-success-title">Transaction sent</h2>
+        <div className="send-success-subtitle">
+          Your transaction is now broadcasting on the {asset === "btc" ? "Bitcoin" : "Arch"} network.
         </div>
+        {txResult?.txid && (
+          <div className="send-success-txid">{txResult.txid}</div>
+        )}
         {txResult?.rawTxid && (
           <a
             href={explorerUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-sm btn-secondary"
-            style={{ marginBottom: 8, display: "inline-block" }}
           >
             View on {asset === "btc" ? "Mempool" : "Explorer"} →
           </a>
         )}
       </div>
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 10 }}>
         <button className="btn btn-secondary btn-full" onClick={resetFlow}>
-          Send Another
+          Send another
         </button>
         <button className="btn btn-primary btn-full" onClick={() => navigate("/dashboard")}>
           Done
         </button>
       </div>
-    </>
+    </div>
   );
 }
 

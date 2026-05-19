@@ -3,49 +3,144 @@ import { useNavigate } from "react-router-dom";
 import { WalletHubClient } from "@arch/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
 import { walletStore } from "../../state/wallet-store";
+import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
-import { DEFAULT_HUB_BASE_URL, type WalletAccount } from "../../state/types";
+import { type WalletAccount } from "../../state/types";
+import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 
 interface OnboardingProps {
   onComplete: () => void;
   /** When true we skip the welcome screen and go straight to wallet-type choice (used by "Add Wallet" from Settings) */
   addMode?: boolean;
+  /**
+   * When true the user already has a wallet but it was stored
+   * unencrypted (legacy plaintext blob); we ask them to set a password
+   * and seal it. The Hub creation flow is skipped entirely.
+   */
+  secureLegacyState?: unknown;
 }
 
-type Step = "welcome" | "creating";
+type Step = "welcome" | "secure" | "creating";
 
-export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
+/**
+ * The welcome flow is split into a wizard. Each value here maps
+ * to one screen the user sees on their way to creating a wallet.
+ *
+ *   0 -- "method" : pick passkey vs email auth (two big choice
+ *                   cards, no inputs)
+ *   1 -- "details": ask for wallet name + recovery email. Email
+ *                   required iff the chosen method is "email"
+ *   2 -- "password": choose an unlock password. Skipped entirely
+ *                   in addMode (a wallet exists already, so the
+ *                   keystore password is already set).
+ *
+ * Progressive disclosure keeps the popup feeling lightweight --
+ * the user is never staring at more than two inputs at a time.
+ */
+type WizardStep = 0 | 1 | 2;
+type WizardMethod = "passkey" | "email" | null;
+
+const MIN_PASSWORD_LENGTH = 8;
+
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+    }),
+  ]);
+}
+
+interface PasswordFieldsProps {
+  password: string;
+  confirm: string;
+  onPassword: (v: string) => void;
+  onConfirm: (v: string) => void;
+}
+
+function PasswordFields({ password, confirm, onPassword, onConfirm }: PasswordFieldsProps) {
+  const strength = scorePasswordStrength(password);
+  const mismatch = !!confirm && confirm !== password;
+  return (
+    <>
+      <div className="onboarding-field">
+        <label className="onboarding-field-label">Password</label>
+        <input
+          className="input"
+          type="password"
+          value={password}
+          onChange={(e) => onPassword(e.target.value)}
+          placeholder="At least 8 characters"
+          autoComplete="new-password"
+        />
+        {password && (
+          <p
+            className="onboarding-field-status"
+            data-tone={strength.score >= 3 ? "success" : "muted"}
+          >
+            Strength: {strength.label}
+          </p>
+        )}
+      </div>
+      <div className="onboarding-field">
+        <label className="onboarding-field-label">Confirm password</label>
+        <input
+          className="input"
+          type="password"
+          value={confirm}
+          onChange={(e) => onConfirm(e.target.value)}
+          placeholder="Re-enter your password"
+          autoComplete="new-password"
+        />
+        {mismatch && (
+          <p className="onboarding-field-status" data-tone="danger">
+            Passwords do not match
+          </p>
+        )}
+      </div>
+    </>
+  );
+}
+
+export default function Onboarding({ onComplete, addMode, secureLegacyState }: OnboardingProps) {
   const navigate = useNavigate();
-  const [step, setStep] = useState<Step>("welcome");
+  const [step, setStep] = useState<Step>(secureLegacyState ? "secure" : "welcome");
   const [error, setError] = useState<string | null>(null);
   const [walletName, setWalletName] = useState("");
-  const [showServerSettings, setShowServerSettings] = useState(false);
-  const [hubBaseUrl, setHubBaseUrl] = useState(DEFAULT_HUB_BASE_URL);
-  const [hubApiKey, setHubApiKey] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [statusMessage, setStatusMessage] = useState("Setting up your wallet...");
 
+  // Wizard substate. `wizardStep` is the current screen index;
+  // `wizardMethod` is the auth-method selected on step 0. Both
+  // persist as the user moves back/forward so they don't have to
+  // re-pick when correcting an earlier field.
+  const [wizardStep, setWizardStep] = useState<WizardStep>(0);
+  const [wizardMethod, setWizardMethod] = useState<WizardMethod>(null);
+
+  // `lastWizardStep` collapses the password screen out of the
+  // flow when we're adding a wallet to an already-unlocked
+  // keystore. Doing this here (instead of skipping conditionally
+  // inside goNext) keeps the progress dot count honest.
+  const lastWizardStep: WizardStep = addMode ? 1 : 2;
+  const totalWizardSteps = lastWizardStep + 1;
+
   useEffect(() => {
-    (async () => {
-      const state = await walletStore.getState();
-      if (state.hubBaseUrl) setHubBaseUrl(state.hubBaseUrl);
-      if (state.hubApiKey) setHubApiKey(state.hubApiKey);
-    })();
+    invalidateClientCache();
   }, []);
 
-  const buildClient = useCallback(() => {
+  const buildClient = useCallback(async () => {
+    const state = await walletStore.getState().catch(() => null);
     return new WalletHubClient({
-      baseUrl: hubBaseUrl || DEFAULT_HUB_BASE_URL,
-      ...(hubApiKey ? { apiKey: hubApiKey } : {}),
+      baseUrl: state?.hubBaseUrl ?? "",
+      ...(state?.hubApiKey ? { apiKey: state.hubApiKey } : {}),
     });
-  }, [hubBaseUrl, hubApiKey]);
-
-  const saveApiConfig = useCallback(async () => {
-    await walletStore.setHubConfig(
-      hubBaseUrl || DEFAULT_HUB_BASE_URL,
-      hubApiKey
-    );
-    invalidateClientCache();
-  }, [hubBaseUrl, hubApiKey]);
+  }, []);
 
   const finishOnboarding = useCallback(() => {
     onComplete();
@@ -54,23 +149,56 @@ export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
     }
   }, [onComplete, addMode, navigate]);
 
+  const validatePassword = useCallback((): string | null => {
+    if (!addMode) {
+      if (password.length < MIN_PASSWORD_LENGTH)
+        return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`;
+      if (password !== confirmPassword) return "Passwords do not match";
+    }
+    return null;
+  }, [password, confirmPassword, addMode]);
+
+  // Phase 1.1 + 1.10: Seal a legacy plaintext state under a fresh password.
+  const sealLegacyAndExit = useCallback(async () => {
+    setStep("creating");
+    setStatusMessage("Securing your wallet...");
+    setError(null);
+    try {
+      const err = validatePassword();
+      if (err) throw new Error(err);
+      await walletStore.sealLegacyState(password, secureLegacyState);
+      finishOnboarding();
+    } catch (e: any) {
+      setError(e?.message || "Failed to secure wallet");
+      setStep("secure");
+    }
+  }, [password, secureLegacyState, validatePassword, finishOnboarding]);
+
   const createNonCustodialWallet = useCallback(async () => {
+    const err = validatePassword();
+    if (err) {
+      setError(err);
+      return;
+    }
     setStep("creating");
     setError(null);
     setStatusMessage("Fetching server configuration...");
     try {
-      await saveApiConfig();
-      const client = buildClient();
-      const externalUserId = getExternalUserId();
+      const client = await buildClient();
+      const externalUserId = await getExternalUserId();
 
-      const config = await client.getTurnkeyConfig();
+      const config = await withTimeout(
+        client.getTurnkeyConfig(),
+        15_000,
+        "Fetching server configuration",
+      );
 
       const rpId =
         globalThis.location?.hostname === "localhost"
           ? "localhost"
           : globalThis.location?.hostname ?? "localhost";
 
-      setStatusMessage("Creating passkey — follow the browser prompt...");
+      setStatusMessage("Creating passkey - follow the browser prompt...");
 
       const tk = new Turnkey({
         apiBaseUrl: config.apiBaseUrl,
@@ -92,239 +220,498 @@ export default function Onboarding({ onComplete, addMode }: OnboardingProps) {
         self.crypto?.randomUUID?.() ??
         `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      const result = await client.createTurnkeyPasskeyWallet({
-        idempotencyKey,
-        body: {
-          externalUserId,
-          passkey: {
-            challenge: passkey.encodedChallenge,
-            attestation: passkey.attestation,
+      const result = await withTimeout(
+        client.createTurnkeyPasskeyWallet({
+          idempotencyKey,
+          body: {
+            externalUserId,
+            userEmail: email.trim() || undefined,
+            passkey: {
+              challenge: passkey.encodedChallenge,
+              attestation: passkey.attestation,
+            },
           },
-        },
-      });
+        }),
+        45_000,
+        "Creating wallet on the server",
+      );
 
       const account: WalletAccount = {
         id: result.resourceId,
         label: walletName.trim() || "Passkey Wallet",
-        btcAddress: result.defaultAddress || "",
-        publicKeyHex: result.defaultPublicKeyHex || "",
+        btcAddress: result.defaultAddress ?? "",
+        publicKeyHex: result.defaultPublicKeyHex ?? "",
         archAddress: result.defaultPublicKeyHex
           ? deriveArchAccountAddress(result.defaultPublicKeyHex)
           : undefined,
         turnkeyResourceId: result.resourceId,
         organizationId: result.organizationId,
-        isCustodial: false,
+        authMethod: "passkey",
+        recoveryEmail: email.trim() || undefined,
+        // Passkey wallets recover by re-attaching a new passkey via
+        // the email recovery flow when a recovery email is present.
         createdAt: Date.now(),
       };
 
-      await walletStore.completeOnboarding(account);
+      if (addMode) {
+        // Adding to an unlocked wallet -- no need to seal a new keystore.
+        await walletStore.addAccount(account);
+      } else {
+        await walletStore.completeOnboarding(password, account);
+      }
       finishOnboarding();
     } catch (e: any) {
       setError(e?.message || "Failed to create passkey wallet");
       setStep("welcome");
     }
-  }, [finishOnboarding, buildClient, saveApiConfig]);
+  }, [finishOnboarding, buildClient, addMode, walletName, email, password, validatePassword]);
 
-  const createCustodialWallet = useCallback(async () => {
+  /**
+   * Create an email-only sub-org wallet. The Hub returns a sub-org
+   * with no authenticators or API keys; the user bootstraps a
+   * session credential later via OTP_AUTH. The recovery email is
+   * non-optional in this path.
+   */
+  const createEmailWallet = useCallback(async () => {
+    const err = validatePassword();
+    if (err) {
+      setError(err);
+      return;
+    }
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setError("Email is required to create an email wallet");
+      return;
+    }
     setStep("creating");
     setError(null);
-    setStatusMessage("Creating custodial wallet...");
+    setStatusMessage("Creating email wallet on the server...");
     try {
-      await saveApiConfig();
-      const client = buildClient();
-      const externalUserId = getExternalUserId();
+      const client = await buildClient();
+      const externalUserId = await getExternalUserId();
       const idempotencyKey =
         self.crypto?.randomUUID?.() ??
         `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      const result = await client.createTurnkeyWallet({
-        idempotencyKey,
-        body: { externalUserId },
-      });
+      const result = await withTimeout(
+        client.createTurnkeyEmailWallet({
+          idempotencyKey,
+          body: {
+            externalUserId,
+            userEmail: trimmedEmail,
+          },
+        }),
+        45_000,
+        "Creating email wallet on the server",
+      );
 
       const account: WalletAccount = {
         id: result.resourceId,
-        label: walletName.trim() || "Custodial Wallet",
-        btcAddress: result.defaultAddress || "",
-        publicKeyHex: result.defaultPublicKeyHex || "",
+        label: walletName.trim() || "Email Wallet",
+        btcAddress: result.defaultAddress ?? "",
+        publicKeyHex: result.defaultPublicKeyHex ?? "",
         archAddress: result.defaultPublicKeyHex
           ? deriveArchAccountAddress(result.defaultPublicKeyHex)
           : undefined,
         turnkeyResourceId: result.resourceId,
         organizationId: result.organizationId,
-        isCustodial: true,
+        authMethod: "email",
+        recoveryEmail: trimmedEmail,
+        // Email wallets recover by re-running OTP verification to
+        // bootstrap a fresh local signing session.
         createdAt: Date.now(),
       };
 
-      await walletStore.completeOnboarding(account);
-      finishOnboarding();
-    } catch (e: any) {
-      setError(e?.message || "Failed to create wallet");
-      setStep("welcome");
-    }
-  }, [finishOnboarding, buildClient, saveApiConfig]);
-
-  const connectExistingWallet = useCallback(async () => {
-    setStep("creating");
-    setError(null);
-    setStatusMessage("Looking for existing wallets...");
-    try {
-      await saveApiConfig();
-      const client = buildClient();
-      const externalUserId = getExternalUserId();
-
-      const res = await client.listTurnkeyWallets(externalUserId);
-      const wallets = res?.wallets ?? [];
-
-      if (wallets.length === 0) {
-        setError("No existing wallets found. Create a new wallet first.");
-        setStep("welcome");
-        return;
+      if (addMode) {
+        await walletStore.addAccount(account);
+      } else {
+        await walletStore.completeOnboarding(password, account);
       }
-
-      const tw = wallets[0];
-      const isCustodial = !(tw as any).subOrganizationId;
-
-      const pubHex = (tw as any).defaultPublicKeyHex || "";
-      const account: WalletAccount = {
-        id: (tw as any).resourceId || (tw as any).id,
-        label: isCustodial ? "Imported Custodial" : "Imported Passkey",
-        btcAddress: (tw as any).defaultAddress || "",
-        publicKeyHex: pubHex,
-        archAddress: pubHex ? deriveArchAccountAddress(pubHex) : undefined,
-        turnkeyResourceId: (tw as any).resourceId || (tw as any).id,
-        organizationId: (tw as any).organizationId || "",
-        isCustodial,
-        createdAt: Date.now(),
-      };
-
-      await walletStore.completeOnboarding(account);
       finishOnboarding();
     } catch (e: any) {
-      setError(e?.message || "Failed to connect wallet");
+      setError(e?.message || "Failed to create email wallet");
       setStep("welcome");
     }
-  }, [finishOnboarding, buildClient, saveApiConfig]);
+  }, [finishOnboarding, buildClient, addMode, walletName, email, password, validatePassword]);
+
+  // ── Wizard navigation ──────────────────────────────────────
+  //
+  // The wizard is deliberately simple: a single linear flow with
+  // back + next. Validation locks Next per-step; clicking the
+  // final Next ("Create wallet") dispatches to the appropriate
+  // creator based on `wizardMethod`.
+  //
+  // We *don't* surface a "skip recovery email" confirmation modal
+  // anymore -- the email step's own hint text is honest about the
+  // trade-off, and the wizard's progressive disclosure already
+  // gives users time to consider. Adding a modal on top would
+  // double-prompt for the same decision.
+
+  const chooseMethod = useCallback((method: "passkey" | "email") => {
+    setWizardMethod(method);
+    setError(null);
+    setWizardStep(1);
+  }, []);
+
+  const goNext = useCallback(() => {
+    setError(null);
+    setWizardStep((s) => Math.min(s + 1, lastWizardStep) as WizardStep);
+  }, [lastWizardStep]);
+
+  const goBack = useCallback(() => {
+    setError(null);
+    setWizardStep((s) => Math.max(s - 1, 0) as WizardStep);
+  }, []);
+
+  const submitWizard = useCallback(() => {
+    if (wizardMethod === "passkey") void createNonCustodialWallet();
+    else if (wizardMethod === "email") void createEmailWallet();
+  }, [wizardMethod, createNonCustodialWallet, createEmailWallet]);
+
+  // Per-step validity drives the Next button's disabled state.
+  const detailsValid =
+    wizardMethod === "email" ? email.trim().length > 0 : true;
+  const passwordValid =
+    addMode ||
+    (password.length >= MIN_PASSWORD_LENGTH && password === confirmPassword);
+  const onLastStep = wizardStep === lastWizardStep;
+
+  const nextDisabled =
+    (wizardStep === 1 && !detailsValid) ||
+    (wizardStep === 2 && !passwordValid);
+
+  const handlePrimary = useCallback(() => {
+    if (onLastStep) submitWizard();
+    else goNext();
+  }, [onLastStep, submitWizard, goNext]);
 
   if (step === "creating") {
     return (
       <div className="onboarding">
         <div className="spinner" style={{ width: 40, height: 40, borderWidth: 3 }} />
         <p style={{ color: "var(--text-secondary)" }}>{statusMessage}</p>
+        <button
+          type="button"
+          className="btn btn-link"
+          onClick={() => {
+            setError("Wallet creation was cancelled. You can try again.");
+            setStep("welcome");
+          }}
+          style={{
+            marginTop: 12,
+            background: "none",
+            border: "none",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            fontSize: 12,
+            textDecoration: "underline",
+          }}
+        >
+          Cancel and go back
+        </button>
       </div>
     );
   }
 
+  if (step === "secure") {
+    return (
+      <div className="onboarding">
+        <div className="onboarding-logo">
+          <img src="/arch-logo.svg" alt="Arch" />
+        </div>
+        <h1 className="onboarding-title">Secure your wallet</h1>
+        <p className="onboarding-sub">
+          Set a password to encrypt your existing wallet on this device.
+          You'll need it every time you unlock.
+        </p>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <div className="onboarding-card">
+          <PasswordFields
+            password={password}
+            confirm={confirmPassword}
+            onPassword={setPassword}
+            onConfirm={setConfirmPassword}
+          />
+        </div>
+
+        <div className="onboarding-actions">
+          <button
+            className="btn btn-primary btn-full"
+            onClick={sealLegacyAndExit}
+            disabled={!password || password !== confirmPassword}
+          >
+            Encrypt &amp; Continue
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Wizard render ──────────────────────────────────────────
+  //
+  // Headers vary by step so the user always knows what one
+  // decision is being asked of them right now.
+  const stepHeading = (() => {
+    if (wizardStep === 0) {
+      return addMode ? "Add a wallet" : "Welcome to Arch Wallet";
+    }
+    if (wizardStep === 1) return "Wallet details";
+    return "Set an unlock password";
+  })();
+
+  const stepSubhead = (() => {
+    if (wizardStep === 0) {
+      return addMode
+        ? "Pick how this new wallet will sign in."
+        : "Pick how you want to sign in. You can add another wallet later.";
+    }
+    if (wizardStep === 1) {
+      return wizardMethod === "email"
+        ? "We'll email a one-time code to this address whenever you unlock."
+        : "Give the wallet a name and (optionally) a recovery email.";
+    }
+    return "You'll use this every time you open the wallet on this device.";
+  })();
+
   return (
     <div className="onboarding">
       <div className="onboarding-logo">
-        <img src="/arch-logo.svg" alt="Arch" style={{ width: 64, height: 64 }} />
+        <img src="/arch-logo.svg" alt="Arch" />
       </div>
-      <h1 className="onboarding-title">
-        {addMode ? "Add Wallet" : "Arch Wallet"}
-      </h1>
-      <p className="onboarding-sub">
-        {addMode
-          ? "Create or import an additional wallet."
-          : "A self-custodial wallet for Bitcoin, ARCH, and APL tokens on the Arch Network."}
-      </p>
+
+      <div className="onboarding-progress" aria-hidden="true">
+        {Array.from({ length: totalWizardSteps }).map((_, i) => (
+          <span
+            key={i}
+            className="onboarding-progress-dot"
+            data-active={i === wizardStep ? "true" : "false"}
+            data-done={i < wizardStep ? "true" : "false"}
+          />
+        ))}
+      </div>
+
+      <h1 className="onboarding-title">{stepHeading}</h1>
+      <p className="onboarding-sub">{stepSubhead}</p>
 
       {error && <div className="error-banner">{error}</div>}
 
-      <button
-        className="btn-link"
-        onClick={() => setShowServerSettings((v) => !v)}
-        style={{
-          background: "none",
-          border: "none",
-          color: "var(--text-muted)",
-          cursor: "pointer",
-          fontSize: 11,
-          textDecoration: "underline",
-          marginBottom: 8,
-          padding: 0,
-        }}
-      >
-        {showServerSettings ? "▾ Hide Server Settings" : "▸ Server Settings"}
-      </button>
+      {wizardStep === 0 && (
+        <MethodChoiceStep onPick={chooseMethod} />
+      )}
 
-      {showServerSettings && (
-        <div className="card" style={{ marginBottom: 12, textAlign: "left" }}>
-          <div style={{ marginBottom: 8 }}>
-            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-              API Base URL
-            </label>
-            <input
-              className="input"
-              type="text"
-              value={hubBaseUrl}
-              onChange={(e) => setHubBaseUrl(e.target.value)}
-              placeholder={DEFAULT_HUB_BASE_URL}
-              style={{ width: "100%", boxSizing: "border-box" }}
-            />
-          </div>
-          <div>
-            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-              API Key
-            </label>
-            <input
-              className="input"
-              type="password"
-              value={hubApiKey}
-              onChange={(e) => setHubApiKey(e.target.value)}
-              placeholder="Enter your API key"
-              style={{ width: "100%", boxSizing: "border-box" }}
-            />
-          </div>
+      {wizardStep === 1 && (
+        <DetailsStep
+          method={wizardMethod}
+          walletName={walletName}
+          email={email}
+          onWalletName={setWalletName}
+          onEmail={setEmail}
+        />
+      )}
+
+      {wizardStep === 2 && (
+        <div className="onboarding-card">
+          <PasswordFields
+            password={password}
+            confirm={confirmPassword}
+            onPassword={setPassword}
+            onConfirm={setConfirmPassword}
+          />
         </div>
       )}
 
-      <div style={{ marginBottom: 12, textAlign: "left" }}>
-        <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-          Wallet Name
-        </label>
+      {wizardStep > 0 && (
+        <div className="onboarding-nav">
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={goBack}
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handlePrimary}
+            disabled={nextDisabled}
+          >
+            {onLastStep
+              ? wizardMethod === "passkey"
+                ? "Create with passkey"
+                : "Create with email"
+              : "Continue"}
+          </button>
+        </div>
+      )}
+
+      {wizardStep === 0 && (
+        <p className="onboarding-fineprint">
+          Signing keys are non-extractable and stored only on this
+          device. The server never sees them.
+        </p>
+      )}
+
+      {/* Recover-existing exit: someone who already has a wallet
+          (e.g. just forgot the local copy on this device, or
+          re-installed the extension) should not have to scroll
+          past the create-wallet wizard. Show it on step 0 only --
+          once they've committed to a method/details we don't want
+          to suggest abandoning the in-progress wizard. */}
+      {wizardStep === 0 && !addMode && !secureLegacyState && (
+        <div className="onboarding-recover-row">
+          <span>Already have a wallet?</span>
+          <button
+            type="button"
+            className="btn btn-link onboarding-recover-link"
+            onClick={() => navigate("/recover")}
+          >
+            Recover via email
+          </button>
+        </div>
+      )}
+
+      {wizardStep === 0 && <RecoveryDisclosure />}
+    </div>
+  );
+}
+
+// ── Step components ──────────────────────────────────────────
+//
+// Kept inline in this file because they share state with the
+// parent's controlled inputs and lifting them out would just
+// add prop-drilling without re-use elsewhere.
+
+interface MethodChoiceStepProps {
+  onPick: (method: "passkey" | "email") => void;
+}
+
+function MethodChoiceStep({ onPick }: MethodChoiceStepProps) {
+  return (
+    <div className="onboarding-choice">
+      <button
+        type="button"
+        className="onboarding-choice-card"
+        onClick={() => onPick("passkey")}
+      >
+        <span className="onboarding-choice-card-icon" aria-hidden="true">
+          {/* fingerprint glyph kept as SVG so it scales / themes
+              with currentColor instead of needing a font asset. */}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 11v4a3 3 0 0 0 3 3" />
+            <path d="M8 8a4 4 0 0 1 8 0v5" />
+            <path d="M4 12a8 8 0 0 1 16 0v3" />
+            <path d="M9 21a8 8 0 0 0 3-6" />
+          </svg>
+        </span>
+        <div className="onboarding-choice-card-body">
+          <p className="onboarding-choice-card-title">
+            Passkey
+            <span className="onboarding-choice-card-badge">Recommended</span>
+          </p>
+          <p className="onboarding-choice-card-sub">
+            One tap to unlock. Best on devices with Face ID, Touch ID,
+            or a password manager.
+          </p>
+        </div>
+      </button>
+
+      <button
+        type="button"
+        className="onboarding-choice-card"
+        onClick={() => onPick("email")}
+      >
+        <span className="onboarding-choice-card-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="m3 7 9 6 9-6" />
+          </svg>
+        </span>
+        <div className="onboarding-choice-card-body">
+          <p className="onboarding-choice-card-title">Email</p>
+          <p className="onboarding-choice-card-sub">
+            One-time code at every unlock. Use if you don't have a
+            passkey-capable device.
+          </p>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+interface DetailsStepProps {
+  method: WizardMethod;
+  walletName: string;
+  email: string;
+  onWalletName: (v: string) => void;
+  onEmail: (v: string) => void;
+}
+
+function DetailsStep({
+  method,
+  walletName,
+  email,
+  onWalletName,
+  onEmail,
+}: DetailsStepProps) {
+  const emailRequired = method === "email";
+  return (
+    <div className="onboarding-card">
+      <div className="onboarding-field">
+        <label className="onboarding-field-label">Wallet name</label>
         <input
           className="input"
           type="text"
           value={walletName}
-          onChange={(e) => setWalletName(e.target.value)}
+          onChange={(e) => onWalletName(e.target.value)}
           placeholder="e.g. My Daily Wallet"
-          style={{ width: "100%", boxSizing: "border-box" }}
+          autoFocus
         />
+        <p className="onboarding-field-hint">
+          Just a label so you can tell wallets apart. You can rename
+          it any time.
+        </p>
       </div>
 
-      <div className="onboarding-actions">
-        <button className="btn btn-primary btn-full" onClick={createNonCustodialWallet}>
-          🔐 Create Wallet
-        </button>
+      <div className="onboarding-divider" />
 
-        <div style={{
-          display: "flex",
-          gap: 8,
-          marginTop: 4,
-        }}>
-          <button
-            className="btn btn-secondary"
-            onClick={createCustodialWallet}
-            style={{ flex: 1, fontSize: 12, padding: "8px 4px" }}
-          >
-            🏦 Custodial Wallet
-          </button>
-          <button
-            className="btn btn-secondary"
-            onClick={connectExistingWallet}
-            style={{ flex: 1, fontSize: 12, padding: "8px 4px" }}
-          >
-            📋 Import Existing
-          </button>
-        </div>
+      <div className="onboarding-field">
+        <label className="onboarding-field-label">
+          {emailRequired ? "Email" : "Recovery email"}
+          {!emailRequired && (
+            <span
+              style={{
+                color: "var(--text-muted)",
+                fontWeight: 400,
+                marginLeft: 6,
+                textTransform: "none",
+                letterSpacing: 0,
+              }}
+            >
+              (optional)
+            </span>
+          )}
+        </label>
+        <input
+          className="input"
+          type="email"
+          value={email}
+          onChange={(e) => onEmail(e.target.value)}
+          placeholder="you@example.com"
+          autoComplete="email"
+        />
+        <p className="onboarding-field-hint">
+          {emailRequired
+            ? "Required — we'll send a verification code here at every unlock."
+            : "Strongly recommended. Without it you can't recover this wallet if you lose your passkey."}
+        </p>
       </div>
-
-      <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 8 }}>
-        <strong>Create Wallet</strong> — secured by your device passkey (non-custodial).
-        <br />
-        <em>Custodial</em> — server-managed keys for simpler onboarding.
-      </p>
     </div>
   );
 }
+

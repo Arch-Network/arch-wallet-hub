@@ -1,10 +1,37 @@
+/**
+ * BTC transaction routes.
+ *
+ * Post-P3 the Hub never holds a signing key for any wallet, so this
+ * module is intentionally thin:
+ *
+ *   - `/btc/build`     -- compose an unsigned PSBT from the
+ *                         indexer's UTXO snapshot, the user's fee-rate
+ *                         preference, and a target output. The
+ *                         response is a PSBT hex + fee metadata that
+ *                         the client signs locally via the
+ *                         session-stamped signer.
+ *   - `/btc/broadcast` -- relay a finalized signed transaction to the
+ *                         indexer (which fans out to the Bitcoin
+ *                         network). The wallet UI mostly skips this
+ *                         and broadcasts via its own indexer client;
+ *                         we keep the route so non-wallet SDK
+ *                         consumers (back-office tooling, dapp
+ *                         servers) don't need their own UTXO/relay
+ *                         plumbing.
+ *   - `/btc/estimate-fee` -- unchanged, pure compute.
+ *
+ * The old `/btc/send` (build + custodially sign + broadcast) and
+ * `/btc/sign-psbt` (sign someone else's PSBT) endpoints are gone --
+ * they only made sense when the Hub held the user's key, and that
+ * model is dead.
+ */
+
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { getDbPool } from "../db/pool.js";
 import { withDbTransaction } from "../db/tx.js";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
 import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
-import { getTurnkeyClient } from "../turnkey/store.js";
 import { indexerForRequest } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
 import * as bitcoin from "bitcoinjs-lib";
@@ -29,7 +56,9 @@ function selectUtxos(utxos: Utxo[], targetSats: number, feeSats: number): { sele
   }
 
   if (total < needed) {
-    throw new Error(`Insufficient BTC balance: have ${total} sats, need ${needed} sats (${targetSats} + ${feeSats} fee)`);
+    throw new Error(
+      `Insufficient BTC balance: have ${total} sats, need ${needed} sats (${targetSats} + ${feeSats} fee)`,
+    );
   }
 
   return { selected, totalInput: total };
@@ -80,8 +109,8 @@ async function buildUnsignedPsbt(params: {
       index: utxo.vout,
       witnessUtxo: {
         script: bitcoin.address.toOutputScript(fromAddress, network),
-        value: utxo.value
-      }
+        value: utxo.value,
+      },
     });
   }
 
@@ -104,25 +133,43 @@ async function buildUnsignedPsbt(params: {
   };
 }
 
-const SendBody = Type.Object({
+const BuildBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
   turnkeyResourceId: Type.String({ minLength: 1 }),
   toAddress: Type.String({ minLength: 1 }),
   amountSats: Type.Integer({ minimum: 546 }),
-  feeRate: Type.Optional(Type.Number({ minimum: 1 }))
+  feeRate: Type.Optional(Type.Number({ minimum: 1 })),
+});
+
+const BroadcastBody = Type.Object({
+  /**
+   * Hex-encoded, fully-finalised Bitcoin transaction. The Hub does
+   * NOT extract transactions from PSBTs -- the client is expected to
+   * call `psbt.finalizeAllInputs().extractTransaction().toHex()`
+   * before posting. This keeps the route ignorant of PSBT shape and
+   * therefore immune to malleability surprises.
+   */
+  signedTxHex: Type.String({ minLength: 1 }),
+});
+
+const EstimateFeeBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
+  turnkeyResourceId: Type.String({ minLength: 1 }),
+  toAddress: Type.String({ minLength: 1 }),
+  amountSats: Type.Integer({ minimum: 546 }),
 });
 
 export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) => {
-
-  // ── Full send: server-side construction + signing (custodial only) ────
+  // ── Build an unsigned PSBT ─────────────────────────────────────────────
   server.post(
-    "/btc/send",
+    "/btc/build",
     {
       schema: {
-        summary: "Send BTC from a Turnkey wallet (server-side construction + signing)",
+        summary:
+          "Build an unsigned BTC PSBT from the indexer's UTXO snapshot. The client signs and broadcasts.",
         tags: ["btc"],
-        body: SendBody
-      }
+        body: BuildBody,
+      },
     },
     async (request, reply) => {
       const appId = (request as any).app?.appId;
@@ -132,81 +179,125 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
       if (!indexer) return;
 
       const db = getDbPool();
-      const body = request.body as typeof SendBody.static;
+      const body = request.body as typeof BuildBody.static;
 
       const user = await withDbTransaction(db, (client) =>
-        getOrCreateUserByExternalId(client, { appId, externalUserId: body.externalUserId })
+        getOrCreateUserByExternalId(client, { appId, externalUserId: body.externalUserId }),
       );
 
       const resource = await withDbTransaction(db, (client) =>
-        getTurnkeyResourceByIdForApp(client, { id: body.turnkeyResourceId, appId })
+        getTurnkeyResourceByIdForApp(client, { id: body.turnkeyResourceId, appId }),
       );
       if (!resource) return reply.notFound("Turnkey resource not found");
       if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
       if (!resource.default_address) return reply.badRequest("Turnkey resource has no address");
 
-      const rootOrgId = server.config.TURNKEY_ORGANIZATION_ID;
-      if (resource.organization_id !== rootOrgId) {
-        return reply.code(400).send({
-          statusCode: 400,
-          error: "PasskeyWalletNotSupported",
-          message: "BTC sending from passkey wallets must be built and broadcast by the client."
-        });
-      }
-
-      const fromAddress = resource.default_address;
-
-      let result;
       try {
-        result = await buildUnsignedPsbt({
+        const result = await buildUnsignedPsbt({
           indexer,
-          fromAddress,
+          fromAddress: resource.default_address,
           toAddress: body.toAddress,
           amountSats: body.amountSats,
           feeRate: body.feeRate,
         });
+        return {
+          unsignedPsbtHex: result.psbt.toHex(),
+          fromAddress: result.fromAddress,
+          toAddress: body.toAddress,
+          amountSats: body.amountSats,
+          feeSats: result.feeSats,
+          feeRate: result.feeRate,
+          inputCount: result.inputCount,
+          changeSats: result.changeSats,
+        };
       } catch (err: any) {
         if (err.code === "NO_UTXOS") {
           return reply.code(409).send({ error: "NoUtxos", message: err.message });
         }
         return reply.code(502).send({ error: "PsbtBuildFailed", message: err.message });
       }
+    },
+  );
 
-      const turnkey = getTurnkeyClient();
-      if (!turnkey) return reply.notImplemented("Turnkey not configured");
+  // ── Broadcast a client-signed transaction ──────────────────────────────
+  server.post(
+    "/btc/broadcast",
+    {
+      schema: {
+        summary: "Broadcast a hex-encoded, finalised BTC transaction via the indexer.",
+        tags: ["btc"],
+        body: BroadcastBody,
+      },
+    },
+    async (request, reply) => {
+      const appId = (request as any).app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
 
-      let signedTxHex: string;
+      const indexer = indexerForRequest(request, reply);
+      if (!indexer) return;
+
+      const body = request.body as typeof BroadcastBody.static;
       try {
-        const psbtBase64 = result.psbt.toBase64();
-        const signResult = await turnkey.signBitcoinTransaction({
-          signWith: fromAddress,
-          unsignedTransaction: psbtBase64
-        });
-
-        const signedPsbt = bitcoin.Psbt.fromBase64(signResult.signedTransaction, { network: result.network });
-        signedPsbt.finalizeAllInputs();
-        signedTxHex = signedPsbt.extractTransaction().toHex();
+        const txid = (await indexer.broadcastBtcTransaction(body.signedTxHex)) as string;
+        return { txid };
       } catch (err: any) {
-        request.log.error({ err }, "btc.send.turnkey_sign_failed");
-        return reply.internalServerError(`Turnkey signing failed: ${err.message}`);
-      }
-
-      let txid: string;
-      try {
-        txid = (await indexer.broadcastBtcTransaction(signedTxHex)) as string;
-      } catch (err: any) {
-        request.log.error({ err }, "btc.send.broadcast_failed");
+        request.log.error({ err }, "btc.broadcast_failed");
         return reply.code(502).send({ error: "BroadcastFailed", message: err.message });
       }
+    },
+  );
 
-      return {
-        txid,
-        fromAddress,
-        toAddress: body.toAddress,
-        amountSats: body.amountSats,
-        feeSats: result.feeSats,
-        feeRate: result.feeRate
-      };
-    }
+  // ── Exact fee estimate (still useful for wallet UX previews) ───────────
+  server.post(
+    "/btc/estimate-fee",
+    {
+      schema: {
+        summary:
+          "Estimate the fee for a planned BTC send using the actual UTXO set the indexer can see.",
+        tags: ["btc"],
+        body: EstimateFeeBody,
+      },
+    },
+    async (request, reply) => {
+      const appId = (request as any).app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const indexer = indexerForRequest(request, reply);
+      if (!indexer) return;
+
+      const db = getDbPool();
+      const body = request.body as typeof EstimateFeeBody.static;
+
+      const user = await withDbTransaction(db, (client) =>
+        getOrCreateUserByExternalId(client, { appId, externalUserId: body.externalUserId }),
+      );
+
+      const resource = await withDbTransaction(db, (client) =>
+        getTurnkeyResourceByIdForApp(client, { id: body.turnkeyResourceId, appId }),
+      );
+      if (!resource) return reply.notFound("Turnkey resource not found");
+      if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
+      if (!resource.default_address) return reply.badRequest("Turnkey resource has no address");
+
+      try {
+        const result = await buildUnsignedPsbt({
+          indexer,
+          fromAddress: resource.default_address,
+          toAddress: body.toAddress,
+          amountSats: body.amountSats,
+        });
+        return {
+          feeSats: result.feeSats,
+          feeRate: result.feeRate,
+          inputCount: result.inputCount,
+          changeSats: result.changeSats,
+        };
+      } catch (err: any) {
+        if (err.code === "NO_UTXOS") {
+          return reply.code(409).send({ error: "NoUtxos", message: err.message });
+        }
+        return reply.code(502).send({ error: "EstimateFailed", message: err.message });
+      }
+    },
   );
 };

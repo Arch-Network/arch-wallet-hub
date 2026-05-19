@@ -35,6 +35,45 @@ export function formatTokenAmount(amount: number, decimals: number): string {
   });
 }
 
+/**
+ * Display-precision for the swap surface. Mirrors the historical
+ * per-symbol decimals the Swap cards used (USDC → 2, everything else
+ * → 8). TODO: plumb `engineToken.decimals` through the Swap cards so
+ * a future token (e.g. USDT @ 6 decimals) doesn't get the wrong tail.
+ */
+function swapDisplayDecimals(symbol: string): number {
+  return symbol === "USDC" ? 2 : 8;
+}
+
+/**
+ * Render an already-scaled token amount (display units, not atomic)
+ * with locale-aware thousands separators and fixed precision matching
+ * the Swap surface's display rules. Returns "0" for zero / non-finite
+ * so the caller can decide whether to append the symbol.
+ *
+ * Examples:
+ *   formatSwapAmount(99696,    "USDC")  → "99,696.00"
+ *   formatSwapAmount(1.0039,   "aBTC")  → "1.00390000"
+ *   formatSwapAmount(0,        "USDC")  → "0"
+ */
+export function formatSwapAmount(amount: number, symbol: string): string {
+  if (!Number.isFinite(amount) || amount <= 0) return "0";
+  const decimals = swapDisplayDecimals(symbol);
+  return amount.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+/**
+ * Same precision as `formatSwapAmount`, but always appends the symbol.
+ * Used by the Swap cards' "Bal X" indicator so the unit is never
+ * lost.
+ */
+export function formatSwapBalance(balance: number, symbol: string): string {
+  return `${formatSwapAmount(balance, symbol)} ${symbol}`;
+}
+
 /** Format a USD amount with smart precision: < $1 -> 4 decimals, otherwise 2. */
 export function formatUsd(value: number): string {
   if (!Number.isFinite(value)) return "$0.00";

@@ -2,16 +2,14 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
-import { formatTokenAmount, truncateAddress, formatTimestamp } from "../../utils/format";
-import { enrichTokenFromRpc } from "../../utils/arch-rpc";
-import {
-  type TxStatus,
-  normalizeArchStatus,
-  statusBadgeClass,
-  statusLabel,
-} from "../../utils/tx-status";
+import { truncateAddress } from "../../utils/format";
+import { enrichIndexerToken } from "../../utils/enrich-token";
+import { addressForms } from "../../utils/arch-tx-summary";
+import { normalizeArchStatus } from "../../utils/tx-status";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
+import { TokenIcon } from "../../components/TokenIcon";
+import { ActivityRow, type ActivityRowTx } from "../../components/ActivityRow";
 
 interface TokenDetailData {
   mint: string;
@@ -24,15 +22,22 @@ interface TokenDetailData {
   tokenAccount: string;
 }
 
-interface TxItem {
-  txid: string;
-  timestamp: string;
-  status: TxStatus;
-  explorerUrl: string;
-  direction: "in" | "out" | "neutral";
-  amountLabel: string | null;
-  kind: "transfer" | "mint" | "burn";
+type TxKind = "transfer" | "mint" | "burn" | "swap";
+
+interface TxItem extends ActivityRowTx {
+  /** Sub-classification kept locally so the activity feed could
+   * group / filter on it in the future (e.g. "show swaps only"). */
+  kind: TxKind;
   counterparty: string | null;
+}
+
+function labelFor(kind: TxKind, direction: ActivityRowTx["direction"]): string {
+  if (kind === "mint") return "Minted";
+  if (kind === "burn") return "Burned";
+  if (kind === "swap") return "Swap";
+  if (direction === "in") return "Received";
+  if (direction === "out") return "Sent";
+  return "Transfer";
 }
 
 const TRANSFER_INSTRUCTION_LABELS = new Set([
@@ -66,23 +71,15 @@ const NON_TRANSFER_LABELS = new Set([
   "Allocate",
 ]);
 
-const APL_TOKEN_PROGRAM_ID_HEX =
-  "06ddf6e1b9ea84412c10b8df021c100fc8871907c309c33535de209c341763bf";
-
-function matchesAplTokenProgram(ix: Record<string, unknown> | null | undefined): boolean {
-  if (!ix) return false;
-  const hex = typeof ix.program_id_hex === "string" ? ix.program_id_hex.toLowerCase() : "";
-  if (hex === APL_TOKEN_PROGRAM_ID_HEX) return true;
-  // Legacy fallback when servers don't split the field.
-  const generic = typeof ix.program_id === "string" ? ix.program_id.toLowerCase() : "";
-  return generic === APL_TOKEN_PROGRAM_ID_HEX;
-}
-
 // The indexer's /transactions/:txid/instructions endpoint already decodes
 // known programs. Each item looks like:
 //   { program_id_hex, program_id_base58, action: "Token: Transfer",
 //     decoded: { source, destination, amount, authority, type, ... } }
 // We just have to look for transfer-ish actions and read the decoded fields.
+// We match against the action string ("Token: Transfer") rather than a
+// hardcoded program ID; those actions are unique to the APL Token
+// program and the action-based match works for both direct calls and
+// CPIs from other programs.
 
 const TOKEN_TRANSFER_ACTIONS = new Set([
   "Token: Transfer",
@@ -97,8 +94,11 @@ interface DecodedTransfer {
   direction: "in" | "out" | "neutral";
   amount: bigint;
   decimals: number | null;
-  kind: "transfer" | "mint" | "burn";
+  kind: "transfer" | "mint" | "burn" | "swap";
   counterparty: string | null;
+  // True when the matching token instruction was nested inside another
+  // program's call (CPI). Used to relabel as "Swap" rather than "Sent".
+  viaCpi: boolean;
 }
 
 function toBigInt(v: unknown): bigint | null {
@@ -114,7 +114,16 @@ function decodeTransferFromInstructions(
   instructions: Array<Record<string, unknown>>,
   tokenAccount: string,
 ): DecodedTransfer | null {
-  for (const ix of instructions) {
+  // Walk the flattened tree so we catch Transfer CPIs nested inside a
+  // custom program instruction (e.g. CLAMM swaps).
+  const flat = flattenInstructions(instructions);
+  // Match against either form (base58 or hex). The /tree endpoint
+  // returns hex addresses; the v2 row's `token_account_address` is
+  // base58 — without normalizing here, swaps would silently fail to
+  // match the user's ATA the same way the BTC balance bug did earlier.
+  const accountForms = addressForms(tokenAccount);
+
+  for (const ix of flat) {
     const action = typeof ix?.action === "string" ? ix.action : "";
     if (!TOKEN_TRANSFER_ACTIONS.has(action)) continue;
 
@@ -122,7 +131,9 @@ function decodeTransferFromInstructions(
     const src = typeof decoded.source === "string" ? decoded.source : "";
     const dst = typeof decoded.destination === "string" ? decoded.destination : "";
     const direction: "in" | "out" | "neutral" =
-      dst === tokenAccount ? "in" : src === tokenAccount ? "out" : "neutral";
+      accountForms.has(dst) ? "in"
+      : accountForms.has(src) ? "out"
+      : "neutral";
     if (direction === "neutral") continue; // not our account; keep scanning
 
     const amount = toBigInt(decoded.amount);
@@ -130,45 +141,102 @@ function decodeTransferFromInstructions(
 
     const decimals = typeof decoded.decimals === "number" ? decoded.decimals : null;
 
-    let kind: "transfer" | "mint" | "burn" = "transfer";
+    const depth = typeof ix.__depth === "number" ? ix.__depth : 0;
+    const viaCpi = depth > 0;
+    let kind: DecodedTransfer["kind"] = "transfer";
     if (action.startsWith("Token: MintTo")) kind = "mint";
     else if (action.startsWith("Token: Burn")) kind = "burn";
+    else if (viaCpi) kind = "swap";
 
     const counterparty = direction === "in" ? (src || null) : (dst || null);
 
-    return { direction, amount, decimals, kind, counterparty };
+    return { direction, amount, decimals, kind, counterparty, viaCpi };
   }
   return null;
 }
 
-// Returns: true if it IS a transfer, false if it's NOT, null if unknown.
+// Returns: true if it IS a transfer, false if it's PURELY admin, null if
+// ambiguous (custom CPIs / unknown labels).
+//
+// Fail-open by design: when we don't recognize every label as
+// known-admin, return null so the caller falls through to decoding —
+// CPI-only token movements (e.g. CLAMM swaps where the top-level
+// instruction is "Custom Instruction" and the actual `Token: Transfer`
+// happens via CPI) must NOT be dropped on label heuristics alone.
 function classifyFromChipLabels(tx: any): boolean | null {
   if (tx?.token_transfer && typeof tx.token_transfer === "object") return true;
   const labels = tx?.instructions;
   if (!Array.isArray(labels) || labels.length === 0) return null;
+
   let sawTransfer = false;
-  let sawNonTransfer = false;
+  let allKnownAdmin = true;
   for (const label of labels) {
-    if (typeof label !== "string") continue;
-    if (TRANSFER_INSTRUCTION_LABELS.has(label)) sawTransfer = true;
-    else if (NON_TRANSFER_LABELS.has(label)) sawNonTransfer = true;
+    if (typeof label !== "string") {
+      allKnownAdmin = false;
+      continue;
+    }
+    if (TRANSFER_INSTRUCTION_LABELS.has(label)) {
+      sawTransfer = true;
+      allKnownAdmin = false;
+    } else if (!NON_TRANSFER_LABELS.has(label)) {
+      // Anything unrecognized (e.g. "CustomInstruction", a CLAMM swap
+      // chip, a custom program's action) escapes the "pure admin" trap.
+      allKnownAdmin = false;
+    }
   }
   if (sawTransfer) return true;
-  if (sawNonTransfer) return false;
+  if (allKnownAdmin) return false;
   return null;
 }
 
-// Authoritative classifier using per-tx /instructions data. Returns true if
-// any APL token instruction's action is a transfer-y label.
-function classifyFromInstructions(instructions: Array<Record<string, unknown>>): boolean {
-  for (const ix of instructions) {
-    if (!matchesAplTokenProgram(ix)) continue;
-    const action = typeof ix?.action === "string" ? ix.action : "";
-    if (TOKEN_TRANSFER_ACTIONS.has(action)) return true;
-  }
-  return false;
-}
+// Flattens an instructions response so the transfer-detection logic
+// works regardless of the indexer's shape. Tries every container
+// convention we've seen in the wild:
+//
+//   - Arch indexer /tree: `{ depth, children }` (preferred — depth is
+//     authoritative)
+//   - Solana-style: `{ inner_instructions }` or `{ innerInstructions }`
+//   - Custom shapes: `{ cpi }`, `{ children }`, or a flat list with a
+//     `stack_height` / `stackHeight` field (depth ≈ stack_height - 1).
+//
+// Each emitted node carries `__depth` (0 = top-level, >0 = CPI) so
+// callers can distinguish CPI movements from direct top-level calls.
+function flattenInstructions(
+  instructions: Array<Record<string, unknown>>,
+): Array<Record<string, unknown> & { __depth: number }> {
+  const out: Array<Record<string, unknown> & { __depth: number }> = [];
+  const walk = (item: Record<string, unknown> | null | undefined, depth: number) => {
+    if (!item) return;
+    // Trust the indexer's authoritative `depth` field when present
+    // (Arch /tree). Otherwise fall back to our walker-computed depth.
+    const explicit = typeof item.depth === "number" ? item.depth : null;
+    const effective = explicit ?? depth;
+    out.push({ ...item, __depth: effective });
 
+    const candidates = [
+      item.children,
+      item.inner_instructions,
+      item.innerInstructions,
+      item.cpi,
+    ];
+    for (const c of candidates) {
+      if (Array.isArray(c)) {
+        for (const sub of c) walk(sub as Record<string, unknown>, effective + 1);
+      }
+    }
+  };
+  for (const ix of instructions) walk(ix, 0);
+  // Belt + suspenders: handle Solana-style "flat with stack_height"
+  // shapes, in case an indexer version inlines children instead of
+  // nesting them.
+  for (const node of out) {
+    if (node.__depth === 0) {
+      const sh = node.stack_height ?? node.stackHeight;
+      if (typeof sh === "number" && sh > 1) node.__depth = sh - 1;
+    }
+  }
+  return out;
+}
 
 function formatRawAmountWithDecimals(raw: string, decimals: number): string {
   try {
@@ -292,32 +360,22 @@ export default function TokenDetail() {
           return;
         }
 
-        const base: TokenDetailData = {
-          mint: raw.mint_address as string,
-          // Only treat as a real symbol if the indexer/RPC gave us one.
-          symbol: (raw.symbol as string) || "",
-          name: (raw.name as string) || "APL Token",
-          balance: Number(raw.amount) || 0,
-          decimals: raw.decimals ?? 0,
-          uiAmount: (raw.ui_amount as string) || formatTokenAmount(Number(raw.amount) || 0, raw.decimals ?? 0),
-          image: raw.image as string | undefined,
-          tokenAccount: (raw.token_account_address as string) || "",
-        };
-
-        const needsEnrich = !raw.name || !raw.symbol || (!raw.decimals && raw.decimals !== undefined);
-        if (needsEnrich) {
-          try {
-            const rpc = await enrichTokenFromRpc(indexer, raw);
-            if (rpc.name) base.name = rpc.name;
-            if (rpc.symbol) base.symbol = rpc.symbol;
-            if (rpc.image) base.image = rpc.image;
-            if (rpc.decimals != null) base.decimals = rpc.decimals;
-            if (rpc.uiAmount) base.uiAmount = rpc.uiAmount;
-          } catch { /* best-effort */ }
-        }
+        const enriched = await enrichIndexerToken(raw, state.network, indexer);
 
         if (!cancelled) {
-          setToken(base);
+          setToken({
+            mint: enriched.mint,
+            // TokenDetail historically treated an empty symbol as
+            // "show truncated mint header" — preserve that contract
+            // for now by mapping the fallback source back to "".
+            symbol: enriched.source === "fallback" ? "" : enriched.symbol,
+            name: enriched.name,
+            balance: enriched.balance,
+            decimals: enriched.decimals,
+            uiAmount: enriched.uiAmount,
+            image: enriched.image,
+            tokenAccount: enriched.tokenAccount,
+          });
           setLoadingToken(false);
         }
       } catch (e: any) {
@@ -370,37 +428,71 @@ export default function TokenDetail() {
         const enriched: EnrichedRow[] = await Promise.all(
           candidates.map(async (tx): Promise<EnrichedRow> => {
             const fromChip = classifyFromChipLabels(tx);
+            // Only drop on chip labels when we're CERTAIN it's a pure
+            // admin op (e.g. Create ATA, SetAuthority). Anything
+            // ambiguous (Custom Instructions, unrecognized labels) MUST
+            // fall through — those are how CPI-only swaps appear.
             if (fromChip === false) return { tx, isTransfer: false, decoded: null };
 
             let instructionsList: Array<Record<string, unknown>> | null = null;
             const loadInstructions = async () => {
               if (instructionsList !== null) return instructionsList;
+              // Use `/tree`, not `/instructions`: the tree endpoint
+              // returns the full CPI hierarchy (each node has a
+              // `children` array), which is the only data path that
+              // exposes Token: Transfer instructions executed via CPI
+              // from custom programs like CLAMM. `/instructions` only
+              // surfaces the flat top-level row — fine for direct
+              // transfers, blind to swaps.
               try {
-                const ixs = await indexer.getTransactionInstructions(tx.txid);
+                const ixs = await indexer.getTransactionTree(tx.txid);
                 instructionsList = Array.isArray(ixs) ? ixs : [];
               } catch (e) {
-                console.debug("[TokenDetail] getTransactionInstructions failed", tx.txid, e);
-                instructionsList = [];
+                console.debug("[TokenDetail] getTransactionTree failed", tx.txid, e);
+                // Fall back to the flat endpoint so direct transfers
+                // still resolve when the indexer's /tree route is
+                // unavailable (older indexer versions, or transient
+                // routing errors).
+                try {
+                  const flat = await indexer.getTransactionInstructions(tx.txid);
+                  instructionsList = Array.isArray(flat) ? flat : [];
+                } catch (e2) {
+                  console.debug(
+                    "[TokenDetail] getTransactionInstructions fallback failed",
+                    tx.txid,
+                    e2,
+                  );
+                  instructionsList = [];
+                }
               }
               return instructionsList;
             };
 
-            let isTransfer: boolean;
-            if (fromChip === true) {
-              isTransfer = true;
-            } else {
-              const loaded = await loadInstructions();
-              const verdict = classifyFromInstructions(loaded);
-              isTransfer = verdict || loaded.length === 0; // fail open
-            }
-            if (!isTransfer) return { tx, isTransfer: false, decoded: null };
-
+            // We always want to attempt a decode so we can render the
+            // amount / direction. If the chip already says transfer we
+            // keep it; otherwise we use the decoded result as the
+            // strongest signal (any APL token movement touching OUR
+            // token account at any depth, including CPIs).
             const fromRow = deriveTransferFromRow(tx, token.tokenAccount, token.decimals);
-            if (fromRow) return { tx, isTransfer: true, fromRow };
+            if (fromChip === true && fromRow) {
+              return { tx, isTransfer: true, fromRow };
+            }
 
             const loaded = await loadInstructions();
             const decoded = decodeTransferFromInstructions(loaded, token.tokenAccount);
-            return { tx, isTransfer: true, decoded };
+            if (decoded) {
+              return { tx, isTransfer: true, decoded };
+            }
+
+            // No decoded match. Fall back to chip-level signals: keep it
+            // only if the chip explicitly said transfer, or we have a
+            // row-level token_transfer summary. This avoids surfacing
+            // unrelated txs that happened to come back from the v2 feed.
+            if (fromChip === true) {
+              return { tx, isTransfer: true, fromRow: fromRow ?? undefined };
+            }
+
+            return { tx, isTransfer: false, decoded: null };
           })
         );
 
@@ -408,15 +500,15 @@ export default function TokenDetail() {
         console.debug("[TokenDetail] kept after filter", kept.length);
 
         const items: TxItem[] = kept.map(({ tx, fromRow, decoded }) => {
-          let direction: "in" | "out" | "neutral" = "neutral";
-          let amountLabel: string | null = null;
-          let kind: "transfer" | "mint" | "burn" = "transfer";
+          let direction: ActivityRowTx["direction"] = "neutral";
+          let amountLabel: string | undefined;
+          let kind: TxKind = "transfer";
           let counterparty: string | null = null;
           if (fromRow) {
             direction = fromRow.direction;
-            amountLabel = fromRow.amountLabel;
-            kind = fromRow.kind;
-            counterparty = fromRow.counterparty;
+            amountLabel = fromRow.amountLabel ?? undefined;
+            kind = (fromRow as any).kind ?? kind;
+            counterparty = (fromRow as any).counterparty ?? null;
           } else if (decoded) {
             direction = decoded.direction;
             amountLabel = buildAmountLabel(decoded, token.decimals);
@@ -425,11 +517,13 @@ export default function TokenDetail() {
           }
           return {
             txid: tx.txid,
+            type: "apl",
+            direction,
+            label: labelFor(kind, direction),
+            amountLabel,
             timestamp: tx.created_at || "",
             status: normalizeArchStatus(tx),
             explorerUrl: `${archExplorer}${tx.txid}`,
-            direction,
-            amountLabel,
             kind,
             counterparty,
           };
@@ -511,11 +605,7 @@ export default function TokenDetail() {
       <div className="token-detail-summary">
       <div className="token-detail-hero">
         <div className="token-detail-icon">
-          {token.image ? (
-            <img src={token.image} alt={token.name} style={{ width: 48, height: 48, borderRadius: "50%" }} />
-          ) : (
-            <ArchIcon size={28} color="#7b68ee" />
-          )}
+          <TokenIcon image={token.image} symbol={token.symbol || "?"} size={48} />
         </div>
         <div className="token-detail-name">{token.name}</div>
         <div className="token-detail-balance">
@@ -548,49 +638,9 @@ export default function TokenDetail() {
             No transactions yet
           </div>
         ) : (
-          transactions.map((tx) => {
-            const dirClass =
-              tx.direction === "in" ? "inbound" : tx.direction === "out" ? "outbound" : "apl";
-            const amountClass =
-              tx.direction === "in" ? "inbound" : tx.direction === "out" ? "outbound" : "";
-            const label =
-              tx.kind === "mint" ? "Minted"
-              : tx.kind === "burn" ? "Burned"
-              : tx.direction === "in" ? "Received"
-              : tx.direction === "out" ? "Sent"
-              : "Transfer";
-            const showStatus = tx.status !== "success" && tx.status !== "confirmed";
-            const arrow = tx.direction === "in" ? "↓" : tx.direction === "out" ? "↑" : "•";
-            return (
-              <a
-                key={tx.txid}
-                href={tx.explorerUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="tx-row-link"
-              >
-                <div className="tx-row tx-row-compact">
-                  <div className={`tx-dir ${dirClass}`}>{arrow}</div>
-                  <div className="tx-info">
-                    <div className="tx-label">{label}</div>
-                    <div className="tx-time">
-                      {tx.timestamp ? formatTimestamp(tx.timestamp) : ""}
-                    </div>
-                  </div>
-                  <div className="tx-amount-cell">
-                    {tx.amountLabel && (
-                      <span className={`tx-amount-big ${amountClass}`}>{tx.amountLabel}</span>
-                    )}
-                    {showStatus && (
-                      <span className={`badge ${statusBadgeClass(tx.status)}`}>
-                        {statusLabel(tx.status)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </a>
-            );
-          })
+          transactions.map((tx) => (
+            <ActivityRow key={tx.txid} tx={tx} variant="compact" />
+          ))
         )}
       </div>
       </div>

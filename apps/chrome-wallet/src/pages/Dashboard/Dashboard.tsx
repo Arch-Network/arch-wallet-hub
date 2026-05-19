@@ -1,17 +1,24 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
-import { getIndexer } from "../../utils/indexer";
+import { useWideMode } from "../../hooks/useWideMode";
+import { getIndexer, isIndexerAuthError, isIndexerNotFoundError } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
-import { formatBtc, formatBtcAmount, formatArch, formatArchAmount, formatTokenAmount, formatArchId, truncateAddress, formatTimestamp, timestampToMs, formatBtcUsd } from "../../utils/format";
-import { enrichTokenFromRpc } from "../../utils/arch-rpc";
+import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd } from "../../utils/format";
+import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { summarizeArchTx, type ArchTxSummary } from "../../utils/arch-tx-summary";
-import { normalizeArchStatus, statusBadgeClass, statusLabel, type TxStatus } from "../../utils/tx-status";
+import { normalizeArchStatus } from "../../utils/tx-status";
+import {
+  configureSwapEngineFromAppState,
+} from "../../utils/swap-engine";
 import ArchIcon from "../../components/ArchIcon";
+import PortfolioHero from "../../components/PortfolioHero";
+import { TokenIcon } from "../../components/TokenIcon";
+import { ActivityRow, type ActivityRowTx } from "../../components/ActivityRow";
 
 interface TokenBalance {
   mint: string;
@@ -23,22 +30,9 @@ interface TokenBalance {
   image?: string;
 }
 
-interface RecentTx {
-  txid: string;
-  type: "arch" | "btc";
-  direction: "in" | "out" | "unknown" | "neutral";
-  /** Primary line, e.g. "Sent BTC", "Received Token", "Arch Transaction". */
-  label: string;
-  /** Signed pre-formatted amount, e.g. "+0.00012345 BTC" or "-1024 APL". */
-  amountLabel?: string;
-  /** USD equivalent shown beneath the amount, e.g. "$12.34". Mainnet only. */
-  usdSubtitle?: string;
-  /** Raw amount in sats for BTC, used to compute USD lazily once price loads. */
-  sats?: number;
-  timestamp?: string;
-  /** Normalized status (success|failed|pending|confirmed|unconfirmed). */
-  status: TxStatus;
-}
+type RecentTx = ActivityRowTx;
+
+const DASHBOARD_FETCH_DEDUPE_MS = 30_000;
 
 function SkeletonBalance() {
   return (
@@ -150,6 +144,15 @@ export default function Dashboard() {
   const { activeAccount, state } = useWallet();
   const navigate = useNavigate();
   const { price: btcUsd } = useBtcUsdPrice();
+  // Matches the 880px breakpoint that flips the dashboard into a
+  // two-column grid (`html[data-mode="sidepanel"] .dashboard-grid`).
+  // Above that width Portfolio sits beside Recent Activity, so the
+  // section has room to surface more APL tokens inline before the
+  // "+N more tokens" link kicks in. Below it we stay compact so the
+  // popup (400px fixed) and narrow side panels don't grow a long
+  // Portfolio column that pushes Recent Activity off-screen.
+  const wideLayout = useWideMode(880);
+  const inlineTokenCap = wideLayout ? 6 : 2;
 
   const [btcBalance, setBtcBalance] = useState<number | null>(null);
   const [btcPending, setBtcPending] = useState<number>(0);
@@ -163,6 +166,14 @@ export default function Dashboard() {
   const [txsLoaded, setTxsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [airdropLoading, setAirdropLoading] = useState(false);
+  const inFlightFetchKeyRef = useRef<string | null>(null);
+  const lastFetchRef = useRef<{ key: string; at: number } | null>(null);
+
+  const markDashboardLoaded = useCallback(() => {
+    setOverviewLoaded(true);
+    setTokensLoaded(true);
+    setTxsLoaded(true);
+  }, []);
 
   // Parallax: drive a CSS variable on .app-body so the hero's city
   // background pans slower than the foreground as you scroll.
@@ -189,15 +200,55 @@ export default function Dashboard() {
   }, []);
 
   const fetchAll = useCallback(async (opts?: { noCache?: boolean }) => {
-    if (!activeAccount) return;
-    setError(null);
-
-    const indexer = await getIndexer();
+    if (!activeAccount) {
+      setBtcBalance(0);
+      setBtcPending(0);
+      setArchLamports(0);
+      setTokens([]);
+      setRecentTxs([]);
+      markDashboardLoaded();
+      return;
+    }
     const inputAddr = activeAccount.btcAddress;
-    const btcAddrForNetwork = reEncodeTaprootAddress(inputAddr, state.network);
     const archAddr =
       activeAccount.archAddress ||
       (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
+    const fetchKey = `${state.network}:${activeAccount.id}:${inputAddr}:${archAddr}`;
+    const now = Date.now();
+    if (!opts?.noCache) {
+      if (inFlightFetchKeyRef.current === fetchKey) return;
+      const lastFetch = lastFetchRef.current;
+      if (lastFetch?.key === fetchKey && now - lastFetch.at < DASHBOARD_FETCH_DEDUPE_MS) {
+        markDashboardLoaded();
+        return;
+      }
+    }
+
+    inFlightFetchKeyRef.current = fetchKey;
+    setError(null);
+    try {
+      const indexer = await getIndexer();
+      const btcAddrForNetwork = reEncodeTaprootAddress(inputAddr, state.network);
+
+    const isTestnetNetwork = state.network === "testnet4";
+    const archExplorerBase = isTestnetNetwork
+      ? "https://explorer.arch.network/testnet/tx/"
+      : "https://explorer.arch.network/mainnet/tx/";
+    const btcExplorerBase = isTestnetNetwork
+      ? "https://mempool.space/testnet4/tx/"
+      : "https://mempool.space/tx/";
+
+    // Fetch the raw account tokens once so the arch-tx classifier can
+    // recognize CPI'd token movements into / out of the user's ATAs
+    // (the source-of-truth signal for AMM swaps). Same response is
+    // re-used by the token display flow below to avoid a duplicate
+    // network call.
+    const rawTokensPromise = indexer.getAccountTokens(archAddr || inputAddr).catch((e: any) => {
+      if (!isIndexerAuthError(e) && !isIndexerNotFoundError(e)) {
+        console.warn("[Dashboard] getAccountTokens failed:", e?.message);
+      }
+      return null;
+    });
 
     const overviewPromise = fetchWalletOverview(indexer, {
       inputAddress: inputAddr,
@@ -265,38 +316,55 @@ export default function Dashboard() {
             amountLabel: buildBtcAmountLabel(direction, sats),
             timestamp: timeMs != null ? String(timeMs) : undefined,
             status: isBtcTxConfirmed(tx) ? "confirmed" : "unconfirmed",
+            explorerUrl: `${btcExplorerBase}${txid}`,
           });
         }
       } catch (e: any) {
-        console.warn("[Dashboard] getBtcAddressTxs failed:", e?.message);
+        if (!isIndexerAuthError(e) && !isIndexerNotFoundError(e)) {
+          console.warn("[Dashboard] getBtcAddressTxs failed:", e?.message);
+        }
       }
 
       const rawArchTxs = overview?.arch?.recentTransactions?.transactions ?? [];
       if (overview?.arch?.recentTransactionsTimedOut) {
         console.warn("[Dashboard] Arch transactions timed out for", archAddr);
-      } else if (rawArchTxs.length === 0) {
-        console.info("[Dashboard] No Arch transactions for", archAddr);
       }
 
-      // Enrich each row with decoded instruction data from /transactions/:txid
-      // so the summarizer can read direction + amount for plain ARCH transfers
-      // (v2 only summarises token_transfer specifically). All five run in
-      // parallel, capped to the same fast timeout as the rest of the overview.
-      const enrichedArchTxs = await Promise.all(
+      // Enrich each row with decoded instruction data + the full CPI
+      // tree from /transactions/:txid. The tree is what lets the
+      // summarizer recognize Token: Transfer instructions nested inside
+      // custom programs (e.g. CLAMM swaps) — without it those rows fall
+      // back to the generic "Custom Instruction" label. All five run in
+      // parallel, capped to the same fast timeout as the rest of the
+      // overview.
+      const rawTokensResolved = await rawTokensPromise;
+      const tokenAccountAddresses: string[] = [];
+      for (const t of rawTokensResolved?.tokens ?? []) {
+        const acct = (t as any)?.token_account_address;
+        if (typeof acct === "string" && acct) tokenAccountAddresses.push(acct);
+      }
+
+      const detailedArchTxs = await Promise.all(
         rawArchTxs.slice(0, 5).map(async (tx: any) => {
-          try {
-            const detail = await indexer.getTransactionDetail(tx.txid);
-            return { ...tx, ...(detail as Record<string, unknown>) };
-          } catch {
-            return tx;
-          }
+          const [detail, tree] = await Promise.all([
+            indexer.getTransactionDetail(tx.txid).catch(() => null),
+            indexer.getTransactionTree(tx.txid).catch(() => null),
+          ]);
+          return {
+            merged: { ...tx, ...((detail as Record<string, unknown>) ?? {}) },
+            tree,
+          };
         })
       );
 
-      const archTxItems: RecentTx[] = enrichedArchTxs
-        .map((tx: any): RecentTx => {
+      const archTxItems: RecentTx[] = detailedArchTxs
+        .map(({ merged: tx, tree }): RecentTx => {
           const status = normalizeArchStatus(tx);
-          const summary: ArchTxSummary = summarizeArchTx({ ...tx, status }, archAddr);
+          const summary: ArchTxSummary = summarizeArchTx(
+            { ...tx, status },
+            archAddr,
+            { tree, tokenAccounts: tokenAccountAddresses },
+          );
           return {
             txid: tx.txid,
             type: "arch",
@@ -305,12 +373,9 @@ export default function Dashboard() {
             amountLabel: summary.amountLabel,
             timestamp: tx.created_at,
             status,
+            explorerUrl: `${archExplorerBase}${tx.txid}`,
           };
         });
-
-      if (btcTxItems.length === 0) {
-        console.info("[Dashboard] No BTC transactions for", btcAddrForNetwork);
-      }
 
       const merged = [...archTxItems, ...btcTxItems];
       merged.sort((a, b) => {
@@ -328,43 +393,38 @@ export default function Dashboard() {
       setTxsLoaded(true);
     });
 
-    const tokenAddr = archAddr || inputAddr;
-    const tokensPromise = indexer.getAccountTokens(tokenAddr).then(async (res) => {
-      const rawTokens = res?.tokens ?? [];
-      const enriched = await Promise.all(
-        rawTokens.map(async (t) => {
-          const base = {
-            mint: t.mint_address as string,
-            symbol: t.symbol || truncateAddress(t.mint_address, 4),
-            name: t.name || "APL Token",
-            balance: Number(t.amount) || 0,
-            decimals: t.decimals ?? 0,
-            uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
-            image: t.image as string | undefined,
-          };
-          const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
-          if (!needsEnrich) return base;
-          try {
-            const rpc = await enrichTokenFromRpc(indexer, t);
-            if (rpc.name) base.name = rpc.name;
-            if (rpc.symbol) base.symbol = rpc.symbol;
-            if (rpc.image) base.image = rpc.image;
-            if (rpc.decimals != null) base.decimals = rpc.decimals;
-            if (rpc.uiAmount) base.uiAmount = rpc.uiAmount;
-          } catch { /* best-effort */ }
-          return base;
-        }),
-      );
-      setTokens(enriched);
-      setTokensLoaded(true);
-    }).catch((e: any) => {
-      console.warn("[Dashboard] getAccountTokens failed:", e?.message);
-      setTokens([]);
-      setTokensLoaded(true);
+    // Reuses the same response the arch-tx classifier already kicked off
+    // above (rawTokensPromise). Avoids a duplicate /accounts/:addr/tokens
+    // round-trip on every dashboard render.
+    const tokensPromise = rawTokensPromise.then(async (res) => {
+      try {
+        const rawTokens = res?.tokens ?? [];
+        const enriched = await enrichIndexerTokens(rawTokens, state.network, indexer);
+        setTokens(enriched);
+      } catch (e: any) {
+        console.warn("[Dashboard] enrichIndexerTokens failed:", e?.message);
+        setTokens([]);
+      } finally {
+        setTokensLoaded(true);
+      }
     });
 
-    await Promise.allSettled([overviewPromise, tokensPromise]);
-  }, [activeAccount, state.network]);
+      await Promise.allSettled([overviewPromise, tokensPromise]);
+    } catch (e: any) {
+      console.warn("[Dashboard] load failed:", e?.message);
+      setBtcBalance(0);
+      setBtcPending(0);
+      setArchLamports(0);
+      setTokens([]);
+      setRecentTxs([]);
+      markDashboardLoaded();
+    } finally {
+      if (inFlightFetchKeyRef.current === fetchKey) {
+        inFlightFetchKeyRef.current = null;
+      }
+      lastFetchRef.current = { key: fetchKey, at: Date.now() };
+    }
+  }, [activeAccount, markDashboardLoaded, state.network]);
 
   useEffect(() => {
     fetchAll();
@@ -388,10 +448,9 @@ export default function Dashboard() {
       await indexer.requestFaucetAirdrop(archAddress);
 
       const prevLamports = archLamports ?? 0;
-      const MAX_ATTEMPTS = 12;
-      const POLL_INTERVAL = 500;
-      for (let i = 0; i < MAX_ATTEMPTS; i++) {
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+      const POLL_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+      for (const delay of POLL_DELAYS_MS) {
+        await new Promise((r) => setTimeout(r, delay));
         try {
           const fresh = await indexer.getAccountSummary(archAddress);
           const newLamports = fresh?.lamports_balance ?? (fresh as any)?.lamports ?? 0;
@@ -399,8 +458,11 @@ export default function Dashboard() {
             setArchLamports(newLamports);
             break;
           }
-        } catch {
-          /* ignore */
+        } catch (pollErr) {
+          if (isIndexerAuthError(pollErr)) throw pollErr;
+          if (!isIndexerNotFoundError(pollErr)) {
+            console.warn("[Dashboard] faucet balance poll failed:", (pollErr as any)?.message);
+          }
         }
       }
     } catch (e: any) {
@@ -413,26 +475,29 @@ export default function Dashboard() {
   const isTestnet = state.network === "testnet4";
   const balancesReady = overviewLoaded;
 
+  // The swap engine has its own NetworkConfig (token mints, program ids,
+  // PropAMM deployment metadata). It needs the same network-id mapping
+  // the Swap page uses, and the same `configureEngine` lifecycle, so we
+  // re-apply on every state change here too. Cheap (module-state write)
+  // and makes the engine usable across pages without per-route bootstrap.
+  useEffect(() => {
+    configureSwapEngineFromAppState(state);
+  }, [state]);
   return (
     <>
       {/* Balance hero -- bleeds edge-to-edge of the main column in wide
           side panel mode. Lives outside .dashboard-shell so it isn't
           constrained by the inner max-width. */}
       {balancesReady ? (
-        <div className="balance-hero">
-          <div className="balance-amount">{formatArch(archLamports ?? 0)}</div>
-          <div className="balance-label">
-            Total ARCH Balance
-            <button
-              className="refresh-btn"
-              onClick={handleRefresh}
-              disabled={refreshing}
-              title="Refresh balances"
-            >
-              <span className={refreshing ? "refresh-icon spinning" : "refresh-icon"}>↻</span>
-            </button>
-          </div>
-        </div>
+        <PortfolioHero
+          btcSats={btcBalance ?? 0}
+          archLamports={archLamports ?? 0}
+          tokens={tokens ?? []}
+          btcUsd={btcUsd}
+          archUsdFallback={null}
+          refreshing={refreshing}
+          onRefresh={handleRefresh}
+        />
       ) : (
         <SkeletonBalance />
       )}
@@ -550,9 +615,8 @@ export default function Dashboard() {
 
           {tokensLoaded
             ? (() => {
-                const MAX_INLINE_TOKENS = 2;
                 const allTokens = tokens ?? [];
-                const visible = allTokens.slice(0, MAX_INLINE_TOKENS);
+                const visible = allTokens.slice(0, inlineTokenCap);
                 const hiddenCount = allTokens.length - visible.length;
                 return (
                   <>
@@ -563,11 +627,12 @@ export default function Dashboard() {
                         onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
                         style={{ cursor: "pointer" }}
                       >
-                        <div className="asset-icon apl">
-                          {tk.image
-                            ? <img src={tk.image} alt={tk.symbol} style={{ width: 24, height: 24, borderRadius: "50%" }} />
-                            : <ArchIcon size={18} color="#7b68ee" />}
-                        </div>
+                        <TokenIcon
+                          image={tk.image}
+                          symbol={tk.symbol}
+                          size={28}
+                          wrapperClassName="asset-icon apl"
+                        />
                         <div className="asset-info">
                           <div className="asset-name">{tk.name}</div>
                           <div className="asset-sub">{tk.symbol}</div>
@@ -578,7 +643,7 @@ export default function Dashboard() {
                     {hiddenCount > 0 && (
                       <div className="token-more-row" onClick={() => navigate("/tokens")}>
                         <div className="asset-icon apl">
-                          <ArchIcon size={18} color="#7b68ee" />
+                          <ArchIcon size={24} color="#7b68ee" />
                         </div>
                         <div className="token-more-label">
                           + {hiddenCount} more token{hiddenCount !== 1 ? "s" : ""}
@@ -607,7 +672,14 @@ export default function Dashboard() {
         <div className="card">
           {txsLoaded ? (
             (recentTxs ?? []).length > 0 ? (
-              recentTxs!.map((tx) => renderActivityRow(tx, btcUsd))
+              recentTxs!.map((tx) => (
+                <ActivityRow
+                  key={`${tx.type}-${tx.txid}`}
+                  tx={tx}
+                  variant="activity"
+                  btcUsd={btcUsd}
+                />
+              ))
             ) : (
               <div style={{ padding: 12, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
                 No recent transactions
@@ -628,73 +700,3 @@ export default function Dashboard() {
   );
 }
 
-function ArrowDown() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 5v14" />
-      <path d="M19 12l-7 7-7-7" />
-    </svg>
-  );
-}
-
-function ArrowUp() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 19V5" />
-      <path d="M5 12l7-7 7 7" />
-    </svg>
-  );
-}
-
-function renderActivityRow(tx: RecentTx, btcUsd: number | null) {
-  const isSuccess = tx.status === "success" || tx.status === "confirmed";
-  const showBadge = !isSuccess; // success rows go uncluttered
-
-  const dirClass =
-    tx.direction === "in" ? "inbound" :
-    tx.direction === "out" ? "outbound" :
-    tx.type === "btc" ? "neutral" : "arch";
-
-  const usdSubtitle = tx.type === "btc" && tx.sats != null
-    ? formatBtcUsd(tx.sats, btcUsd)
-    : undefined;
-
-  return (
-    <div className="tx-row tx-row-activity" key={`${tx.type}-${tx.txid}`}>
-      <div className={`tx-dir ${dirClass}`}>
-        {tx.direction === "in" ? <ArrowDown />
-          : tx.direction === "out" ? <ArrowUp />
-          : tx.type === "btc" ? <span style={{ fontSize: 14, lineHeight: 1 }}>₿</span>
-          : <ArchIcon size={14} />}
-      </div>
-      <div className="tx-info">
-        <div className="tx-activity-title">
-          <span className="tx-activity-label">{tx.label}</span>
-          {tx.amountLabel && (
-            <span className={`tx-activity-amount ${tx.direction === "out" ? "outbound" : tx.direction === "in" ? "inbound" : ""}`}>
-              {tx.amountLabel}
-            </span>
-          )}
-        </div>
-        <div className="tx-activity-meta">
-          <span className="tx-time">
-            {tx.timestamp
-              ? formatTimestamp(tx.timestamp)
-              : tx.status === "pending" || tx.status === "unconfirmed"
-                ? "Pending"
-                : "Time unavailable"}
-          </span>
-          {usdSubtitle && <span className="tx-activity-usd">{usdSubtitle}</span>}
-          <span className="tx-activity-ref mono">
-            {truncateAddress(tx.type === "arch" ? formatArchId(tx.txid) : tx.txid, 6)}
-          </span>
-        </div>
-      </div>
-      {showBadge && (
-        <span className={`badge ${statusBadgeClass(tx.status)}`}>
-          {statusLabel(tx.status)}
-        </span>
-      )}
-    </div>
-  );
-}

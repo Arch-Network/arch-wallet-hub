@@ -84,3 +84,63 @@ export async function getOrCreateUserByExternalId(client: PoolClient, params: {
   );
   return res.rows[0]!;
 }
+
+/**
+ * Store / replace the recovery email for a user. Idempotent: passing
+ * the same email twice is a no-op except for refreshing the
+ * `recovery_email_set_at` timestamp. Pass `null` to clear (kept for a
+ * future "delete recovery email" surface; not exposed today).
+ */
+export async function updateUserRecoveryEmail(client: PoolClient, params: {
+  appId: string;
+  userId: string;
+  email: string | null;
+}): Promise<void> {
+  const normalised = params.email ? params.email.trim().toLowerCase() : null;
+  // `$3` shows up in two contexts here: a column-typed assignment
+  // (`recovery_email = $3` → text) and a type-agnostic predicate
+  // (`$3 IS NULL` inside the CASE). On node-postgres the parameter
+  // is sent with no OID, leaving Postgres to infer from query text
+  // alone; on certain planner versions the IS NULL context wins and
+  // Postgres errors at prepare time with `42P08 -- could not
+  // determine data type of parameter $3`. Casting once forces the
+  // type so neither context is ambiguous.
+  await client.query(
+    `
+      UPDATE users
+      SET recovery_email = $3::text,
+          recovery_email_set_at = CASE WHEN $3::text IS NULL THEN NULL ELSE NOW() END
+      WHERE id = $1 AND app_id = $2
+    `,
+    [params.userId, params.appId, normalised]
+  );
+}
+
+export type UserRecoveryRow = {
+  id: string;
+  external_user_id: string | null;
+  recovery_email: string | null;
+};
+
+/**
+ * Find every user in `appId` whose recovery email matches the input
+ * (case-insensitive). Returns 0+ rows; the recovery init endpoint
+ * walks each one to mint per-sub-org OTPs.
+ */
+export async function findUsersByRecoveryEmail(client: PoolClient, params: {
+  appId: string;
+  email: string;
+}): Promise<UserRecoveryRow[]> {
+  const normalised = params.email.trim().toLowerCase();
+  if (!normalised) return [];
+  const res = await client.query<UserRecoveryRow>(
+    `
+      SELECT id, external_user_id, recovery_email
+      FROM users
+      WHERE app_id = $1 AND lower(recovery_email) = $2
+      ORDER BY created_at ASC
+    `,
+    [params.appId, normalised]
+  );
+  return res.rows;
+}

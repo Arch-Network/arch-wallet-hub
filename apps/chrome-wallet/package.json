@@ -1,22 +1,31 @@
 {
   "name": "@arch/chrome-wallet",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
     "zip": "wxt zip",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
+    "@arch-network/arch-sdk": "^0.0.26",
+    "@arch/swap-engine": "file:../../packages/arch-swap-engine",
     "@arch/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
     "@bitcoinerlab/secp256k1": "^1.2.0",
     "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.1",
+    "@saturnbtcio/bip322-js": "^3.0.1",
+    "@turnkey/api-key-stamper": "^0.6.6",
+    "@turnkey/crypto": "^2.9.0",
+    "@turnkey/http": "^4.0.0",
     "@turnkey/sdk-browser": "^5.2.1",
     "bitcoinjs-lib": "^7.0.1",
     "bs58": "^6.0.0",
+    "buffer": "^6.0.3",
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -29,6 +38,8 @@
     "@types/react-dom": "^18.3.5",
     "@wxt-dev/module-react": "^1.1.2",
     "typescript": "^5.7.3",
-    "wxt": "^0.20.20"
+    "vitest": "^3.2.4",
+    "wxt": "^0.20.20",
+    "zod": "^3.23.8"
   }
 }

@@ -1,3 +1,5 @@
+// Buffer shim MUST be first -- swap-engine deps reference Buffer at module init.
+import "../../src/utils/buffer-polyfill";
 import "reflect-metadata";
 import React from "react";
 import ReactDOM from "react-dom/client";

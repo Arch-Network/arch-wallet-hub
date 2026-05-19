@@ -43,12 +43,26 @@ html, body, #root {
      The standalone approve windows we open via chrome.windows.create()
      still pass 640 explicitly because those are real OS windows. */
   height: 600px;
+  /* Phase 2.8: allow long content to scroll instead of being clipped.
+     The fixed height is preserved (Chrome popups won't grow regardless),
+     but anything taller than 600px is now reachable. */
   overflow: hidden;
   font-family: var(--font-body);
   background: var(--bg-primary);
   color: var(--text-primary);
   font-size: 14px;
   line-height: 1.5;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* When mounted inside Chrome's side panel the container fills the panel
@@ -157,6 +171,13 @@ a {
     max-width: 640px;
   }
 
+  /* Wide-content routes (e.g. Token Detail) -- no max-width cap so the
+     activity feed and hero stretch to fill the available main column. */
+  html[data-mode="sidepanel"] .app-body-wide {
+    max-width: none;
+    padding: 20px 18px;
+  }
+
   /* Dashboard body: strip the centered-column constraints so the city
      hero can bleed edge-to-edge of the main column. Inner content
      manages its own max-width via .dashboard-shell. */
@@ -244,10 +265,16 @@ a {
     font-size: 22px;
   }
 
-  /* Portfolio asset rows */
-  html[data-mode="sidepanel"] .asset-row {
+  /* Portfolio asset rows (Dashboard). The Send asset picker reuses
+     .asset-row inside its own cards, so we scope out .send-asset-row
+     to keep those picker rows compact. */
+  html[data-mode="sidepanel"] .asset-row:not(.send-asset-row) {
     padding: 18px 4px;
     gap: 18px;
+  }
+
+  html[data-mode="sidepanel"] .send-asset-row {
+    gap: 14px;
   }
 
   html[data-mode="sidepanel"] .asset-icon {
@@ -383,7 +410,24 @@ a {
   padding: 10px 10px 8px;
   background: var(--bg-primary);
   position: relative;
-  overflow: hidden;
+  /* No overflow:hidden here — popovers (e.g. the network switcher dropdown)
+     anchor to elements inside the header and need to render below it. The
+     grid-pattern ::before pseudo-element is `inset: 0` so it doesn't leak
+     visually even without clipping. */
+  z-index: 20;
+}
+
+.app-header::after {
+  /* Belt-and-suspenders: subtle bottom hairline so the header still reads as
+     a distinct band when popovers float over the content below. */
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(193, 154, 91, 0.08), transparent);
+  pointer-events: none;
 }
 
 .app-header::before {
@@ -776,7 +820,10 @@ a {
 .action-bar {
   display: flex;
   gap: 8px;
-  padding: 0 0 14px;
+  /* Breathing room between the action pills and the next section
+     title ("Portfolio" / "Recent Activity"). The earlier 14px sat
+     too tight against the all-caps accent label below it. */
+  padding: 0 0 22px;
 }
 
 .action-btn {
@@ -931,6 +978,579 @@ a {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Form steps (2 = compose, 3 = review, 4 = result) self-cap so inputs
+   don't stretch awkwardly when the Send route runs at app-body-wide. */
+.send-form-shell {
+  max-width: 560px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ═══════════════════ Shared Page Header ═══════════════════ */
+
+.page-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.page-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 4px;
+  margin-left: -4px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+
+.back-link:hover {
+  color: var(--accent);
+  background: rgba(193, 154, 91, 0.08);
+}
+
+.back-link svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (min-width: 720px) {
+  html[data-mode="sidepanel"] .page-title {
+    font-size: 26px;
+  }
+  html[data-mode="sidepanel"] .page-subtitle {
+    font-size: 14px;
+  }
+}
+
+/* ═══════════════════ Send: Asset Summary Chip ═══════════════════ */
+
+.asset-summary-chip {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(20, 18, 16, 0.7);
+  border: 1px solid var(--border-primary);
+  border-radius: 14px;
+}
+
+.asset-summary-chip .asset-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+
+.asset-summary-chip-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.asset-summary-chip-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.asset-summary-chip-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.asset-summary-chip-balance {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.asset-summary-chip-balance-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.asset-summary-chip-balance-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* ═══════════════════ Send: Form Fields ═══════════════════ */
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form-field-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.form-field-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.form-field-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.form-field-meta strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.form-field-input {
+  display: flex;
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  padding: 4px 6px 4px 4px;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.form-field-input:focus-within {
+  border-color: rgba(193, 154, 91, 0.55);
+  background: rgba(20, 18, 16, 0.95);
+}
+
+.form-field-input input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 12px 12px;
+  font-size: 15px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.form-field-input input::placeholder {
+  color: var(--text-muted);
+}
+
+.form-field-input input[type="number"]::-webkit-outer-spin-button,
+.form-field-input input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.form-field-input input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.form-field-suffix {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.form-field-action {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  margin-right: 2px;
+  border-radius: 9px;
+  background: rgba(193, 154, 91, 0.14);
+  border: 1px solid rgba(193, 154, 91, 0.32);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.form-field-action:hover {
+  background: rgba(193, 154, 91, 0.24);
+  border-color: rgba(193, 154, 91, 0.55);
+}
+
+.form-field-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/* Recent recipients chip strip rendered under the address input on Send.
+   Chips are click-to-fill; trailing × removes the entry from history. */
+.recent-recipients {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.recent-chip {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(20, 18, 16, 0.8);
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  overflow: hidden;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+
+.recent-chip:hover {
+  border-color: rgba(193, 154, 91, 0.4);
+}
+
+.recent-chip.selected {
+  border-color: var(--accent);
+  background: rgba(193, 154, 91, 0.14);
+}
+
+.recent-chip-fill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.recent-chip-fill:hover {
+  color: var(--accent);
+}
+
+.recent-chip-address {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.recent-chip-count {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: rgba(193, 154, 91, 0.12);
+}
+
+.recent-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.recent-chip:hover .recent-chip-remove,
+.recent-chip:focus-within .recent-chip-remove {
+  opacity: 1;
+}
+
+.recent-chip-remove:hover {
+  background: rgba(217, 83, 79, 0.18);
+  color: var(--danger);
+}
+
+.form-field-pending {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: rgba(193, 154, 91, 0.06);
+  border: 1px solid rgba(193, 154, 91, 0.14);
+  border-radius: 10px;
+  line-height: 1.5;
+}
+
+.form-field-pending strong {
+  color: var(--success);
+  font-weight: 700;
+}
+
+/* ═══════════════════ Send: Review Card ═══════════════════ */
+
+.review-card {
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(28, 24, 20, 0.85) 0%, rgba(20, 18, 16, 0.85) 100%);
+  border: 1px solid var(--border-primary);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.review-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+}
+
+.review-row:last-child {
+  border-bottom: none;
+}
+
+.review-row-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+
+.review-row-value {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.review-row-primary {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-all;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Compact inline icon used in the Send review row + anywhere a token
+ * label needs a tiny visual mark without the full 36px asset-icon
+ * circle. Mirrors the colour tokens used by `.asset-icon` so BTC stays
+ * orange, ARCH stays blue-ish, and APL falls back to gold. */
+.send-inline-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.send-inline-icon.btc {
+  background: rgba(247, 147, 26, 0.15);
+  color: var(--btc-orange);
+  border: 1px solid rgba(247, 147, 26, 0.2);
+}
+
+.send-inline-icon.arch {
+  background: rgba(126, 184, 218, 0.12);
+  color: var(--arch-blue);
+  border: 1px solid rgba(126, 184, 218, 0.2);
+}
+
+.review-row-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.review-row-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.review-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+}
+
+.review-section-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.review-section-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.review-section-row .label {
+  color: var(--text-muted);
+}
+
+.review-section-row .value {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+.review-total-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, rgba(193, 154, 91, 0.12) 0%, rgba(160, 124, 66, 0.08) 100%);
+  border-top: 1px solid rgba(193, 154, 91, 0.18);
+}
+
+.review-total-row .label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.review-total-row .value {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+/* ═══════════════════ Send: Success Result ═══════════════════ */
+
+.send-success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 32px 20px;
+  background: linear-gradient(180deg, rgba(40, 75, 50, 0.18) 0%, rgba(20, 18, 16, 0.65) 100%);
+  border: 1px solid rgba(92, 184, 92, 0.25);
+  border-radius: 18px;
+  text-align: center;
+}
+
+.send-success-badge {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, rgba(92, 184, 92, 0.35) 0%, rgba(92, 184, 92, 0.08) 60%, transparent 100%);
+  color: var(--success);
+  font-size: 32px;
+}
+
+.send-success-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.send-success-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.send-success-txid {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-all;
+  padding: 10px 12px;
+  background: rgba(12, 10, 8, 0.55);
+  border: 1px solid rgba(193, 154, 91, 0.18);
+  border-radius: 10px;
+  max-width: 100%;
+}
+
+@media (min-width: 720px) {
+  html[data-mode="sidepanel"] .send-asset-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+  }
+  html[data-mode="sidepanel"] .send-asset-card {
+    min-height: 92px;
+  }
+  /* Inside a 2-col grid each card is ~280-310px wide; relax the right-side
+     balance column so the asset name has room to breathe. */
+  html[data-mode="sidepanel"] .send-asset-balance-wrap {
+    min-width: 0;
+    max-width: none;
+  }
+  html[data-mode="sidepanel"] .send-asset-balance {
+    font-size: 16px;
+  }
 }
 
 .send-asset-card {
@@ -1266,6 +1886,11 @@ a {
 
 /* ═══════════════════ Network Pill ═══════════════════ */
 
+.network-switcher {
+  position: relative;
+  display: inline-flex;
+}
+
 .network-pill {
   display: inline-flex;
   align-items: center;
@@ -1314,6 +1939,137 @@ a {
   border-color: rgba(230, 168, 23, 0.25);
 }
 
+/* Interactive variant of the network pill. The base `.network-pill` is used
+   on read-only renders (e.g. fallback when no onNetworkChange is provided);
+   this variant adds a caret and hover affordance. */
+.network-pill-button {
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.network-pill-button:hover {
+  background: rgba(40, 36, 30, 0.92);
+  border-color: rgba(193, 154, 91, 0.34);
+  color: var(--text-primary);
+}
+
+.network-pill-button[aria-expanded="true"] {
+  background: rgba(40, 36, 30, 0.92);
+  border-color: rgba(193, 154, 91, 0.5);
+  color: var(--text-primary);
+}
+
+.network-pill-caret {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 1px;
+  color: currentColor;
+  opacity: 0.7;
+  transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+.network-pill-button[aria-expanded="true"] .network-pill-caret {
+  transform: rotate(180deg);
+  opacity: 1;
+}
+
+.network-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 240px;
+  padding: 6px;
+  background: linear-gradient(180deg, rgba(28, 24, 20, 0.98) 0%, rgba(18, 16, 14, 0.98) 100%);
+  border: 1px solid var(--border-primary);
+  border-radius: 14px;
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(193, 154, 91, 0.08);
+  z-index: 1000;
+  animation: network-menu-in 0.14s ease-out;
+}
+
+@keyframes network-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.network-menu-header {
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.network-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-primary);
+  transition: background 0.15s ease;
+}
+
+.network-menu-item:hover {
+  background: rgba(193, 154, 91, 0.08);
+}
+
+.network-menu-item.active {
+  background: rgba(193, 154, 91, 0.12);
+}
+
+.network-menu-dot {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 6px currentColor;
+}
+
+.network-menu-dot.testnet {
+  background: #f7a93f;
+  color: #f7a93f;
+}
+
+.network-menu-dot.mainnet {
+  background: #5cb85c;
+  color: #5cb85c;
+}
+
+.network-menu-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.network-menu-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.network-menu-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.3;
+}
+
+.network-menu-check {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
 /* ═══════════════════ QR Container ═══════════════════ */
 
 .qr-container {
@@ -1324,6 +2080,296 @@ a {
   padding: 20px;
   background: #fff;
   border-radius: var(--radius-md);
+}
+
+/* ═══════════════════ Receive Page (Redesigned) ═══════════════════ */
+
+.receive-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.receive-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.receive-title {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.receive-subtitle {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+/* Segmented pill toggle for asset selection */
+.receive-segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  background: rgba(20, 18, 16, 0.7);
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  padding: 4px;
+  gap: 2px;
+}
+
+.receive-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.receive-segment:hover {
+  color: var(--text-primary);
+}
+
+.receive-segment.active {
+  background: linear-gradient(135deg, var(--accent) 0%, #a07c42 100%);
+  color: #0e0c0a;
+  box-shadow: 0 2px 12px rgba(193, 154, 91, 0.25);
+}
+
+.receive-segment-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* Main card holding QR + address */
+.receive-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 24px 20px 22px;
+  background: linear-gradient(180deg, rgba(28, 24, 20, 0.85) 0%, rgba(20, 18, 16, 0.85) 100%);
+  border: 1px solid var(--border-primary);
+  border-radius: 18px;
+  position: relative;
+  overflow: hidden;
+}
+
+.receive-card::before {
+  /* Subtle accent halo behind the QR */
+  content: "";
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  width: 280px;
+  height: 280px;
+  transform: translateX(-50%);
+  background: radial-gradient(circle at center, rgba(193, 154, 91, 0.16) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+.receive-qr-frame {
+  position: relative;
+  padding: 14px;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.08) inset,
+    0 18px 40px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(193, 154, 91, 0.25);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.receive-qr-frame svg {
+  display: block;
+}
+
+.receive-qr-skeleton {
+  width: 188px;
+  height: 188px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+}
+
+.receive-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+}
+
+.receive-meta-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.receive-meta-network {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.receive-address-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  background: rgba(12, 10, 8, 0.65);
+  border: 1px solid rgba(193, 154, 91, 0.18);
+  border-radius: 12px;
+  cursor: default;
+}
+
+.receive-address-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+
+.receive-address-copy {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(193, 154, 91, 0.12);
+  border: 1px solid rgba(193, 154, 91, 0.28);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+
+.receive-address-copy:hover {
+  background: rgba(193, 154, 91, 0.2);
+  border-color: rgba(193, 154, 91, 0.5);
+  color: var(--accent);
+}
+
+.copy-btn-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.receive-price {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(193, 154, 91, 0.08);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.receive-price-label {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.receive-price-sep {
+  color: var(--text-muted);
+}
+
+.receive-price-value {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.receive-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.receive-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid rgba(255, 184, 0, 0.18);
+  background: rgba(255, 184, 0, 0.06);
+  color: rgba(255, 220, 160, 0.92);
+}
+
+.receive-warning strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.receive-warning-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 184, 0, 0.22);
+  color: #ffcd6e;
+  border-radius: 50%;
+  font-weight: 800;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.receive-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  padding: 0 4px;
+}
+
+/* Wide-mode polish: larger title + a touch more breathing room on the card */
+@media (min-width: 720px) {
+  html[data-mode="sidepanel"] .receive-title {
+    font-size: 26px;
+  }
+  html[data-mode="sidepanel"] .receive-subtitle {
+    font-size: 14px;
+  }
+  html[data-mode="sidepanel"] .receive-card {
+    padding: 28px 24px 24px;
+    gap: 20px;
+  }
+  html[data-mode="sidepanel"] .receive-address-text {
+    font-size: 13px;
+  }
 }
 
 /* ═══════════════════ Spinner ═══════════════════ */
@@ -1394,7 +2440,7 @@ a {
 .address-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 5px 10px;
   background: rgba(30, 28, 26, 0.8);
   border: 1px solid rgba(193, 154, 91, 0.12);
@@ -1403,6 +2449,22 @@ a {
   font-size: 10px;
   color: var(--text-secondary);
   letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+@media (min-width: 720px) {
+  html[data-mode="sidepanel"] .address-chip {
+    padding: 7px 14px;
+    font-size: 12px;
+    gap: 8px;
+  }
+}
+
+@media (min-width: 1000px) {
+  html[data-mode="sidepanel"] .address-chip {
+    padding: 8px 16px;
+    font-size: 13px;
+  }
 }
 
 .copy-btn {
@@ -1427,13 +2489,25 @@ a {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 32px 24px;
+  /* Anchor content to the top so the title is in a predictable spot
+     and (more importantly) overflowing content stays scrollable --
+     `justify-content: center` + `overflow-y: auto` produces the
+     classic "can't scroll to start of overflowing flex content" bug
+     that hid the footer trust copy on the Add Wallet screen. */
+  justify-content: flex-start;
+  /* `min-height` instead of a hard `height` so the column grows with
+     its content; the popup viewport is the actual scroll container. */
+  min-height: 100%;
+  padding: 28px 20px 24px;
   text-align: center;
-  gap: 20px;
+  /* Smaller default gap; vertical rhythm now comes from explicit
+     spacers (.onboarding-card padding, .onboarding-divider). The old
+     20px applied uniformly between hero + form + footer copy gave
+     every row equal visual weight, which is what made the page feel
+     amateur. */
+  gap: 14px;
   position: relative;
-  overflow: hidden;
+  overflow-y: auto;
   background: var(--bg-primary);
 }
 
@@ -1463,26 +2537,339 @@ a {
 .onboarding-logo {
   font-size: 48px;
   color: var(--accent);
+  /* Soft circular glow around the mark so the page has a visual
+     anchor; the gradient halo bleeds into the dimmed hero image
+     behind it and pulls the eye to the top of the column. */
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(
+    circle at center,
+    rgba(193, 154, 91, 0.22) 0%,
+    rgba(193, 154, 91, 0.06) 45%,
+    transparent 70%
+  );
+  margin-bottom: -4px; /* tighten the gap to title without changing the parent's gap */
+}
+
+.onboarding-logo img {
+  width: 56px;
+  height: 56px;
 }
 
 .onboarding-title {
   font-family: var(--font-display);
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 800;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
+  margin: 0;
 }
 
 .onboarding-sub {
   font-size: 13px;
   color: var(--text-secondary);
-  line-height: 1.6;
+  line-height: 1.55;
+  max-width: 280px;
+  margin: 0 auto;
+}
+
+/* The card that holds form fields. Gives the inputs a single
+   visual surface to live in, so the page reads as
+   "hero / form / CTA" rather than a stack of orphan rows. */
+.onboarding-card {
+  width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  padding: 16px 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.onboarding-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  text-align: left;
+  margin: 2px 0 -4px;
+}
+
+.onboarding-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+.onboarding-field-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.onboarding-field-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  margin: 0;
+}
+
+.onboarding-field-status {
+  font-size: 11px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.onboarding-field-status[data-tone="success"] { color: var(--success, #6fcf97); }
+.onboarding-field-status[data-tone="muted"] { color: var(--text-muted); }
+.onboarding-field-status[data-tone="danger"] { color: var(--danger, #e07b7b); }
+
+/* A thin divider between conceptual groups inside the card
+   ("Identity" + "Security"). Less intrusive than a full border
+   row, more deliberate than naked whitespace. */
+.onboarding-divider {
+  height: 1px;
+  width: 100%;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--border-primary) 20%,
+    var(--border-primary) 80%,
+    transparent 100%
+  );
 }
 
 .onboarding-actions {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* Auth-method tip strip lives directly under the two CTAs.
+   Two columns of brief, parallel copy -- no full sentences --
+   so the eye can compare passkey vs email at a glance. */
+.onboarding-method-tip {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.onboarding-method-tip > div {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border-primary);
+}
+
+.onboarding-method-tip strong {
+  display: block;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
+.onboarding-fineprint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  margin: 4px 0 0;
+  max-width: 320px;
+  text-align: center;
+}
+
+/* "Already have a wallet?" -> Recover link on the first wizard
+   step. Sits below the create CTAs as an inline secondary path
+   so users coming back to a fresh install (or after a
+   forget-this-wallet flow) don't have to scroll or hunt. */
+.onboarding-recover-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.onboarding-recover-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-primary);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.onboarding-recover-link:hover {
+  opacity: 0.85;
+}
+
+/* ═══════════════════ Onboarding wizard ═══════════════════
+   Progress + per-step navigation + choice cards for the
+   create-wallet flow. Each step renders a single decision so
+   the user is never staring at name+email+password+method all
+   at once. */
+
+.onboarding-progress {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  align-items: center;
+  margin: 0 0 4px;
+}
+
+.onboarding-progress-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-primary);
+  transition: all 0.2s ease;
+}
+
+.onboarding-progress-dot[data-active="true"] {
+  background: var(--accent);
+  width: 18px;
+  border-radius: 3px;
+}
+
+.onboarding-progress-dot[data-done="true"] {
+  background: var(--accent);
+  opacity: 0.55;
+}
+
+.onboarding-choice {
+  display: flex;
+  flex-direction: column;
   gap: 10px;
   width: 100%;
+}
+
+.onboarding-choice-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.15s ease, border-color 0.15s ease,
+              background 0.15s ease, box-shadow 0.15s ease;
+  color: var(--text-primary);
+  font-family: inherit;
+  width: 100%;
+}
+
+.onboarding-choice-card:hover,
+.onboarding-choice-card:focus-visible {
+  border-color: var(--accent);
+  background: rgba(193, 154, 91, 0.06);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  outline: none;
+}
+
+.onboarding-choice-card-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--accent-glow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.onboarding-choice-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.onboarding-choice-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+
+.onboarding-choice-card-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  margin: 3px 0 0;
+}
+
+.onboarding-choice-card-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--accent-glow);
+  color: var(--accent);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* The Back/Next bar lives outside the card so the card itself
+   stays focused on the user's one input for that step. */
+.onboarding-nav {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.onboarding-nav .btn {
+  flex: 1;
+}
+
+/* Skip link under the email step for passkey wallets. Visible
+   but quiet -- the user shouldn't accidentally click it, but it
+   shouldn't feel hidden either. */
+.onboarding-skip {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 6px 4px;
+  text-decoration: underline;
+  align-self: center;
+}
+
+.onboarding-skip:hover {
+  color: var(--text-secondary);
 }
 
 /* ═══════════════════ Approve Page ═══════════════════ */
@@ -2034,17 +3421,21 @@ a {
 .token-detail-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 10px;
   margin-top: 14px;
+  width: 100%;
 }
 
 .token-detail-action-btn {
+  /* override .btn's `display: inline-flex` so the button stretches to fill
+     the 1fr grid cell instead of sizing to its label content. */
   display: flex;
+  width: 100%;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 10px 0;
-  font-size: 13px;
+  gap: 8px;
+  padding: 12px 14px;
+  font-size: 14px;
   font-weight: 600;
 }
 
@@ -2115,3 +3506,890 @@ a {
 .token-detail-toggle-chevron.open {
   transform: rotate(180deg);
 }
+
+/* ─── Phase 2.4 network theming ───────────────────────────────────────── */
+
+.app-container[data-network="mainnet"] {
+  --network-accent: var(--accent);
+  --network-warning: transparent;
+}
+
+.app-container[data-network="testnet4"] {
+  --network-accent: #e6a817;
+  --network-warning: rgba(230, 168, 23, 0.4);
+  box-shadow: inset 0 2px 0 0 var(--network-warning);
+}
+
+.app-container[data-network="testnet4"]::before {
+  content: "TESTNET";
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: rgba(230, 168, 23, 0.12);
+  color: #e6a817;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 2px 8px;
+  border-bottom-left-radius: 6px;
+  pointer-events: none;
+  z-index: 100;
+}
+
+/* ─── Phase 1.7 / 2.2 Approve dapp header ─────────────────────────────── */
+
+.approve-dapp-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+}
+
+.approve-dapp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.approve-dapp-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  object-fit: contain;
+}
+
+.approve-dapp-icon-placeholder {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.approve-dapp-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.approve-dapp-name {
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.approve-dapp-origin {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.approve-dapp-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 3px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.approve-dapp-badge.returning {
+  background: rgba(46, 204, 113, 0.15);
+  color: #2ecc71;
+}
+
+.approve-dapp-badge.new {
+  background: rgba(230, 168, 23, 0.15);
+  color: #e6a817;
+}
+
+.approve-risk {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.approve-risk-info {
+  background: rgba(126, 184, 218, 0.12);
+  color: var(--arch-blue);
+}
+
+.approve-risk-warn {
+  background: rgba(230, 168, 23, 0.12);
+  color: #e6a817;
+}
+
+.approve-risk-danger {
+  background: rgba(217, 83, 79, 0.12);
+  color: var(--danger);
+}
+
+/* ─── Phase 4.2 swap layout (legacy, kept for any consumers) ──────────── */
+
+.swap-row + .swap-arrow + .swap-row {
+  margin-top: 0;
+}
+
+.swap-row {
+  margin-bottom: 12px;
+}
+
+.swap-row-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.swap-row-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.swap-row-input .input {
+  flex: 1;
+}
+
+.swap-row-asset {
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.swap-arrow {
+  display: flex;
+  justify-content: center;
+  margin: -6px 0;
+  color: var(--text-muted);
+}
+
+/* ─── Native swap surface (engine-driven) ─────────────────────────────── */
+
+.swap-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Amount cards: stacked sell + receive with a small flip toggle in the
+ * negative space between them. The cards themselves use the same
+ * `--bg-card` token as everything else but with a slightly tighter
+ * radius and a 1px hairline so they read as paired surfaces. */
+.swap-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.swap-card-receive {
+  background: rgba(22, 18, 14, 0.6);
+}
+
+.swap-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.swap-card-label {
+  font-weight: 600;
+}
+
+.swap-card-balance {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.swap-balance-loading {
+  opacity: 0.6;
+}
+
+.swap-card-max {
+  background: transparent;
+  border: 1px solid var(--border-primary);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.swap-card-max:hover {
+  background: var(--accent-glow);
+  border-color: var(--border-accent);
+}
+
+.swap-card-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.swap-card-input,
+.swap-card-output {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.1;
+  outline: none;
+  padding: 0;
+}
+
+.swap-card-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.swap-card-output {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.swap-card-output-refreshing {
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+
+.swap-card-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-height: 14px;
+}
+
+/* Token chip rendered inside each card. Behaves as both a static
+ * label and a button (when the host wires `onClick`). */
+.swap-token-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-primary);
+  border-radius: 999px;
+  padding: 4px 10px 4px 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.swap-token-chip-button {
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.swap-token-chip-button:hover {
+  background: var(--bg-secondary);
+  border-color: var(--border-accent);
+}
+
+.swap-token-symbol {
+  letter-spacing: 0.02em;
+}
+
+.swap-token-img {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  object-fit: cover;
+}
+
+/* Flip direction button. Pulled into the negative space so the two
+ * cards visually anchor against it. */
+.swap-direction-row {
+  display: flex;
+  justify-content: center;
+  margin: -10px 0;
+  position: relative;
+  z-index: 2;
+}
+
+.swap-direction-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.swap-direction-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--accent);
+  transform: rotate(180deg);
+}
+
+.swap-direction-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Quote breakdown stack. Small key/value rows that appear under the
+ * cards once a fresh quote arrives. */
+.swap-details {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: rgba(22, 18, 14, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.swap-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.swap-detail-value {
+  color: var(--text-secondary);
+  font-weight: 500;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.swap-status {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border-primary);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+/* Surfaced at the top of the swap form when the popup was opened
+   as a side-panel handoff. Frames the auto-filled form as a
+   continuation rather than a brand-new flow. */
+.swap-resume-notice {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-glow);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.swap-success {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(92, 184, 92, 0.1);
+  border: 1px solid rgba(92, 184, 92, 0.3);
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.swap-submit {
+  margin-top: 12px;
+}
+
+.swap-fineprint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.swap-network-footer {
+  margin-top: 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* Token picker overlay. Anchored to viewport bottom with a slide-up
+ * feel; backdrop closes on click. */
+.swap-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 100;
+}
+
+.swap-picker {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 80vh;
+}
+
+.swap-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.swap-picker-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.swap-picker-close:hover {
+  color: var(--text-primary);
+}
+
+.swap-picker-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.swap-picker-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.swap-picker-row:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-primary);
+}
+
+.swap-picker-row.selected {
+  border-color: var(--border-accent);
+  background: var(--accent-glow);
+}
+
+.swap-picker-row:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.swap-picker-row-name {
+  flex: 1;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.swap-picker-row-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ─── Phase 2.6 contacts + recipient list ─────────────────────────────── */
+
+.contact-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  margin-bottom: 6px;
+}
+
+.contact-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-hover);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.contact-name {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.contact-addr {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* Phase 2.6 QR scanner overlay */
+.qr-scanner-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.qr-scanner-modal {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  width: 320px;
+  max-width: 90%;
+}
+.qr-scanner-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.qr-scanner-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 22px;
+  cursor: pointer;
+  line-height: 1;
+}
+.qr-scanner-video {
+  width: 100%;
+  border-radius: 8px;
+  background: black;
+  aspect-ratio: 1;
+}
+.qr-scan-btn {
+  background: var(--bg-hover);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  padding: 0 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  margin-left: 6px;
+}
+
+/* ---------- Swap page header refresh control ---------- */
+
+/* Override the global .page-header which sets flex-direction: column.
+ * The swap header is a row: title block on the left, refresh on the right. */
+.swap-page-header {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.swap-page-header__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.swap-refresh-btn {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  margin-top: 2px;
+}
+
+.swap-refresh-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.swap-refresh-btn:disabled {
+  cursor: progress;
+  opacity: 0.85;
+}
+
+.swap-refresh-icon.spinning {
+  animation: spin 0.9s linear infinite;
+}
+
+/* ---------- Swap onboarding panel (on the Swap page) ---------- */
+
+.onboarding-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--accent-glow);
+  border-radius: var(--radius-md);
+  padding: 14px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.onboarding-panel[data-status="error"] {
+  border-color: rgba(214, 90, 90, 0.45);
+}
+
+.onboarding-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.onboarding-panel__pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: var(--accent-glow);
+  border: 1px solid var(--accent-glow);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.onboarding-panel__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.onboarding-panel__copy {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.onboarding-panel__stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 2px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+}
+
+.onboarding-panel__step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.onboarding-panel__step[data-state="active"] {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.onboarding-panel__step[data-state="done"] {
+  color: var(--text-secondary);
+}
+
+.onboarding-panel__bullet {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-primary);
+  flex-shrink: 0;
+}
+
+.onboarding-panel__step[data-state="active"] .onboarding-panel__bullet {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+  animation: onboarding-pulse 1.4s ease-in-out infinite;
+}
+
+.onboarding-panel__step[data-state="done"] .onboarding-panel__bullet {
+  background: rgba(92, 184, 92, 0.9);
+}
+
+@keyframes onboarding-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.25); }
+}
+
+.onboarding-panel__step-label {
+  flex: 1;
+  line-height: 1.3;
+}
+
+.onboarding-panel__error {
+  margin: 0;
+}
+
+.onboarding-panel__fineprint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---------- Faucet panel (Swap page, testnet) ---------- */
+
+.faucet-panel {
+  background: var(--bg-card);
+  border: 1px dashed var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.faucet-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.faucet-panel__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.faucet-panel__chip {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-primary);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.faucet-panel__hint {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.faucet-panel__status {
+  margin-top: 0;
+}
+
+/* ---------- Dashboard swap-onboarding banner ---------- */
+
+.swap-onboarding-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--accent-glow);
+  border-radius: var(--radius-md);
+}
+
+.swap-onboarding-banner[data-status="error"] {
+  border-color: rgba(214, 90, 90, 0.45);
+}
+
+.swap-onboarding-banner__icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent-glow);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.swap-onboarding-banner__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.swap-onboarding-banner__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.25;
+}
+
+.swap-onboarding-banner__copy {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+

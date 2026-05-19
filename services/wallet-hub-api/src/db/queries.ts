@@ -9,6 +9,15 @@ export async function createUser(client: PoolClient): Promise<CreateUserRow> {
   return res.rows[0]!;
 }
 
+/**
+ * Discriminator for sub-org wallets. "passkey" wallets are bootstrapped via
+ * WebAuthn at create-time and use a WebAuthn-stamped activity to re-mint
+ * IndexedDB sessions; "email" wallets have no authenticator and rely on
+ * an OTP-derived recovery API key to bootstrap each session. NULL is a
+ * legacy/parent-org row that the recovery route filters out anyway.
+ */
+export type TurnkeyAuthMethod = "passkey" | "email";
+
 export type InsertTurnkeyResourceParams = {
   appId: string;
   userId: string | null;
@@ -22,6 +31,7 @@ export type InsertTurnkeyResourceParams = {
   defaultPublicKeyHex: string | null;
   defaultAddressFormat: string | null;
   defaultDerivationPath: string | null;
+  authMethod: TurnkeyAuthMethod | null;
 };
 
 export type TurnkeyResourceRow = {
@@ -38,6 +48,7 @@ export type TurnkeyResourceRow = {
   default_public_key_hex: string | null;
   default_address_format: string | null;
   default_derivation_path: string | null;
+  auth_method: TurnkeyAuthMethod | null;
   created_at: string;
   updated_at: string;
 };
@@ -60,9 +71,10 @@ export async function insertTurnkeyResource(
         default_address,
         default_public_key_hex,
         default_address_format,
-        default_derivation_path
+        default_derivation_path,
+        auth_method
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING *
     `,
     [
@@ -77,7 +89,8 @@ export async function insertTurnkeyResource(
       params.defaultAddress,
       params.defaultPublicKeyHex,
       params.defaultAddressFormat,
-      params.defaultDerivationPath
+      params.defaultDerivationPath,
+      params.authMethod
     ]
   );
   return res.rows[0]!;

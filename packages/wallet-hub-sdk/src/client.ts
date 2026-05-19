@@ -4,9 +4,9 @@ import type {
   CreateChallengeResponse,
   VerifyChallengeRequest,
   VerifyChallengeResponse,
-  CreateTurnkeyWalletRequest,
   CreateTurnkeyWalletResponse,
   CreateTurnkeyPasskeyWalletRequest,
+  CreateTurnkeyEmailWalletRequest,
   RegisterExistingPasskeyWalletRequest,
   RegisterExistingPasskeyWalletResponse,
   GetTurnkeyWalletResponse,
@@ -18,9 +18,19 @@ import type {
   GetSigningRequestResponse,
   SubmitSigningRequest,
   SubmitSigningResponse,
-  SendBtcRequest,
-  SendBtcResponse,
-  TurnkeyConfigResponse
+  BuildBtcPsbtRequest,
+  BuildBtcPsbtResponse,
+  BroadcastBtcRequest,
+  BroadcastBtcResponse,
+  TurnkeyConfigResponse,
+  InitRecoveryEmailRequest,
+  InitRecoveryEmailResponse,
+  StartRecoveryEmailOtpRequest,
+  StartRecoveryEmailOtpResponse,
+  VerifyRecoveryEmailRequest,
+  VerifyRecoveryEmailResponse,
+  EstimateBtcFeeRequest,
+  EstimateBtcFeeResponse
 } from "./types.js";
 
 /**
@@ -86,17 +96,6 @@ export class WalletHubClient {
     return await this.requestJson(`/turnkey/config`);
   }
 
-  async createTurnkeyWallet(params: {
-    idempotencyKey: string;
-    body: CreateTurnkeyWalletRequest;
-  }): Promise<CreateTurnkeyWalletResponse> {
-    return await this.requestJson(`/turnkey/wallets`, {
-      method: "POST",
-      headers: { "idempotency-key": params.idempotencyKey },
-      body: JSON.stringify(params.body)
-    });
-  }
-
   async createTurnkeyPasskeyWallet(params: {
     idempotencyKey: string;
     body: CreateTurnkeyPasskeyWalletRequest;
@@ -105,6 +104,23 @@ export class WalletHubClient {
       method: "POST",
       headers: { "idempotency-key": params.idempotencyKey },
       body: JSON.stringify(params.body)
+    });
+  }
+
+  /**
+   * Create a new email-only sub-org wallet. The created sub-org has
+   * no authenticators or pre-attached API keys; the client must
+   * bootstrap a session credential later via the
+   * `/recovery/email/{init,verify}` flow before it can sign.
+   */
+  async createTurnkeyEmailWallet(params: {
+    idempotencyKey: string;
+    body: CreateTurnkeyEmailWalletRequest;
+  }): Promise<CreateTurnkeyWalletResponse> {
+    return await this.requestJson(`/turnkey/email-wallets`, {
+      method: "POST",
+      headers: { "idempotency-key": params.idempotencyKey },
+      body: JSON.stringify(params.body),
     });
   }
 
@@ -170,10 +186,67 @@ export class WalletHubClient {
 
   // ── Custodial BTC send (server-side construction + Turnkey signing) ──────
 
-  async sendBitcoin(params: SendBtcRequest): Promise<SendBtcResponse> {
-    return await this.requestJson("/btc/send", {
+  /**
+   * Build an unsigned PSBT server-side using the indexer's UTXO
+   * snapshot. The client is then responsible for signing locally
+   * (via a session-stamped signer) and broadcasting -- either
+   * through {@link broadcastBitcoinTransaction} or its own indexer
+   * client.
+   */
+  async buildBitcoinPsbt(params: BuildBtcPsbtRequest): Promise<BuildBtcPsbtResponse> {
+    return await this.requestJson("/btc/build", {
       method: "POST",
       body: JSON.stringify(params)
+    });
+  }
+
+  /**
+   * Broadcast a finalised, hex-encoded Bitcoin transaction via the
+   * Hub's indexer. Useful for SDK consumers that don't ship their
+   * own indexer client; the wallet UI broadcasts directly when it
+   * already has one.
+   */
+  async broadcastBitcoinTransaction(
+    params: BroadcastBtcRequest
+  ): Promise<BroadcastBtcResponse> {
+    return await this.requestJson("/btc/broadcast", {
+      method: "POST",
+      body: JSON.stringify(params)
+    });
+  }
+
+  /**
+   * Real fee estimate for a custodial send. The server selects UTXOs
+   * the same way it would for /btc/send, so the returned fee matches
+   * exactly what the user will pay.
+   */
+  async estimateBitcoinFee(params: EstimateBtcFeeRequest): Promise<EstimateBtcFeeResponse> {
+    return await this.requestJson("/btc/estimate-fee", {
+      method: "POST",
+      body: JSON.stringify(params)
+    });
+  }
+
+  // ── Recovery (Email OTP -> add new authenticator) ────────────────────────
+
+  async initRecoveryEmail(body: InitRecoveryEmailRequest): Promise<InitRecoveryEmailResponse> {
+    return await this.requestJson(`/recovery/email/init`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  }
+
+  async startRecoveryEmailOtp(body: StartRecoveryEmailOtpRequest): Promise<StartRecoveryEmailOtpResponse> {
+    return await this.requestJson(`/recovery/email/start`, {
+      method: "POST",
+      body: JSON.stringify(body)
+    });
+  }
+
+  async verifyRecoveryEmail(body: VerifyRecoveryEmailRequest): Promise<VerifyRecoveryEmailResponse> {
+    return await this.requestJson(`/recovery/email/verify`, {
+      method: "POST",
+      body: JSON.stringify(body)
     });
   }
 }

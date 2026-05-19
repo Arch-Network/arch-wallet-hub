@@ -2,7 +2,9 @@ import {
   ArchIndexerClient,
   type AccountSummary,
   type AccountTransactionsResponse,
-  type BtcAddressSummary
+  type BtcAddressSummary,
+  isIndexerAuthError,
+  isIndexerNotFoundError
 } from "./indexer";
 
 export interface WalletOverview {
@@ -24,6 +26,7 @@ export interface WalletOverview {
 const FAST_TIMEOUT_MS = 5_000;
 const FULL_TTL_MS = 30_000;
 const PARTIAL_TTL_MS = 10_000;
+const NOT_FOUND_TTL_MS = 2 * 60_000;
 
 interface CacheEntry {
   ts: number;
@@ -40,15 +43,25 @@ function cacheKey(client: ArchIndexerClient, archAddress: string, btcAddress: st
 function raceWithTimeout<T>(
   promise: Promise<T>,
   ms: number
-): Promise<{ value: T; timedOut: false } | { value: null; timedOut: true }> {
+): Promise<
+  | { value: T; timedOut: false; error: null }
+  | { value: null; timedOut: true; error: null }
+  | { value: null; timedOut: false; error: unknown }
+> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<{ value: null; timedOut: true }>((resolve) => {
     timer = setTimeout(() => resolve({ value: null, timedOut: true }), ms);
   });
   return Promise.race([
-    promise.then((value) => ({ value, timedOut: false as const })),
+    promise
+      .then((value) => ({ value, timedOut: false as const, error: null }))
+      .catch((error) => ({ value: null, timedOut: false as const, error })),
     timeout
-  ]).finally(() => clearTimeout(timer));
+  ])
+    .then((result) => (
+      "error" in result ? result : { ...result, error: null }
+    ))
+    .finally(() => clearTimeout(timer));
 }
 
 export interface FetchOverviewParams {
@@ -81,23 +94,34 @@ export async function fetchWalletOverview(
   ]);
 
   const archAccountData = archAccount.timedOut ? null : archAccount.value;
+  const archAccountNotFound =
+    !archAccount.timedOut && archAccount.error && isIndexerNotFoundError(archAccount.error);
+  const archAuthFailed =
+    !archAccount.timedOut && archAccount.error && isIndexerAuthError(archAccount.error);
 
-  // Always attempt the transactions fetch. The previous version gated this
+  // Attempt the transactions fetch unless Explorer has explicitly said the
+  // account doesn't exist yet. Fresh wallets can take a while to appear after
+  // funding; hammering transaction endpoints during that window just creates
+  // doomed 404/401 noise without improving UX.
+  //
+  // The previous version gated this
   // behind `transaction_count > 0`, but that field is missing from some
   // indexer responses (notably mainnet's account-summary right after the
   // service cold-starts), which caused the activity feed to look empty for
   // wallets that DO have history. The indexer handles "no txs" cheaply by
   // returning an empty array, so skipping the call doesn't actually save
   // anything meaningful.
-  const archTxs = await raceWithTimeout(
-    // v2 returns the chip labels + decoded summaries we need to render
-    // a richer activity feed on the dashboard. Falls back to v1 on error.
-    client.getAccountTransactionsV2(params.archAccountAddress, 10).catch((err) => {
-      console.warn("[walletOverview] v2 transactions failed, falling back to v1:", err?.message);
-      return client.getAccountTransactions(params.archAccountAddress, 10);
-    }),
-    FAST_TIMEOUT_MS
-  );
+  const archTxs = archAccountNotFound || archAuthFailed
+    ? { value: null, timedOut: false as const, error: archAccount.error }
+    : await raceWithTimeout(
+      // v2 returns the chip labels + decoded summaries we need to render
+      // a richer activity feed on the dashboard. Falls back to v1 on error.
+      client.getAccountTransactionsV2(params.archAccountAddress, 10).catch((err) => {
+        console.warn("[walletOverview] v2 transactions failed, falling back to v1:", err?.message);
+        return client.getAccountTransactions(params.archAccountAddress, 10);
+      }),
+      FAST_TIMEOUT_MS
+    );
 
   if (archTxs.timedOut) {
     console.warn("[walletOverview] Arch transactions timed out for", params.archAccountAddress);
@@ -124,7 +148,7 @@ export async function fetchWalletOverview(
   const anyTimedOut = archAccount.timedOut || archTxs.timedOut || btcSummary.timedOut;
   overviewCache.set(key, {
     ts: Date.now(),
-    ttl: anyTimedOut ? PARTIAL_TTL_MS : FULL_TTL_MS,
+    ttl: archAccountNotFound ? NOT_FOUND_TTL_MS : anyTimedOut ? PARTIAL_TTL_MS : FULL_TTL_MS,
     data
   });
   if (overviewCache.size > 200) {

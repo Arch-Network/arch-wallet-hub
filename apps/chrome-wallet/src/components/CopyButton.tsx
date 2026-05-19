@@ -17,7 +17,13 @@ function CheckIcon() {
   );
 }
 
-export default function CopyButton({ text }: { text: string }) {
+interface CopyButtonProps {
+  text: string;
+  className?: string;
+  label?: string;
+}
+
+export default function CopyButton({ text, className = "", label }: CopyButtonProps) {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = useCallback(async () => {
@@ -31,8 +37,13 @@ export default function CopyButton({ text }: { text: string }) {
   }, [text]);
 
   return (
-    <button className="copy-btn" onClick={handleCopy} title="Copy">
+    <button
+      className={`copy-btn${className ? ` ${className}` : ""}`}
+      onClick={handleCopy}
+      title={copied ? "Copied" : "Copy"}
+    >
       {copied ? <CheckIcon /> : <CopyIcon />}
+      {label && <span className="copy-btn-label">{copied ? "Copied" : label}</span>}
     </button>
   );
 }

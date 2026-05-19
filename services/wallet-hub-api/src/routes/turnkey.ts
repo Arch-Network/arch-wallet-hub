@@ -10,7 +10,11 @@ import {
   markIdempotencyFailed,
   markIdempotencySucceeded
 } from "../db/queries.js";
-import { getOrCreateUserByExternalId, getUserByExternalId } from "../db/apps.js";
+import {
+  getOrCreateUserByExternalId,
+  getUserByExternalId,
+  updateUserRecoveryEmail
+} from "../db/apps.js";
 import {
   computeRequestHash,
   consumeIdempotencyKey,
@@ -25,7 +29,10 @@ const CreateWalletBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
   walletName: Type.Optional(Type.String({ minLength: 1 })),
   addressFormat: Type.Optional(Type.String({ minLength: 1 })),
-  derivationPath: Type.Optional(Type.String({ minLength: 1 }))
+  derivationPath: Type.Optional(Type.String({ minLength: 1 })),
+  // Phase 1.10: recovery email captured at sign-up. Stored in the
+  // sub-org so future OTP recovery flows know where to send the code.
+  userEmail: Type.Optional(Type.String({ format: "email" })),
 });
 
 const CreatePasskeyWalletBody = Type.Object({
@@ -33,10 +40,26 @@ const CreatePasskeyWalletBody = Type.Object({
   walletName: Type.Optional(Type.String({ minLength: 1 })),
   addressFormat: Type.Optional(Type.String({ minLength: 1 })),
   derivationPath: Type.Optional(Type.String({ minLength: 1 })),
+  userEmail: Type.Optional(Type.String({ format: "email" })),
   passkey: Type.Object({
     challenge: Type.String({ minLength: 1 }), // base64url
     attestation: Type.Unknown()
   })
+});
+
+// Email-only sub-org wallet. The root user is created without any
+// authenticators or API keys; bootstrap happens later via the
+// `/recovery/email/{init,verify}` flow which mints a 15-minute API
+// key the client decrypts and uses to register a permanent
+// IndexedDB-stored credential.
+const CreateEmailWalletBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
+  // userEmail is REQUIRED here -- you can't recover an email wallet
+  // if we don't know which inbox to send the OTP to.
+  userEmail: Type.String({ format: "email", minLength: 3 }),
+  walletName: Type.Optional(Type.String({ minLength: 1 })),
+  addressFormat: Type.Optional(Type.String({ minLength: 1 })),
+  derivationPath: Type.Optional(Type.String({ minLength: 1 })),
 });
 
 const ImportPasskeyWalletBody = Type.Object({
@@ -80,8 +103,26 @@ const GetWalletResponse = Type.Object({
   defaultAddressFormat: Type.Union([Type.String(), Type.Null()]),
   defaultDerivationPath: Type.Union([Type.String(), Type.Null()]),
   createdAt: Type.String(),
-  // True if wallet is in root org (server can sign), false if passkey wallet in sub-org (client must sign)
-  isCustodial: Type.Boolean()
+  /**
+   * @deprecated Server-side signing is gone; this field is always
+   *             true only for legacy parent-org rows that pre-date
+   *             the migration. New clients should branch on
+   *             {@link authMethod} instead.
+   */
+  isCustodial: Type.Boolean(),
+  /**
+   * Discriminator the recovery + session bootstrap flows pivot on.
+   *   - "passkey": sub-org with WebAuthn authenticators registered.
+   *   - "email":   sub-org with API keys only; requires OTP per
+   *                session bootstrap.
+   *   - null:      legacy parent-org row from the deprecated
+   *                custodial model.
+   */
+  authMethod: Type.Union([
+    Type.Literal("passkey"),
+    Type.Literal("email"),
+    Type.Null()
+  ])
 });
 
 const ListWalletsResponse = Type.Object({
@@ -148,7 +189,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           defaultAddress,
           defaultPublicKeyHex,
           defaultAddressFormat: null,
-          defaultDerivationPath: null
+          defaultDerivationPath: null,
+          // Import path is only reachable for sub-org passkey wallets
+          // (custodial parent-org "imports" were never supported).
+          authMethod: "passkey"
         });
 
         await auditEvent({
@@ -217,7 +261,18 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
         if (res.kind !== "created") return res;
         const externalUserId = (body as any).externalUserId;
+        const userEmail = (body as any).userEmail;
         const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
+        // Phase 1.10: persist the recovery email at sign-up so the
+        // /recovery/email/init endpoint can resolve this user without
+        // trusting client-supplied email values at recovery time.
+        if (typeof userEmail === "string" && userEmail.trim().length > 0) {
+          await updateUserRecoveryEmail(client, {
+            appId,
+            userId: user.id,
+            email: userEmail
+          });
+        }
         return { ...res, userId: user.id };
       });
 
@@ -228,6 +283,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
       const userId = (consumed as { userId: string }).userId;
       const externalUserId = (body as any).externalUserId;
+      const userEmail = (body as any).userEmail;
       const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
       const networkHint = (request.headers["x-network"] as string)?.toLowerCase();
       const isMainnet = networkHint === "mainnet";
@@ -264,7 +320,13 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           subOrganizationName,
           rootUser: {
             userName: String(externalUserId),
-            userEmail: undefined,
+            // Forward the email to Turnkey so the sub-org has it on
+            // file -- INIT_OTP_AUTH later targets the email recorded
+            // against the root user, not our Hub-side mirror.
+            userEmail:
+              typeof userEmail === "string" && userEmail.trim().length > 0
+                ? userEmail.trim()
+                : undefined,
             passkey: {
               challenge: String((body as any).passkey.challenge),
               attestation: (body as any).passkey.attestation
@@ -307,7 +369,9 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             defaultAddress,
             defaultPublicKeyHex,
             defaultAddressFormat: addressFormat,
-            defaultDerivationPath: derivationPath
+            defaultDerivationPath: derivationPath,
+            // Sub-org-with-authenticators creation path.
+            authMethod: "passkey"
           });
 
           await auditEvent({
@@ -370,27 +434,34 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
     }
   );
 
+  // P1 -- email-only sub-org wallet creation. The created sub-org has
+  // no authenticators and no API keys; the client bootstraps a
+  // session-grade IndexedDB credential later via OTP_AUTH. The Hub
+  // never receives or stores a long-lived signing key for this
+  // user. Idempotency, audit, and persistence semantics mirror
+  // /turnkey/passkey-wallets verbatim so the operational/runbook
+  // story is identical.
   server.post(
-    "/turnkey/wallets",
+    "/turnkey/email-wallets",
     {
       schema: {
-        summary: "Create an embedded Turnkey-backed wallet (Phase 0)",
+        summary:
+          "Create a non-custodial email-only embedded wallet (sub-org + email root user + wallet)",
         tags: ["turnkey"],
-        body: CreateWalletBody,
-        response: { 200: CreateWalletResponse }
-      }
+        body: CreateEmailWalletBody,
+        response: { 200: CreateWalletResponse },
+      },
     },
     async (request, reply) => {
       const appId = request.app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
 
       const idempotencyKey = request.headers["idempotency-key"]?.toString();
-      if (!idempotencyKey) {
+      if (!idempotencyKey)
         return reply.badRequest("Missing Idempotency-Key header");
-      }
 
       const body = request.body as any;
-      const route = "POST /v1/turnkey/wallets";
+      const route = "POST /v1/turnkey/email-wallets";
       const requestHash = computeRequestHash(body);
 
       const db = getDbPool();
@@ -400,32 +471,49 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           appId,
           key: idempotencyKey,
           route,
-          requestHash
+          requestHash,
         });
-
         if (res.kind !== "created") return res;
 
-        const externalUserId = (body as any).externalUserId;
-        const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
+        const externalUserId = body.externalUserId;
+        const userEmail = body.userEmail;
+        const user = await getOrCreateUserByExternalId(client, {
+          appId,
+          externalUserId,
+        });
+        await updateUserRecoveryEmail(client, {
+          appId,
+          userId: user.id,
+          email: userEmail,
+        });
         return { ...res, userId: user.id };
       });
 
       if (consumed.kind === "replayed") return consumed.response;
       if (consumed.kind === "conflict") return reply.conflict(consumed.reason);
-      if (consumed.kind === "in_progress") return reply.conflict(consumed.reason);
+      if (consumed.kind === "in_progress")
+        return reply.conflict(consumed.reason);
       if (consumed.kind === "failed")
-        return reply.code(409).send({ message: consumed.reason, error: consumed.error });
+        return reply
+          .code(409)
+          .send({ message: consumed.reason, error: consumed.error });
 
       const userId = (consumed as { userId: string }).userId;
-      const externalUserId = (body as any).externalUserId;
-      const walletName = (body as any).walletName ?? `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
-      const networkHintCustodial = (request.headers["x-network"] as string)?.toLowerCase();
-      const isMainnetCustodial = networkHintCustodial === "mainnet";
+      const externalUserId = body.externalUserId;
+      const userEmail = body.userEmail;
+      const walletName =
+        body.walletName ??
+        `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
+      const networkHint = (request.headers["x-network"] as string)?.toLowerCase();
+      const isMainnet = networkHint === "mainnet";
       const addressFormat =
-        (body as any).addressFormat ??
-        (isMainnetCustodial ? "ADDRESS_FORMAT_BITCOIN_MAINNET_P2TR" : "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR");
-      const derivationPath = (body as any).derivationPath ??
-        (isMainnetCustodial ? "m/86'/0'/0'/0/0" : "m/86'/1'/0'/0/0");
+        body.addressFormat ??
+        (isMainnet
+          ? "ADDRESS_FORMAT_BITCOIN_MAINNET_P2TR"
+          : "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR");
+      const derivationPath =
+        body.derivationPath ??
+        (isMainnet ? "m/86'/0'/0'/0/0" : "m/86'/1'/0'/0/0");
 
       await withDbTransaction(db, async (client) => {
         await auditEvent({
@@ -438,37 +526,57 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           entityId: userId,
           turnkeyActivityId: null,
           turnkeyRequestId: null,
-          payloadJson: { walletName, addressFormat, derivationPath },
-          outcome: "requested"
+          payloadJson: {
+            mode: "email_suborg",
+            walletName,
+            addressFormat,
+            derivationPath,
+          },
+          outcome: "requested",
         });
       });
 
       try {
         const turnkey = getTurnkeyClient();
-        const created = await turnkey.createBitcoinWallet({
-          walletName,
-          addressFormat,
-          path: derivationPath
+        const subOrganizationName = `arch-${appId}-${externalUserId}-email`;
+        const created = await (turnkey as any).createSubOrganizationWithEmailWallet({
+          subOrganizationName,
+          rootUser: {
+            userName: String(externalUserId),
+            userEmail: userEmail.trim(),
+          },
+          wallet: {
+            walletName,
+            addressFormat,
+            path: derivationPath,
+          },
         });
-        request.log.info(
-          { activityId: created.activityId, walletId: created.walletId, userId },
-          "turnkey.create_wallet.completed"
-        );
 
-        const defaultAddress = created.addresses[0] ?? null;
+        const defaultAddress: string | null = created.addresses[0] ?? null;
         let defaultPublicKeyHex: string | null = null;
         try {
-          const accountsRes = await (turnkey as any).getWalletAccountsForOrganization({
-            organizationId: server.config.TURNKEY_ORGANIZATION_ID,
-            walletId: created.walletId
+          const accountsRes = await (
+            turnkey as any
+          ).getWalletAccountsForOrganization({
+            organizationId: created.subOrganizationId,
+            walletId: created.walletId,
           });
-          const accounts = Array.isArray(accountsRes?.accounts) ? accountsRes.accounts : [];
-          const match = defaultAddress ? accounts.find((a: any) => a?.address === defaultAddress) : null;
-          defaultPublicKeyHex = typeof match?.publicKey === "string" ? match.publicKey : null;
+          const accounts = Array.isArray(accountsRes?.accounts)
+            ? accountsRes.accounts
+            : [];
+          const match = defaultAddress
+            ? accounts.find((a: any) => a?.address === defaultAddress)
+            : null;
+          defaultPublicKeyHex =
+            typeof match?.publicKey === "string" ? match.publicKey : null;
         } catch (e: any) {
           request.log.warn(
-            { err: String(e?.message ?? e), orgId: server.config.TURNKEY_ORGANIZATION_ID, walletId: created.walletId },
-            "Failed to fetch Turnkey wallet accounts (parent org) for default public key"
+            {
+              err: String(e?.message ?? e),
+              orgId: created.subOrganizationId,
+              walletId: created.walletId,
+            },
+            "Failed to fetch Turnkey wallet accounts (email suborg) for default public key",
           );
         }
 
@@ -476,8 +584,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           const resource = await insertTurnkeyResource(client, {
             appId,
             userId,
-            organizationId: server.config.TURNKEY_ORGANIZATION_ID,
-            turnkeyRootUserId: null,
+            organizationId: created.subOrganizationId,
+            turnkeyRootUserId: created.rootUserId ?? null,
             walletId: created.walletId,
             vaultId: null,
             keyId: null,
@@ -485,7 +593,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             defaultAddress,
             defaultPublicKeyHex,
             defaultAddressFormat: addressFormat,
-            defaultDerivationPath: derivationPath
+            defaultDerivationPath: derivationPath,
+            // Email-only sub-org: no authenticator, recovery happens
+            // via OTP-derived API key bootstrap.
+            authMethod: "email",
           });
 
           await auditEvent({
@@ -499,23 +610,26 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             turnkeyActivityId: created.activityId,
             turnkeyRequestId: null,
             payloadJson: {
+              mode: "email_suborg",
+              subOrganizationId: created.subOrganizationId,
+              rootUserId: created.rootUserId,
               walletId: created.walletId,
               addresses: created.addresses,
-              defaultAddress
+              defaultAddress,
             },
-            outcome: "succeeded"
+            outcome: "succeeded",
           });
 
           const responseBody = {
             resourceId: resource.id,
             userId,
             externalUserId,
-            organizationId: server.config.TURNKEY_ORGANIZATION_ID,
+            organizationId: created.subOrganizationId,
             walletId: created.walletId,
             addresses: created.addresses,
             defaultAddress,
             defaultPublicKeyHex,
-            activityId: created.activityId
+            activityId: created.activityId,
           };
 
           await markIdempotencySucceeded(client, consumed.row.id, responseBody);
@@ -536,16 +650,26 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             turnkeyActivityId: null,
             turnkeyRequestId: null,
             payloadJson: { error: String(err?.message ?? err) },
-            outcome: "failed"
+            outcome: "failed",
           });
           await markIdempotencyFailed(client, consumed.row.id, {
-            message: String(err?.message ?? err)
+            message: String(err?.message ?? err),
           });
         });
         throw err;
       }
-    }
+    },
   );
+
+  // ── Removed in P4: POST /turnkey/wallets ───────────────────────────
+  // Created a wallet directly inside the Hub's parent Turnkey org.
+  // That model leaked custodial keys into the Hub's blast radius;
+  // every wallet now lives in its own sub-org with no Hub access to
+  // signing material. New wallets are created via POST
+  // /turnkey/passkey-wallets or POST /turnkey/email-wallets. Listing
+  // legacy parent-org rows is still possible via the GET routes
+  // below; recovery filters them out (they predate the new model
+  // and can't be re-bound to a sub-org session).
 
   server.get(
     "/turnkey/wallets",
@@ -588,7 +712,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           defaultAddressFormat: row.default_address_format,
           defaultDerivationPath: row.default_derivation_path,
           createdAt: row.created_at,
-          isCustodial: row.organization_id === rootOrgId
+          isCustodial: row.organization_id === rootOrgId,
+          authMethod: row.auth_method ?? null
         }))
       };
     }
@@ -635,7 +760,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         defaultAddressFormat: row.default_address_format,
         defaultDerivationPath: row.default_derivation_path,
         createdAt: row.created_at,
-        isCustodial: row.organization_id === rootOrgId
+        isCustodial: row.organization_id === rootOrgId,
+        authMethod: row.auth_method ?? null
       };
     }
   );
@@ -784,6 +910,13 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       }
     }
   );
+
+  // ── Removed in P4: POST /signing/sign-arch-hash ────────────────────
+  // Previously signed an arbitrary 32-byte Arch SanitizedMessage hash
+  // with a Hub-held custodial key. All swap-side signing now happens
+  // client-side via the session-stamped signer; the original handler
+  // was deleted along with the parent-org custodial model. See the
+  // P4 plan for migration notes.
 
   server.get(
     "/turnkey/config",

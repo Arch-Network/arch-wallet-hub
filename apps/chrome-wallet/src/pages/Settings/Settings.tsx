@@ -6,28 +6,56 @@ import { invalidateClientCache } from "../../utils/sdk";
 import { truncateAddress } from "../../utils/format";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import CopyButton from "../../components/CopyButton";
+import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
+import TestRecoveryEmailButton from "../../components/TestRecoveryEmailButton";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
 import { DEFAULT_HUB_BASE_URL } from "../../state/types";
 import { INDEXER_BASE_URL } from "../../utils/explorer-config";
+import { APP_VERSION } from "../../utils/version";
 
 const NETWORKS: { id: NetworkId; label: string }[] = [
   { id: "testnet4", label: "Testnet4" },
   { id: "mainnet", label: "Mainnet" },
 ];
 
+const AUTO_LOCK_OPTIONS: { value: number; label: string }[] = [
+  { value: 1, label: "1 minute" },
+  { value: 5, label: "5 minutes" },
+  { value: 15, label: "15 minutes" },
+  { value: 30, label: "30 minutes" },
+  { value: 60, label: "1 hour" },
+  { value: 240, label: "4 hours" },
+];
+
+function isHttpsUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export default function Settings() {
   const navigate = useNavigate();
-  const { activeAccount, state, setNetwork, lock, refresh } = useWallet();
+  const { activeAccount, state, setNetwork, lock, refresh, setAutoLockMinutes } = useWallet();
   const [connectedSites, setConnectedSites] = useState<Record<string, ConnectedSite>>({});
   const [showReset, setShowReset] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [hubBaseUrl, setHubBaseUrl] = useState(state.hubBaseUrl || DEFAULT_HUB_BASE_URL);
   const [hubApiKey, setHubApiKey] = useState(state.hubApiKey || "");
   const [hubSaved, setHubSaved] = useState(false);
+  const [hubError, setHubError] = useState<string | null>(null);
 
   const [indexerBaseUrl, setIndexerBaseUrl] = useState(state.indexerBaseUrl || INDEXER_BASE_URL);
   const [indexerApiKey, setIndexerApiKey] = useState(state.indexerApiKey || "");
   const [indexerSaved, setIndexerSaved] = useState(false);
+
+  const [pwOld, setPwOld] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwSaved, setPwSaved] = useState(false);
+  const [pwError, setPwError] = useState<string | null>(null);
 
   const displayBtcAddress = useMemo(
     () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
@@ -49,11 +77,16 @@ export default function Settings() {
   }, [state.indexerBaseUrl, state.indexerApiKey]);
 
   const handleSaveHubConfig = useCallback(async () => {
+    setHubError(null);
+    if (state.network === "mainnet" && !isHttpsUrl(hubBaseUrl.trim())) {
+      setHubError("Mainnet requires an HTTPS Hub URL");
+      return;
+    }
     await walletStore.setHubConfig(hubBaseUrl.trim(), hubApiKey.trim());
     invalidateClientCache();
     setHubSaved(true);
     setTimeout(() => setHubSaved(false), 2000);
-  }, [hubBaseUrl, hubApiKey]);
+  }, [hubBaseUrl, hubApiKey, state.network]);
 
   const handleSaveIndexerConfig = useCallback(async () => {
     await walletStore.setIndexerConfig(indexerBaseUrl.trim(), indexerApiKey.trim());
@@ -81,6 +114,29 @@ export default function Settings() {
     await refresh();
   }, [refresh]);
 
+  const handleChangePassword = useCallback(async () => {
+    setPwError(null);
+    setPwSaved(false);
+    if (pwNew.length < 8) {
+      setPwError("New password must be at least 8 characters");
+      return;
+    }
+    if (pwNew !== pwConfirm) {
+      setPwError("Passwords do not match");
+      return;
+    }
+    try {
+      await walletStore.changePassword(pwOld, pwNew);
+      setPwSaved(true);
+      setPwOld("");
+      setPwNew("");
+      setPwConfirm("");
+      setTimeout(() => setPwSaved(false), 2000);
+    } catch (e: any) {
+      setPwError(e?.name === "WrongPasswordError" ? "Current password is incorrect" : e?.message || "Failed to change password");
+    }
+  }, [pwOld, pwNew, pwConfirm]);
+
   const siteEntries = Object.entries(connectedSites);
 
   return (
@@ -104,16 +160,104 @@ export default function Settings() {
       </div>
 
       <div className="section">
+        <div className="section-title">Security</div>
+        <div className="card">
+          <div style={{ marginBottom: 12 }}>
+            <div className="input-label" style={{ marginBottom: 4 }}>Auto-lock</div>
+            <select
+              className="input"
+              value={state.autoLockMinutes ?? 15}
+              onChange={(e) => setAutoLockMinutes(Number(e.target.value))}
+              style={{ width: "100%", boxSizing: "border-box" }}
+            >
+              {AUTO_LOCK_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
+              Locks the wallet after this much inactivity.
+            </div>
+          </div>
+
+          <details style={{ marginBottom: 12 }}>
+            <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Change password</summary>
+            <div style={{ marginTop: 8 }}>
+              {pwError && <div className="error-banner" style={{ marginBottom: 8 }}>{pwError}</div>}
+              {pwSaved && (
+                <div style={{ marginBottom: 8, color: "var(--success)", fontSize: 12 }}>Password changed</div>
+              )}
+              <input
+                className="input"
+                type="password"
+                placeholder="Current password"
+                value={pwOld}
+                onChange={(e) => setPwOld(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", marginBottom: 6 }}
+              />
+              <input
+                className="input"
+                type="password"
+                placeholder="New password"
+                value={pwNew}
+                onChange={(e) => setPwNew(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", marginBottom: 6 }}
+              />
+              <input
+                className="input"
+                type="password"
+                placeholder="Confirm new password"
+                value={pwConfirm}
+                onChange={(e) => setPwConfirm(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", marginBottom: 6 }}
+              />
+              <button className="btn btn-sm btn-primary" onClick={handleChangePassword}>
+                Update password
+              </button>
+            </div>
+          </details>
+
+          <button className="btn btn-secondary btn-full" onClick={lock} style={{ marginBottom: 8 }}>
+            Lock wallet
+          </button>
+          {/* Same OTP flow services both wallet types now -- passkey
+              wallets get a fresh authenticator, email wallets get a
+              fresh IndexedDB session. The button is hidden only when
+              there's no active account (e.g. mid-migration).
+
+              We pin to the active account so the Hub returns only
+              this wallet's candidates, skipping the wallet-picker
+              step when there's a single match. */}
+          {activeAccount && (
+            <>
+              <RecoverViaEmailCta
+                pinToActiveAccount
+                resourceId={activeAccount.turnkeyResourceId}
+                label={
+                  activeAccount.authMethod === "passkey"
+                    ? "Add or replace passkey"
+                    : "Re-verify email signing"
+                }
+                title={
+                  activeAccount.authMethod === "passkey"
+                    ? "Use email recovery to attach a new passkey to this wallet"
+                    : "Re-bootstrap this email wallet's signing session via OTP"
+                }
+              />
+              {/* Deliverability probe -- lives next to the recovery
+                  CTA so users naturally test it while they're already
+                  thinking about recovery. The button is its own
+                  component because the status-row state machine is
+                  big enough to warrant separation. */}
+              <TestRecoveryEmailButton email={activeAccount.recoveryEmail} />
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="section">
         <div className="section-title">Open Wallet As</div>
         <div className="card">
           <div style={{ display: "flex", gap: 8 }}>
-            <button
-              className={`btn btn-sm ${state.openAs === "sidepanel" ? "btn-primary" : "btn-secondary"}`}
-              onClick={() => walletStore.setOpenAs("sidepanel")}
-              style={{ flex: 1 }}
-            >
-              Side Panel
-            </button>
             <button
               className={`btn btn-sm ${state.openAs === "popup" ? "btn-primary" : "btn-secondary"}`}
               onClick={() => walletStore.setOpenAs("popup")}
@@ -121,9 +265,16 @@ export default function Settings() {
             >
               Popup
             </button>
+            <button
+              className={`btn btn-sm ${state.openAs === "sidepanel" ? "btn-primary" : "btn-secondary"}`}
+              onClick={() => walletStore.setOpenAs("sidepanel")}
+              style={{ flex: 1 }}
+            >
+              Side Panel
+            </button>
           </div>
           <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "8px 0 0" }}>
-            Side panel stays open while you browse. Popup closes when you click away.
+            Popup closes when you click away. Side panel stays open while you browse.
           </p>
         </div>
       </div>
@@ -169,15 +320,15 @@ export default function Settings() {
                         fontWeight: 700,
                         padding: "1px 5px",
                         borderRadius: 4,
-                        background: acct.isCustodial
+                        background: acct.authMethod === "email"
                           ? "rgba(123,104,238,0.15)"
                           : "rgba(46,204,113,0.15)",
-                        color: acct.isCustodial ? "#7b68ee" : "#2ecc71",
+                        color: acct.authMethod === "email" ? "#7b68ee" : "#2ecc71",
                         letterSpacing: 0.5,
                         textTransform: "uppercase",
                       }}
                     >
-                      {acct.isCustodial ? "Custodial" : "Passkey"}
+                      {acct.authMethod === "email" ? "Email" : "Passkey"}
                     </span>
                   </div>
                   <div className="mono" style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -210,90 +361,6 @@ export default function Settings() {
         </div>
       </div>
 
-      <div className="section">
-        <div className="section-title">Indexer API</div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
-          Reads, faucet, BTC, and Arch RPC compat. Default key is bundled.
-        </div>
-        <div className="card">
-          <div style={{ marginBottom: 8 }}>
-            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-              Base URL
-            </label>
-            <input
-              className="input"
-              type="text"
-              value={indexerBaseUrl}
-              onChange={(e) => setIndexerBaseUrl(e.target.value)}
-              placeholder={INDEXER_BASE_URL}
-              style={{ width: "100%", boxSizing: "border-box" }}
-            />
-          </div>
-          <div style={{ marginBottom: 10 }}>
-            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-              API Key
-            </label>
-            <input
-              className="input"
-              type="password"
-              value={indexerApiKey}
-              onChange={(e) => setIndexerApiKey(e.target.value)}
-              placeholder="arch_live_..."
-              style={{ width: "100%", boxSizing: "border-box" }}
-            />
-          </div>
-          <button
-            className={`btn btn-sm ${indexerSaved ? "btn-primary" : "btn-secondary"}`}
-            onClick={handleSaveIndexerConfig}
-            style={{ width: "100%" }}
-          >
-            {indexerSaved ? "✓ Saved" : "Save Indexer Settings"}
-          </button>
-        </div>
-      </div>
-
-      <div className="section">
-        <div className="section-title">Wallet Hub API</div>
-        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
-          Turnkey, signing requests, and custodial BTC sends.
-        </div>
-        <div className="card">
-          <div style={{ marginBottom: 8 }}>
-            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-              Base URL
-            </label>
-            <input
-              className="input"
-              type="text"
-              value={hubBaseUrl}
-              onChange={(e) => setHubBaseUrl(e.target.value)}
-              placeholder={DEFAULT_HUB_BASE_URL}
-              style={{ width: "100%", boxSizing: "border-box" }}
-            />
-          </div>
-          <div style={{ marginBottom: 10 }}>
-            <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-              API Key
-            </label>
-            <input
-              className="input"
-              type="password"
-              value={hubApiKey}
-              onChange={(e) => setHubApiKey(e.target.value)}
-              placeholder="Enter your Hub API key"
-              style={{ width: "100%", boxSizing: "border-box" }}
-            />
-          </div>
-          <button
-            className={`btn btn-sm ${hubSaved ? "btn-primary" : "btn-secondary"}`}
-            onClick={handleSaveHubConfig}
-            style={{ width: "100%" }}
-          >
-            {hubSaved ? "✓ Saved" : "Save Hub Settings"}
-          </button>
-        </div>
-      </div>
-
       {activeAccount && (
         <div className="section">
           <div className="section-title">Active Wallet Details</div>
@@ -308,15 +375,15 @@ export default function Settings() {
                     fontWeight: 700,
                     padding: "1px 5px",
                     borderRadius: 4,
-                    background: activeAccount.isCustodial
+                    background: activeAccount.authMethod === "email"
                       ? "rgba(123,104,238,0.15)"
                       : "rgba(46,204,113,0.15)",
-                    color: activeAccount.isCustodial ? "#7b68ee" : "#2ecc71",
+                    color: activeAccount.authMethod === "email" ? "#7b68ee" : "#2ecc71",
                     letterSpacing: 0.5,
                     textTransform: "uppercase",
                   }}
                 >
-                  {activeAccount.isCustodial ? "Custodial" : "Passkey"}
+                  {activeAccount.authMethod === "email" ? "Email" : "Passkey"}
                 </span>
               </div>
             </div>
@@ -343,7 +410,43 @@ export default function Settings() {
       )}
 
       <div className="section">
-        <div className="section-title">Connected Sites ({siteEntries.length})</div>
+        <div className="section-title">Contacts ({state.contacts?.length ?? 0})</div>
+        {(!state.contacts || state.contacts.length === 0) ? (
+          <div className="card">
+            <div style={{ color: "var(--text-muted)", fontSize: 12, textAlign: "center", padding: 8 }}>
+              No saved contacts yet
+            </div>
+          </div>
+        ) : (
+          <div className="card">
+            {state.contacts.map((c) => (
+              <div key={`${c.address}-${c.network}-${c.mint || ""}`} className="contact-card">
+                <div className="contact-avatar">{c.label.slice(0, 2).toUpperCase()}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="contact-name">{c.label}</div>
+                  <div className="contact-addr mono">{truncateAddress(c.address, 10)}</div>
+                </div>
+                <button
+                  className="btn btn-sm btn-secondary"
+                  onClick={() =>
+                    walletStore.removeContact({ address: c.address, network: c.network, mint: c.mint }).then(refresh)
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="section">
+        <div className="section-title">
+          Connected Sites ({siteEntries.length})
+          <span style={{ marginLeft: 6, fontSize: 10, color: "var(--text-muted)", fontWeight: 400 }}>
+            (your dapp bookmarks)
+          </span>
+        </div>
         {siteEntries.length === 0 ? (
           <div className="card">
             <div style={{ color: "var(--text-muted)", fontSize: 12, textAlign: "center", padding: 8 }}>
@@ -354,8 +457,15 @@ export default function Settings() {
           <div className="card">
             {siteEntries.map(([origin, site]) => (
               <div key={origin} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border-primary)" }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500 }}>{site.name || origin}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <a
+                    href={origin}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)", textDecoration: "none" }}
+                  >
+                    {site.name || origin} {"\u2197"}
+                  </a>
                   <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{origin}</div>
                 </div>
                 <button className="btn btn-sm btn-danger" onClick={() => handleDisconnect(origin)}>
@@ -368,11 +478,143 @@ export default function Settings() {
       </div>
 
       <div className="section">
-        <div className="section-title">Security</div>
+        <button
+          onClick={() => setShowAdvanced((v) => !v)}
+          style={{
+            background: "none",
+            border: "none",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            fontSize: 12,
+            textDecoration: "underline",
+          }}
+        >
+          {showAdvanced ? "Hide advanced settings" : "Show advanced settings"}
+        </button>
+      </div>
+
+      {showAdvanced && (
+        <>
+          <div className="section">
+            <div className="section-title">Indexer API</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
+              Reads, faucet, BTC, and Arch RPC compat.
+            </div>
+            <div className="card">
+              <div style={{ marginBottom: 8 }}>
+                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+                  Base URL
+                </label>
+                <input
+                  className="input"
+                  type="text"
+                  value={indexerBaseUrl}
+                  onChange={(e) => setIndexerBaseUrl(e.target.value)}
+                  placeholder={INDEXER_BASE_URL}
+                  style={{ width: "100%", boxSizing: "border-box" }}
+                />
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+                  API Key
+                </label>
+                <input
+                  className="input"
+                  type="password"
+                  value={indexerApiKey}
+                  onChange={(e) => setIndexerApiKey(e.target.value)}
+                  placeholder="arch_live_..."
+                  style={{ width: "100%", boxSizing: "border-box" }}
+                />
+              </div>
+              <button
+                className={`btn btn-sm ${indexerSaved ? "btn-primary" : "btn-secondary"}`}
+                onClick={handleSaveIndexerConfig}
+                style={{ width: "100%" }}
+              >
+                {indexerSaved ? "Saved" : "Save Indexer Settings"}
+              </button>
+            </div>
+          </div>
+
+          <div className="section">
+            <div className="section-title">Wallet Hub API</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
+              Turnkey, signing requests, custodial BTC sends, recovery.
+            </div>
+            <div className="card">
+              {hubError && <div className="error-banner" style={{ marginBottom: 8 }}>{hubError}</div>}
+              <div style={{ marginBottom: 8 }}>
+                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+                  Base URL
+                </label>
+                <input
+                  className="input"
+                  type="text"
+                  value={hubBaseUrl}
+                  onChange={(e) => setHubBaseUrl(e.target.value)}
+                  placeholder={DEFAULT_HUB_BASE_URL}
+                  style={{ width: "100%", boxSizing: "border-box" }}
+                />
+                {state.network === "mainnet" && !isHttpsUrl(hubBaseUrl) && (
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                    Mainnet requires HTTPS.
+                  </div>
+                )}
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+                  API Key
+                </label>
+                <input
+                  className="input"
+                  type="password"
+                  value={hubApiKey}
+                  onChange={(e) => setHubApiKey(e.target.value)}
+                  placeholder="Enter your Hub API key"
+                  style={{ width: "100%", boxSizing: "border-box" }}
+                />
+              </div>
+              <button
+                className={`btn btn-sm ${hubSaved ? "btn-primary" : "btn-secondary"}`}
+                onClick={handleSaveHubConfig}
+                style={{ width: "100%" }}
+              >
+                {hubSaved ? "Saved" : "Save Hub Settings"}
+              </button>
+            </div>
+          </div>
+
+          <div className="section">
+            <div className="section-title">Diagnostics</div>
+            <div className="card">
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={state.sentryOptIn ?? false}
+                  onChange={(e) => walletStore.setSentryOptIn(e.target.checked)}
+                />
+                <span style={{ fontSize: 13 }}>Send anonymous error reports</span>
+              </label>
+              <p style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
+                Off by default. We never collect addresses, keys, or transaction contents.
+              </p>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={state.debugMode ?? false}
+                  onChange={(e) => walletStore.setDebugMode(e.target.checked)}
+                />
+                <span style={{ fontSize: 13 }}>Debug mode (verbose logs)</span>
+              </label>
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="section">
+        <div className="section-title">Danger zone</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <button className="btn btn-secondary btn-full" onClick={lock}>
-            🔒 Lock Wallet
-          </button>
           {!showReset ? (
             <button
               className="btn btn-secondary btn-full"
@@ -384,7 +626,8 @@ export default function Settings() {
           ) : (
             <div className="card" style={{ borderColor: "var(--danger)" }}>
               <p style={{ fontSize: 12, marginBottom: 8, color: "var(--danger)" }}>
-                This will erase all wallet data from this extension. You can re-import using your passkey.
+                This erases the encrypted keystore and all local data from this extension.
+                Make sure your recovery email/passkey access is working before resetting.
               </p>
               <div style={{ display: "flex", gap: 8 }}>
                 <button className="btn btn-sm btn-secondary" style={{ flex: 1 }} onClick={() => setShowReset(false)}>
@@ -400,7 +643,7 @@ export default function Settings() {
       </div>
 
       <div style={{ textAlign: "center", padding: "16px 0", color: "var(--text-muted)", fontSize: 11 }}>
-        Arch Wallet v0.1.0 &middot; Powered by Wallet Hub
+        Arch Wallet v{APP_VERSION} &middot; Powered by Wallet Hub
       </div>
     </>
   );

@@ -4,6 +4,40 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Arch Wallet</title>
+    <!--
+      Inline node-globals shim. Runs synchronously during HTML parsing,
+      before any module script (which are deferred by default) and
+      before any chunk that the bundler hoists from `main.tsx` imports.
+      Must shim `global` + `process` here because the swap engine's
+      transitive BTC deps reference them at module init time, which
+      otherwise outruns the ES-module polyfill in the bundle graph.
+      Buffer is still shimmed from `buffer-polyfill.ts` because the
+      `buffer` package needs ESM resolution and only the popup's
+      `main.tsx` graph can provide it.
+    -->
+    <script>
+      (function () {
+        if (typeof globalThis.global === "undefined") globalThis.global = globalThis;
+        if (typeof globalThis.process === "undefined") {
+          // `version` + `browser` satisfy readable-stream's Node-feature
+          // detection. `nextTick` is queueMicrotask-equivalent so anything
+          // queued runs before the next macrotask. `platform` shuts up any
+          // dep that grabs it at init for diagnostics. Keep this set
+          // minimal so we surface (rather than silently swallow) any
+          // future dep that reaches for additional process API.
+          globalThis.process = {
+            env: {},
+            version: "v20.0.0",
+            browser: true,
+            platform: "browser",
+            nextTick: function (cb) {
+              var args = Array.prototype.slice.call(arguments, 1);
+              queueMicrotask(function () { cb.apply(null, args); });
+            },
+          };
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -2,9 +2,9 @@ import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
-import { formatTokenAmount, truncateAddress } from "../../utils/format";
-import { enrichTokenFromRpc } from "../../utils/arch-rpc";
+import { enrichIndexerTokens } from "../../utils/enrich-token";
 import ArchIcon from "../../components/ArchIcon";
+import { TokenIcon } from "../../components/TokenIcon";
 
 interface TokenHolding {
   mint: string;
@@ -59,31 +59,7 @@ export default function TokenList() {
         const tokenAddr = activeAccount.archAddress || activeAccount.btcAddress;
         const res = await indexer.getAccountTokens(tokenAddr);
         const rawTokens = res?.tokens ?? [];
-        const enriched = await Promise.all(
-          rawTokens.map(async (t) => {
-            const base = {
-              mint: t.mint_address as string,
-              symbol: t.symbol || truncateAddress(t.mint_address, 4),
-              name: t.name || "APL Token",
-              balance: Number(t.amount) || 0,
-              decimals: t.decimals ?? 0,
-              uiAmount: t.ui_amount || formatTokenAmount(Number(t.amount) || 0, t.decimals ?? 0),
-              image: t.image as string | undefined,
-              tokenAccount: (t.token_account_address || "") as string,
-            };
-            const needsEnrich = !t.name || !t.symbol || (!t.decimals && t.decimals !== undefined);
-            if (!needsEnrich) return base;
-            try {
-              const rpc = await enrichTokenFromRpc(indexer, t);
-              if (rpc.name) base.name = rpc.name;
-              if (rpc.symbol) base.symbol = rpc.symbol;
-              if (rpc.image) base.image = rpc.image;
-              if (rpc.decimals != null) base.decimals = rpc.decimals;
-              if (rpc.uiAmount) base.uiAmount = rpc.uiAmount;
-            } catch { /* best-effort */ }
-            return base;
-          }),
-        );
+        const enriched = await enrichIndexerTokens(rawTokens, state.network, indexer);
         setTokens(enriched);
       } catch {
         setTokens([]);
@@ -199,13 +175,12 @@ export default function TokenList() {
                 }
               }}
             >
-              <div className="asset-icon apl" style={{ flexShrink: 0 }}>
-                {tk.image ? (
-                  <img src={tk.image} alt={tk.symbol} style={{ width: 28, height: 28, borderRadius: "50%" }} />
-                ) : (
-                  <ArchIcon size={18} color="#7b68ee" />
-                )}
-              </div>
+              <TokenIcon
+                image={tk.image}
+                symbol={tk.symbol}
+                size={28}
+                wrapperClassName="asset-icon apl"
+              />
               <div className="asset-info" style={{ flex: 1, minWidth: 0 }}>
                 <div className="asset-name">{tk.name}</div>
                 <div className="asset-sub">{tk.symbol}</div>
