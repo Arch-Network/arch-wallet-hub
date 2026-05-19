@@ -1,5 +1,18 @@
 import { z } from "zod";
 
+const optionalString = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().optional()
+);
+const optionalUrl = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().url().optional()
+);
+const optionalEmail = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z.string().email().optional()
+);
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   HOST: z.string().default("0.0.0.0"),
@@ -20,6 +33,17 @@ const EnvSchema = z.object({
   TURNKEY_ORGANIZATION_ID: z.string().min(1),
   TURNKEY_API_PUBLIC_KEY: z.string().min(1),
   TURNKEY_API_PRIVATE_KEY: z.string().min(1),
+  // Optional Turnkey OTP email branding/template customization. The JSON field
+  // is forwarded as-is after validation so we can use Turnkey-supported fields
+  // without code changes.
+  TURNKEY_OTP_EMAIL_APP_NAME: optionalString,
+  TURNKEY_OTP_EMAIL_LOGO_URL: optionalUrl,
+  TURNKEY_OTP_EMAIL_MAGIC_LINK_TEMPLATE: optionalUrl,
+  TURNKEY_OTP_EMAIL_TEMPLATE_ID: optionalString,
+  TURNKEY_OTP_EMAIL_SENDER_NAME: optionalString,
+  TURNKEY_OTP_EMAIL_SENDER_ADDRESS: optionalEmail,
+  TURNKEY_OTP_EMAIL_REPLY_TO_ADDRESS: optionalEmail,
+  TURNKEY_OTP_EMAIL_CUSTOMIZATION_JSON: optionalString,
 
   // Platform admin (bootstrap apps + API keys)
   PLATFORM_ADMIN_API_KEY: z.string().optional(),

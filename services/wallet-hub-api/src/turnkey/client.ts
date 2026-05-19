@@ -435,7 +435,7 @@ export class TurnkeyService {
     organizationId: string;
     userId: string;
     contact: string;
-    emailCustomization?: { appName?: string; magicLinkTemplate?: string };
+    emailCustomization?: Record<string, unknown>;
   }): Promise<{ otpId: string; activityId: string }> {
     const res = await (this.client as any).initOtpAuth({
       type: "ACTIVITY_TYPE_INIT_OTP_AUTH",

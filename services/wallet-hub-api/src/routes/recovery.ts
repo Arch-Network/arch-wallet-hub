@@ -99,6 +99,38 @@ const VERIFY_MAX_ATTEMPTS = 5;
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const RECOVERY_API_KEY_TTL_SECONDS = "900"; // 15 minutes
 
+function buildOtpEmailCustomization(
+  config: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  const customization: Record<string, unknown> = {};
+  const rawJson = config.TURNKEY_OTP_EMAIL_CUSTOMIZATION_JSON;
+  if (typeof rawJson === "string" && rawJson.trim()) {
+    const parsed = JSON.parse(rawJson);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("TURNKEY_OTP_EMAIL_CUSTOMIZATION_JSON must be a JSON object");
+    }
+    Object.assign(customization, parsed);
+  }
+
+  const envMappings: Array<[string, string]> = [
+    ["TURNKEY_OTP_EMAIL_APP_NAME", "appName"],
+    ["TURNKEY_OTP_EMAIL_LOGO_URL", "logoUrl"],
+    ["TURNKEY_OTP_EMAIL_MAGIC_LINK_TEMPLATE", "magicLinkTemplate"],
+    ["TURNKEY_OTP_EMAIL_TEMPLATE_ID", "templateId"],
+    ["TURNKEY_OTP_EMAIL_SENDER_NAME", "sendFromEmailName"],
+    ["TURNKEY_OTP_EMAIL_SENDER_ADDRESS", "sendFromEmailAddress"],
+    ["TURNKEY_OTP_EMAIL_REPLY_TO_ADDRESS", "replyToEmailAddress"]
+  ];
+  for (const [envKey, turnkeyKey] of envMappings) {
+    const value = config[envKey];
+    if (typeof value === "string" && value.trim()) {
+      customization[turnkeyKey] = value.trim();
+    }
+  }
+
+  return Object.keys(customization).length ? customization : undefined;
+}
+
 const InitBody = Type.Object({
   email: Type.String({ format: "email" })
 });
@@ -459,7 +491,8 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         const { otpId } = await turnkey.initOtpAuth({
           organizationId: candidate.organizationId,
           userId: candidate.rootUserId,
-          contact: email
+          contact: email,
+          emailCustomization: buildOtpEmailCustomization(server.config)
         });
 
         const candidates = challenge.candidates.map((c, i) =>
