@@ -55,6 +55,12 @@ jobs:
           npm install
           npm run build
 
+      - name: Build arch-swap-engine
+        working-directory: packages/arch-swap-engine
+        run: |
+          npm install
+          npm run build
+
       - name: Install chrome-wallet dependencies
         working-directory: apps/chrome-wallet
         run: npm ci
