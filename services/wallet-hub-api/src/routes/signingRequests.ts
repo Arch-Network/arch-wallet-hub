@@ -12,7 +12,7 @@ import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
 import { Buffer } from "node:buffer";
 import bs58 from "bs58";
-import { secp256k1, schnorr } from "@noble/curves/secp256k1.js";
+import { secp256k1, schnorr } from "@noble/curves/secp256k1";
 import { resolveArchAccountAddress, archAccountFromInternalKey } from "../arch/address.js";
 import { address as btcAddress } from "bitcoinjs-lib";
 import { indexerForRequest, archRpcUrlForRequest } from "../indexer/forRequest.js";
@@ -265,7 +265,7 @@ function publicKeyHexToXOnlyHex(publicKeyHex: string): string {
     return cleanHex.toLowerCase();
   } else if (cleanHex.length === 66 || cleanHex.length === 130) {
     // Compressed (33 bytes) or uncompressed (65 bytes) - parse as point
-    const pt = secp256k1.Point.fromHex(cleanHex).toAffine();
+    const pt = secp256k1.ProjectivePoint.fromHex(cleanHex).toAffine();
     return pt.x.toString(16).padStart(64, "0");
   } else {
     throw new Error(`Invalid public key length: ${cleanHex.length} hex chars (expected 64, 66, or 130)`);
