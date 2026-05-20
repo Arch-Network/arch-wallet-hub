@@ -29,17 +29,32 @@ tags = ["api-key", "turnkey"]
 [allowlist]
 # Do not flag known-rotated keys that we deliberately keep around in
 # wallet-store migrations and SECURITY.md to recognise stale state on
-# upgrade.
-description = "Rotated keys retained for migration / docs"
+# upgrade. Also allowlist UPPER_SNAKE_CASE placeholders used in docs
+# to demonstrate request shapes, and on-chain public keys (program /
+# config / quote-signer pubkeys, vault addresses) that live in the
+# swap-engine network config and are by definition public.
+description = "Rotated keys, on-chain pubkeys, and docs placeholders"
 regexes = [
   '''D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog''',
   '''OZfoD0ZJh6kQpd3Lr4TvLbnocS2g_eooZlQ7VEfbE4M''',
   '''x7NaU5AHiZ0UZxGLTm2WMqWsZkWB3B2cvnwL9RUDDLw''',
   '''arch_live_lALRxJatV7EdPcYYWpW062daTnaeJGFPgSTRcL1Y6dXpZnFq''',
+  # Doc placeholders that look like keys but aren't.
+  '''YOUR_API_KEY''',
+  '''<YOUR_API_KEY>''',
+  '''REPLACE_ME''',
+  '''CHANGEME''',
 ]
 paths = [
   '''SECURITY\.md''',
   '''docs/security/.*''',
   '''.gitleaks\.toml''',
   '''apps/chrome-wallet/src/state/wallet-store\.ts''',
+  # Swap-engine network configs hold only public on-chain identifiers
+  # (program IDs, vault pubkeys, quote-signer pubkeys). Anything
+  # actually secret in this package would be loaded from env.
+  '''packages/arch-swap-engine/src/lib/network/.*\.ts''',
+  # deploy/README.md uses placeholder curl examples. The actual key
+  # comes from Secrets Manager at deploy time.
+  '''deploy/README\.md''',
 ]
