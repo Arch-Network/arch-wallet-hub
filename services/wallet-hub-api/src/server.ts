@@ -21,6 +21,7 @@ import { registerArchAccountRoutes } from "./routes/archAccounts.js";
 import { registerSigningRequestRoutes } from "./routes/signingRequests.js";
 import { registerBtcTransactionRoutes } from "./routes/btcTransactions.js";
 import { registerRecoveryRoutes } from "./routes/recovery.js";
+import { registerExtensionRoutes } from "./routes/extension.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -94,6 +95,7 @@ export async function createServer() {
   await server.register(registerSigningRequestRoutes, { prefix: "/v1" });
   await server.register(registerBtcTransactionRoutes, { prefix: "/v1" });
   await server.register(registerRecoveryRoutes, { prefix: "/v1" });
+  await server.register(registerExtensionRoutes, { prefix: "/v1" });
 
   return server;
 }
