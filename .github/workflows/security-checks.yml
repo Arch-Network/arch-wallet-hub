@@ -36,7 +36,6 @@ jobs:
         workspace:
           - apps/chrome-wallet
           - apps/demo-dapp
-          - apps/mobile-wallet
           - services/wallet-hub-api
           - packages/wallet-hub-sdk
           - packages/wallet-hub-ui
@@ -76,7 +75,6 @@ jobs:
         workspace:
           - apps/chrome-wallet
           - apps/demo-dapp
-          - apps/mobile-wallet
           - services/wallet-hub-api
           - packages/wallet-hub-sdk
           - packages/wallet-hub-ui

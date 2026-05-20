@@ -18,8 +18,6 @@ triage (Critical / High / Medium / Low / Info).
 |----|-----|-------|--------|
 | X1 | Crit | SDK shared API key + caller-supplied externalUserId | DONE (laid groundwork; full per-user session token rollout still OPEN) |
 | X2 | Crit | Background message handler has no `sender.id` check | DONE |
-| X3 | Crit | Mobile unlock has no auth; no background re-lock | DONE |
-| X4 | Crit | Mobile API key + state in plaintext AsyncStorage | DONE |
 | X5 | High | Signing-request submit has no atomic claim → double-spend | DONE |
 | X6 | High | Platform admin key compared with `!==` (timing oracle) | DONE |
 | X7 | Crit | CDK `unsafeUnwrap()` leaks DB password to CloudFormation | DONE |
@@ -150,42 +148,15 @@ triage (Critical / High / Medium / Low / Info).
 
 ---
 
-## 4. Mobile wallet — `apps/mobile-wallet/`
+## 4. Mobile wallet — out of scope
 
-### Critical
+The in-tree mobile prototype (`apps/mobile-wallet/`) was removed in
+2026-05; mobile wallet development now happens in a separate repository
+owned by another team. Findings 4.C1–4.M7 below are retained only for
+historical traceability; they no longer block this repo.
 
-- **C1** API key hardcoded + persisted plaintext — DONE
-- **C2** Unlock requires no auth — DONE (`expo-local-authentication`)
-- **C3** No `AppState` background-lock — DONE
-- **C4** Wallet state incl. apiKey plaintext in AsyncStorage — DONE (`secure-state.ts`)
-
-### High
-
-- **H1** `deviceId` from `Math.random()` — DONE (`expo-crypto.getRandomBytesAsync`)
-- **H2** WebView `javaScriptEnabled` + no `originWhitelist` — DONE
-- **H3** `approve` is TODO `router.back()` — DONE (gates on biometric + connected-site allowlist)
-- **H4** Deep link `archwallet://` no source validation — DONE (approve checks connected sites)
-- **H5** Android intent filter `https://localhost` — DONE (now `wallet.arch.network` + `autoVerify`)
-- **H6** iOS `webcredentials:localhost` — DONE (`wallet.arch.network`)
-- **H7** Custodial path exposed in onboarding while UI says self-custodial — OPEN: gate behind dev flag, remove from prod onboarding
-
-### Medium
-
-- **M1** API base URL defaults to `192.168.1.152:3005` — DONE (env-driven, no hardcoded default)
-- **M2** Plain HTTP, no cert pinning — partial DONE (warn at boot when no URL set); pinning **OPEN**
-- **M3** `idempotencyKey` fallback uses `Date.now()+Math.random()` — DONE (`crypto.getRandomValues`)
-- **M4** Send dispatches without biometric — OPEN: gate `app/(tabs)/send.tsx` confirmation on `LocalAuthentication.authenticateAsync`
-- **M5** Clipboard no auto-clear — OPEN
-- **M6** WebView `domStorageEnabled: true` — DONE (set to false)
-- **M7** Send no address validation — OPEN
-
-### Low / Info
-
-- No screenshot prevention — OPEN: add `expo-screen-capture` and call `preventScreenCaptureAsync` on sign screens
-- Metro source maps not disabled — OPEN: add `metro.config.js` override for production
-- `expo-dev-client` as runtime dep — OPEN: move to devDependencies
-- Hardcoded `rpId = "localhost"` on native — DONE (`getRpId` returns prod RP id outside `__DEV__`)
-- `expo-local-authentication` installed but unused — DONE (now used)
+The deprecated mobile platform API key (`x7NaU5AHiZ...`) still must be
+**revoked at the issuer** per the rotation checklist in `SECURITY.md`.
 
 ---
 

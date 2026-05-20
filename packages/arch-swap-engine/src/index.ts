@@ -1,7 +1,7 @@
 /**
  * @arch/swap-engine -- the headless trading engine extracted from the
- * arch-swap web app, restructured so any host (chrome-wallet, mobile-wallet,
- * future dapps) can drive swaps without depending on Next.js, React, or
+ * arch-swap web app, restructured so any host (chrome-wallet, future
+ * dapps) can drive swaps without depending on Next.js, React, or
  * lasereyes.
  *
  * Wiring overview (for the wallet popup):

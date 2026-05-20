@@ -19,7 +19,7 @@ into source.
 | Indexer dev/prod key | `arch_live_lALR...` | Explorer Indexer admin | `apps/chrome-wallet/.env.local`, build-baked |
 | Hub platform app key (current) | `OZfoD0ZJh6...` | wallet-hub-api `/v1/platform/keys` | `apps/chrome-wallet/src/state/types.ts` literal default |
 | Hub platform app key (legacy) | `D3DqTHT1Jg...` | wallet-hub-api `/v1/platform/keys` | `apps/chrome-wallet/src/state/wallet-store.ts` migration constant |
-| Mobile platform app key | `x7NaU5AHiZ...` | wallet-hub-api `/v1/platform/keys` | `apps/mobile-wallet/src/config.ts` literal default |
+| Hub platform app key (deprecated mobile build) | `x7NaU5AHiZ...` | wallet-hub-api `/v1/platform/keys` | shipped with the in-tree mobile prototype (since removed); still must be revoked at the issuer |
 
 ### Rotation procedure
 
@@ -28,11 +28,9 @@ into source.
 2. Deploy the new key via the appropriate CI secret:
    - Chrome extension: GitHub Actions secrets `WXT_HUB_API_KEY` and
      `WXT_INDEXER_API_KEY` (consumed by `release-chrome-wallet.yml`).
-   - Mobile wallet: EAS secrets `EXPO_PUBLIC_API_KEY` and
-     `EXPO_PUBLIC_API_BASE_URL`.
 3. Revoke the old key in the issuing system once the next release is
    rolled out. Existing installs auto-migrate stale-key state via the
-   `migrateApiConfig` / `scrubLeakedSecrets` paths.
+   `migrateApiConfig` path.
 4. Confirm via the Hub `audit_log` table that no further requests come
    in on the revoked key.
 
@@ -44,9 +42,6 @@ into source.
   - **Chrome extension**: `import.meta.env.WXT_*` (WXT/Vite env). Local
     dev values go in `apps/chrome-wallet/.env.local` (gitignored). See
     `apps/chrome-wallet/.env.example`.
-  - **Mobile wallet**: `process.env.EXPO_PUBLIC_*`. Local dev values go
-    in `apps/mobile-wallet/.env.local` (gitignored). See
-    `apps/mobile-wallet/.env.example`.
   - **API service**: `services/wallet-hub-api/src/config/env.ts`,
     populated from Secrets Manager in CDK (`infra/cdk/`).
 - Gitleaks + lockfile-lint + per-workspace `npm audit` run on every PR

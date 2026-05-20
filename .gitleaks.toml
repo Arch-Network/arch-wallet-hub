@@ -42,5 +42,4 @@ paths = [
   '''docs/security/.*''',
   '''.gitleaks\.toml''',
   '''apps/chrome-wallet/src/state/wallet-store\.ts''',
-  '''apps/mobile-wallet/src/store/wallet-store\.ts''',
 ]
