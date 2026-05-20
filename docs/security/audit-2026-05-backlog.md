@@ -195,7 +195,7 @@ triage (Critical / High / Medium / Low / Info).
 
 - **C1** CDK `unsafeUnwrap()` on DB password — DONE (URL assembled in API at startup from secret-injected DB_USER/DB_PASSWORD)
 - **C2** Live indexer key committed in `.env.local` — DONE (placeholders + SECURITY.md rotation checklist)
-- **C3** `infra/cdk/cdk.context.json` tracked — OPEN: add to `.gitignore`, recreate from `cdk synth`
+- **C3** `infra/cdk/cdk.context.json` tracked — DONE (gitignored in `e971017`; `git rm --cached` follow-up committed separately).
 
 ### High
 
