@@ -89,7 +89,6 @@ jobs:
         working-directory: apps/chrome-wallet
         run: |
           ZIP_PATH=$(find .output -name '*.zip' | head -n 1)
-          ZIP_NAME=$(basename "$ZIP_PATH")
           echo "path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
           echo "name=arch-wallet-${{ steps.version.outputs.version }}.zip" >> "$GITHUB_OUTPUT"
 

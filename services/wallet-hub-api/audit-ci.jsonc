@@ -1,0 +1,45 @@
+// audit-ci config for services/wallet-hub-api.
+//
+// Fail the build on any high or critical npm advisory that is NOT
+// listed here. Each allowlist entry MUST have a `notes` line capturing:
+//   - why we accept the risk today
+//   - link to the follow-up tracking issue
+//   - target removal date
+//
+// Reviewed: 2026-05-20
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "high": true,
+  "critical": true,
+  "skip-dev": true,
+  "report-type": "important",
+  "package-manager": "npm",
+  "allowlist": [
+    // --- fastify@4 line: three high-severity advisories that are only
+    // patched in fastify@5. Migration tracked in audit backlog Deps M-new.
+    // Mitigations in place today:
+    //   * sendWebStream (GHSA-mrq3-vjjr-p77c): we don't stream WebStream
+    //     responses from any route in src/routes/.
+    //   * Content-Type tab bypass (GHSA-jx2c-rxcm-jvmq): every route
+    //     uses TypeBox schemas with `additionalProperties:false`, so a
+    //     body-validation bypass still produces an unusable payload.
+    //   * X-Forwarded-Proto/Host spoof (GHSA-444r-cwp2-x5xf): mitigated
+    //     at the ALB layer in infra/cdk — only the ALB injects these
+    //     headers, and the SG only accepts traffic from the ALB.
+    // Target removal: 2026-07-15 (after fastify@5 migration).
+    "GHSA-mrq3-vjjr-p77c",
+    "GHSA-jx2c-rxcm-jvmq",
+    "GHSA-444r-cwp2-x5xf",
+
+    // --- elliptic chain via @saturnbtcio/bip322-js
+    // GHSA-848j-6mx2-7j84 — "Elliptic uses a cryptographic primitive
+    // with a risky implementation". The advisory has no fix available
+    // and applies to all versions of `elliptic`. We use bip322-js only
+    // for BIP-322 signature verification on user-supplied messages;
+    // private-key operations happen in Turnkey. Constant-time timing
+    // attacks against verification are not within our threat model.
+    // Tracked as Deps H-elliptic in audit backlog; long-term fix is to
+    // replace bip322-js with a @noble-based implementation.
+    "GHSA-848j-6mx2-7j84"
+  ]
+}
