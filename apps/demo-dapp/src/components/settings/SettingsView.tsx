@@ -1,4 +1,4 @@
-import type { ArchNetwork } from "@arch/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 
 type Props = {

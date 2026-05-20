@@ -7,6 +7,7 @@ import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
 import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
 import { type WalletAccount } from "../../state/types";
+import { PASSKEY_RP_ID } from "../../session/constants";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 
 interface OnboardingProps {
@@ -44,12 +45,29 @@ type WizardMethod = "passkey" | "email" | null;
 const MIN_PASSWORD_LENGTH = 8;
 const ONBOARDING_HANDOFF_PREFIX = "arch_wallet_onboarding_handoff:";
 
+/**
+ * SECURITY: we deliberately do NOT carry the unlock password through
+ * the side-panel -> popup handoff. `chrome.storage.session` is in
+ * memory and not on disk, but is accessible to any execution context
+ * within the extension origin (popup, sidepanel, service worker,
+ * content scripts of extension pages) until the browser closes. A
+ * future bug in an extension page (or a compromised dep that runs in
+ * extension origin) would be able to read it.
+ *
+ * Instead, when the popup resumes onboarding, we reseat the wizard at
+ * the password step (with the captured method/email/walletName) and
+ * the user re-enters the password they chose moments ago. One extra
+ * keystroke vs. a credential-leak class of bugs.
+ */
 interface OnboardingHandoff {
   method: "passkey" | "email";
   walletName: string;
   email: string;
-  password: string;
-  confirmPassword: string;
+  /**
+   * The wizard step the user was on. The popup jumps back to the
+   * password step (so the user can re-supply it) unless we are in
+   * addMode (no password needed).
+   */
   wizardStep: WizardStep;
 }
 
@@ -162,8 +180,12 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       setWizardMethod(payload.method);
       setWalletName(payload.walletName);
       setEmail(payload.email);
-      setPassword(payload.password);
-      setConfirmPassword(payload.confirmPassword);
+      // Password is intentionally NOT carried through the handoff.
+      // Reseat at the password step so the user re-enters it; the
+      // captured method/email/walletName mean they only need to type
+      // the password.
+      setPassword("");
+      setConfirmPassword("");
       setWizardStep(Math.min(payload.wizardStep, lastWizardStep) as WizardStep);
 
       const next = new URLSearchParams(searchParams);
@@ -241,8 +263,8 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
             method: "passkey",
             walletName,
             email: trimmedEmail,
-            password,
-            confirmPassword,
+            // password is intentionally omitted from the handoff;
+            // the popup re-prompts. See OnboardingHandoff comment.
             wizardStep: lastWizardStep,
           } satisfies OnboardingHandoff,
         });
@@ -273,10 +295,10 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         "Fetching server configuration",
       );
 
-      const rpId =
-        globalThis.location?.hostname === "localhost"
-          ? "localhost"
-          : globalThis.location?.hostname ?? "localhost";
+      // SECURITY: use the pinned PASSKEY_RP_ID constant; never derive
+      // rpId from `location.hostname` (would silently rebind passkeys
+      // across extension-id changes / popup vs tab contexts).
+      const rpId = PASSKEY_RP_ID;
 
       setStatusMessage("Creating passkey - follow the browser prompt...");
 
@@ -292,6 +314,14 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
           publicKey: {
             rp: { id: rpId, name: "Arch Wallet" },
             user: { name: `${externalUserId}-${Date.now()}`, displayName },
+            // SECURITY: enforce user verification (biometric / PIN /
+            // device-PIN) on the registration ceremony. Presence-only
+            // authenticators (button-tap-only security keys) are
+            // rejected.
+            authenticatorSelection: {
+              userVerification: "required",
+              residentKey: "preferred",
+            },
           },
         }),
         30_000,

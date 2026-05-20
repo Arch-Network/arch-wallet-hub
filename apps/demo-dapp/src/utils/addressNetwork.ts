@@ -1,4 +1,4 @@
-import type { ArchNetwork } from "@arch/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch-network/wallet-hub-sdk";
 
 const CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const BECH32M_CONST = 0x2bc830a3;

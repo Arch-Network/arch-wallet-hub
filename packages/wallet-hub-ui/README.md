@@ -14,7 +14,7 @@ Native Bitcoin wallets (Xverse, Unisat, etc.) **cannot display Arch L2 data**:
 ## Installation
 
 ```bash
-npm install @arch/wallet-hub-ui @arch/wallet-hub-sdk
+npm install @arch/wallet-hub-ui @arch-network/wallet-hub-sdk
 ```
 
 ## Components
@@ -25,7 +25,7 @@ Displays unified BTC + Arch L2 balances. **Required** when using external Bitcoi
 
 ```tsx
 import { PortfolioPanel, usePortfolio } from "@arch/wallet-hub-ui";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 
 function MyApp() {
   const client = new WalletHubClient({ baseUrl: "...", apiKey: "..." });
@@ -101,7 +101,7 @@ import {
   SigningRequestStatus,
   usePortfolio 
 } from "@arch/wallet-hub-ui";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 
 function MyDApp() {
   const client = new WalletHubClient({ baseUrl: "...", apiKey: "..." });

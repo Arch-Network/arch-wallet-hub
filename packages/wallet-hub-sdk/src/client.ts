@@ -30,8 +30,52 @@ import type {
   VerifyRecoveryEmailRequest,
   VerifyRecoveryEmailResponse,
   EstimateBtcFeeRequest,
-  EstimateBtcFeeResponse
+  EstimateBtcFeeResponse,
+  PortfolioResponse
 } from "./types.js";
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** Allow-listed hosts that we accept over plain HTTP for dev use. */
+const PLAINTEXT_DEV_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+
+/**
+ * Validate the configured base URL. We reject `http://` against
+ * anything that isn't an obvious developer host so the SDK can't be
+ * accidentally pointed at a plain-text production endpoint (the API
+ * key + session token would then be sniffable).
+ */
+function validateBaseUrl(raw: string): URL {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`WalletHubClient: invalid baseUrl ${JSON.stringify(raw)}`);
+  }
+  if (url.protocol === "https:") return url;
+  if (url.protocol === "http:" && PLAINTEXT_DEV_HOSTS.has(url.hostname)) return url;
+  throw new Error(
+    `WalletHubClient: baseUrl must use https:// (got ${url.protocol}//${url.hostname}); plain http is only allowed for localhost`,
+  );
+}
+
+/**
+ * Strip developer-noise / stack-tracey fields out of an error body
+ * before re-throwing. We don't want a misbehaving server to leak
+ * internal paths, env-var hints, or full stacks into a dApp's
+ * console / Sentry sink.
+ */
+function summarizeErrorBody(text: string): string {
+  if (!text) return "";
+  try {
+    const j = JSON.parse(text) as Record<string, unknown>;
+    const msg = typeof j.message === "string" ? j.message : "";
+    const code = typeof j.error === "string" ? j.error : "";
+    if (msg || code) return [code, msg].filter(Boolean).join(": ");
+  } catch {
+    /* fall through to plain truncation */
+  }
+  return text.length > 240 ? `${text.slice(0, 240)}...` : text;
+}
 
 /**
  * Wallet Hub client.
@@ -48,28 +92,73 @@ import type {
 export class WalletHubClient {
   private baseUrl: string;
   private apiKey: string | undefined;
+  private sessionToken: string | undefined;
   private network: string;
   private fetchImpl: typeof fetch;
+  private requestTimeoutMs: number;
 
   constructor(opts: WalletHubClientOptions) {
-    const trimmed = opts.baseUrl.replace(/\/+$/, "");
+    const url = validateBaseUrl(opts.baseUrl);
+    const trimmed = url.toString().replace(/\/+$/, "");
     this.baseUrl = /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
     this.apiKey = opts.apiKey;
+    this.sessionToken = opts.sessionToken;
     this.network = opts.network ?? "testnet";
+    this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const f = (opts.fetchImpl ?? fetch) as any;
     this.fetchImpl = typeof f?.bind === "function" ? f.bind(globalThis) : f;
+  }
+
+  /**
+   * Set / clear the per-user bearer session token (typically obtained
+   * from `verifyWalletLinkChallenge`). Pass `undefined` to log out.
+   */
+  setSessionToken(token: string | undefined): void {
+    this.sessionToken = token;
+  }
+
+  /** Returns true when a session token is currently set. */
+  hasSession(): boolean {
+    return Boolean(this.sessionToken);
   }
 
   private async requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     if (this.apiKey) headers.set("x-api-key", this.apiKey);
+    if (this.sessionToken) {
+      // Per-user authn. The Hub treats this as an opaque bearer
+      // scoped to one externalUserId + a short TTL.
+      headers.set("authorization", `Bearer ${this.sessionToken}`);
+    }
     if (this.network) headers.set("x-network", this.network);
     if (!headers.has("content-type") && init.body) headers.set("content-type", "application/json");
 
-    const res = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        ...init,
+        headers,
+        signal: init.signal ?? controller.signal,
+      });
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        throw new Error(
+          `WalletHub request timed out after ${this.requestTimeoutMs}ms: ${path}`,
+        );
+      }
+      throw new Error(`WalletHub network error: ${err?.message ?? String(err)}`);
+    } finally {
+      clearTimeout(timer);
+    }
+
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`WalletHub error ${res.status} ${res.statusText}: ${text}`);
+      throw new Error(
+        `WalletHub error ${res.status} ${res.statusText}: ${summarizeErrorBody(text)}`,
+      );
     }
     return (await res.json()) as T;
   }
@@ -157,6 +246,18 @@ export class WalletHubClient {
     });
   }
 
+  // ── Portfolio ────────────────────────────────────────────────────────────
+
+  /**
+   * Read a user's portfolio (BTC + token balances + USD totals).
+   * Implementation lives behind `/portfolio/:address` on the Hub.
+   */
+  async getPortfolio(address: string): Promise<PortfolioResponse> {
+    return await this.requestJson(
+      `/portfolio/${encodeURIComponent(address)}`,
+    );
+  }
+
   // ── Signing requests ─────────────────────────────────────────────────────
 
   async createSigningRequest(body: CreateSigningRequest): Promise<CreateSigningResponse> {
@@ -178,6 +279,15 @@ export class WalletHubClient {
   }
 
   async signWithTurnkey(id: string, body: { externalUserId: string }): Promise<SubmitSigningResponse> {
+    // Defence-in-depth: refuse to ask the server to sign on a user's
+    // behalf without a session token bound to that user. The server
+    // will also enforce this; the client-side check prevents the
+    // wrong assumption from silently shipping into production code.
+    if (!this.sessionToken) {
+      throw new Error(
+        "WalletHubClient.signWithTurnkey requires a session token; call setSessionToken() after verifyWalletLinkChallenge",
+      );
+    }
     return await this.requestJson(`/signing-requests/${encodeURIComponent(id)}/sign-with-turnkey`, {
       method: "POST",
       body: JSON.stringify(body)
@@ -249,4 +359,41 @@ export class WalletHubClient {
       body: JSON.stringify(body)
     });
   }
+}
+
+/**
+ * Compute a stable, canonical sha256 hex digest of a `display`
+ * payload. Used by both the UI (to verify the rendered preview is
+ * the one the server stored) and the API (to populate
+ * `displayHash`). Keys are sorted recursively so {"a":1,"b":2} and
+ * {"b":2,"a":1} produce the same digest.
+ */
+export async function computeDisplayHash(display: unknown): Promise<string> {
+  const canonical = JSON.stringify(display, sortedReplacer(new WeakSet()));
+  const bytes = new TextEncoder().encode(canonical);
+  const subtle = (globalThis.crypto?.subtle as SubtleCrypto | undefined);
+  if (subtle) {
+    const buf = await subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(buf), (b) =>
+      b.toString(16).padStart(2, "0"),
+    ).join("");
+  }
+  // Node fallback for SSR / tests.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const nodeCrypto = require("node:crypto") as typeof import("node:crypto");
+  return nodeCrypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function sortedReplacer(seen: WeakSet<object>) {
+  return function replacer(_key: string, value: unknown): unknown {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (seen.has(value as object)) return null; // break cycles
+      seen.add(value as object);
+      const obj = value as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(obj).sort()) out[k] = obj[k];
+      return out;
+    }
+    return value;
+  };
 }

@@ -1,0 +1,75 @@
+name: Release Wallet Hub SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "SDK version to publish (for example, 0.1.0)"
+        required: true
+        type: string
+  push:
+    tags:
+      - "wallet-hub-sdk-v*"
+
+# Default deny; the publish job opts in.
+permissions: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for npm provenance attestation (Sigstore signing
+      # via the GitHub OIDC token).
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/wallet-hub-sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#wallet-hub-sdk-v}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Set package version
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Check npm token
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPM_TOKEN repository secret is required to publish @arch-network/wallet-hub-sdk."
+            exit 1
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm (with provenance)
+        # `--provenance` attaches a Sigstore-signed attestation linking
+        # this published tarball to this exact workflow run + commit,
+        # so consumers can verify the package came from this repo.
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

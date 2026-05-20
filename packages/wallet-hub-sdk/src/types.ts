@@ -1,9 +1,47 @@
 export type ArchNetwork = "testnet" | "mainnet";
 
+/**
+ * Client construction options.
+ *
+ * SECURITY model (as of 2026-05 hardening):
+ *
+ *   - `apiKey` is a *platform* gate (rate-limit + revocation). It is
+ *     NOT per-user and shipping it into the browser is by design;
+ *     because of that, the API key alone MUST NOT be sufficient to
+ *     act on any specific user's behalf.
+ *
+ *   - Per-user authentication is supplied via `sessionToken`, a
+ *     short-lived (default 15 min) bearer token returned by
+ *     `verifyWalletLinkChallenge` (after the dApp proved the user
+ *     controls their wallet). The Hub enforces that any endpoint
+ *     accepting an `externalUserId` must also receive a session
+ *     token whose subject matches that `externalUserId`. Without a
+ *     session token, only public/wallet-link/recovery endpoints are
+ *     usable.
+ *
+ *   - `baseUrl` MUST be `https://` in production. The constructor
+ *     rejects `http://` unless the host is `localhost`/`127.0.0.1`
+ *     (developer convenience).
+ *
+ *   - `fetchImpl` lets test harnesses swap fetch but should not be
+ *     used in production code. The shipped client uses the global
+ *     `fetch` and reads its own timeout.
+ */
 export type WalletHubClientOptions = {
   baseUrl: string; // e.g. https://wallet-hub.arch.network/v1
-  apiKey?: string; // optional when nginx injects it server-side
+  apiKey?: string; // platform gate; not sufficient for per-user actions
+  /**
+   * Bearer session token returned by `verifyWalletLinkChallenge`.
+   * Pass it (or call `setSessionToken`) before any endpoint that
+   * accepts a user-scoped `externalUserId`.
+   */
+  sessionToken?: string;
   network?: ArchNetwork;
+  /**
+   * Hard timeout per request in milliseconds. Defaults to 30s.
+   * Prevents the dApp from hanging forever if the Hub is degraded.
+   */
+  requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
 };
 
@@ -334,6 +372,15 @@ export type CreateSigningResponse = {
   actionType: string;
   payloadToSign: unknown;
   display: unknown;
+  /**
+   * sha256 hex digest of the canonical-JSON `display` object as the
+   * server stored it. The UI MUST recompute this digest from the
+   * `display` it actually renders and compare against this field
+   * before showing a "Sign" button -- mismatch means the rendered
+   * preview drifted from what's about to be signed (blind-sign
+   * defence).
+   */
+  displayHash: string;
   expiresAt: string | null;
 };
 
@@ -369,12 +416,44 @@ export type GetSigningRequestResponse = {
   actionType: string;
   payloadToSign: unknown;
   display: unknown;
+  /** See `CreateSigningResponse.displayHash`. */
+  displayHash: string;
   result: unknown | null;
   error: unknown | null;
   expiresAt: string | null;
   createdAt: string;
   updatedAt: string;
   readiness: SigningRequestReadiness;
+};
+
+// ── Portfolio ────────────────────────────────────────────────────────────
+
+/**
+ * Lightweight portfolio shape used by `WalletHubClient.getPortfolio`.
+ * The previous SDK had a `usePortfolio` hook in the UI package that
+ * called `client.getPortfolio(...)` against a method that did not
+ * exist; the new method + type close that gap.
+ */
+export type PortfolioToken = {
+  mint: string;
+  symbol?: string;
+  name?: string;
+  decimals?: number;
+  /** Raw on-chain balance as a base-10 string (smallest unit). */
+  amount: string;
+  /** Human-formatted amount; presentation-only. */
+  formattedAmount?: string;
+  usdValue?: number;
+};
+
+export type PortfolioResponse = {
+  address: string;
+  archAddress?: string;
+  tokens: PortfolioToken[];
+  /** Sum of USD values across tokens (when available). */
+  totalUsd?: number;
+  /** Server-side fetch timestamp; useful for caching/freshness UX. */
+  asOf: string;
 };
 
 export type SubmitSigningRequest = {

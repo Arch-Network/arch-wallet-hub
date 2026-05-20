@@ -29,6 +29,14 @@ export default defineConfig({
     // <all_urls> below (required to talk to the content script).
     permissions: ["storage", "alarms", "idle", "activeTab", "sidePanel"],
     host_permissions: ["<all_urls>"],
+    // Defense-in-depth on top of MV3 defaults. MV3 already forbids
+    // `unsafe-eval` and remote scripts; we restate the intent and
+    // explicitly forbid `object-src` so plugins/Flash can't be
+    // injected if any future bundler/plugin tries.
+    content_security_policy: {
+      extension_pages:
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none';",
+    },
     side_panel: {
       default_path: "sidepanel.html",
     },
@@ -36,6 +44,10 @@ export default defineConfig({
       {
         resources: ["injected.js"],
         matches: ["<all_urls>"],
+        // use_dynamic_url rotates the URL per session so the resource
+        // isn't a stable fingerprint surface. Pages that try
+        // `fetch(chrome.runtime.getURL("/injected.js"))` see a
+        // different token each session.
         use_dynamic_url: true,
       },
     ],

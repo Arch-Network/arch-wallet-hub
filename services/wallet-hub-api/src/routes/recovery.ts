@@ -135,12 +135,15 @@ const InitBody = Type.Object({
   email: Type.String({ format: "email" })
 });
 
+// NB: `defaultAddress` was previously part of this shape; it was
+// removed because returning the full address pre-OTP turned the /init
+// endpoint into a wallet-enumeration oracle. The unmasked address is
+// only revealed in VerifyResponse after a successful OTP_AUTH.
 const InitCandidate = Type.Object({
   candidateToken: Type.String(),
   resourceId: Type.Optional(Type.String()),
   walletLabel: Type.String(),
   addressMasked: Type.String(),
-  defaultAddress: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   createdAt: Type.String(),
   // Retained for backwards compatibility with already-deployed SDKs;
   // populated as `false` for any sub-org wallet (the only kind that
@@ -422,6 +425,12 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         });
       });
 
+      // SECURITY: do NOT return `defaultAddress` (full address) here.
+      // Doing so lets an attacker enumerate every wallet ever
+      // registered with an email by calling /init with candidate
+      // addresses. `addressMasked` is enough for the user to pick
+      // which wallet to recover; the unmasked address is only
+      // revealed after a successful OTP verification.
       return {
         challengeId: challenge.id,
         candidates: tokensFilled.map((c) => ({
@@ -429,7 +438,6 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           resourceId: c.resourceId,
           walletLabel: c.walletLabel,
           addressMasked: c.addressMasked,
-          defaultAddress: c.defaultAddress,
           createdAt: c.createdAt,
           isCustodial: false,
           authMethod: c.authMethod

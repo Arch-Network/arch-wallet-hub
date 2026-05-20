@@ -8,10 +8,24 @@ import "../../src/styles/global.css";
 
 console.debug("[arch-wallet] sidepanel boot");
 
+function renderFallback(message: string): HTMLDivElement {
+  // SECURITY: build the DOM with createElement + textContent so an
+  // error message containing HTML/script (e.g. an attacker-influenced
+  // crafted Error.stack) can't escape into the extension origin via
+  // innerHTML.
+  const wrap = document.createElement("div");
+  wrap.style.color = "#f55";
+  wrap.style.padding = "16px";
+  wrap.style.fontFamily = "sans-serif";
+  wrap.style.fontSize = "12px";
+  wrap.style.whiteSpace = "pre-wrap";
+  wrap.textContent = message;
+  return wrap;
+}
+
 const rootEl = document.getElementById("root");
 if (!rootEl) {
-  document.body.innerHTML =
-    '<div style="color:#fff;padding:16px;font-family:sans-serif">Missing #root element.</div>';
+  document.body.replaceChildren(renderFallback("Missing #root element."));
 } else {
   try {
     ReactDOM.createRoot(rootEl).render(
@@ -22,9 +36,10 @@ if (!rootEl) {
     console.debug("[arch-wallet] sidepanel rendered");
   } catch (err) {
     console.error("[arch-wallet] sidepanel render failed", err);
-    rootEl.innerHTML = `<div style="color:#f55;padding:16px;font-family:sans-serif;font-size:12px;white-space:pre-wrap">Side panel failed to render:\n${String(
-      (err as Error)?.stack || err,
-    )}</div>`;
+    const detail = String((err as Error)?.stack || err);
+    rootEl.replaceChildren(
+      renderFallback(`Side panel failed to render:\n${detail}`),
+    );
   }
 }
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import type { WalletHubClient, ArchNetwork } from "@arch/wallet-hub-sdk";
+import type { WalletHubClient, ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
 import { formatArchId } from "../../utils/archFormat";

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { AccountTokenBalance } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import type { AccountTokenBalance } from "@arch-network/wallet-hub-sdk";
 
 type TokenListProps = {
   client: WalletHubClient;

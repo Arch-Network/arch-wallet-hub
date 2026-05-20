@@ -1,0 +1,46 @@
+# Gitleaks config — supplements the built-in default rules with
+# project-specific patterns. Build/CI uses `gitleaks-action`; this
+# file is also picked up by a local `gitleaks detect`.
+
+title = "arch-wallet-hub gitleaks config"
+
+[extend]
+# Inherit gitleaks' built-in rules (AWS keys, GitHub tokens, etc).
+useDefault = true
+
+[[rules]]
+id = "arch-indexer-api-key"
+description = "Arch Explorer indexer API key (arch_live_... or arch_test_...)"
+regex = '''arch_(live|test)_[A-Za-z0-9]{32,}'''
+tags = ["api-key", "arch"]
+
+[[rules]]
+id = "wallet-hub-platform-api-key"
+description = "Wallet Hub platform API key (base64url, 43 chars after prefix marker)"
+regex = '''(?i)(hub_api_key|hub_apikey|platform_api_key)['"\s:=]{1,5}['"]?[A-Za-z0-9_-]{40,}'''
+tags = ["api-key", "wallet-hub"]
+
+[[rules]]
+id = "turnkey-private-key"
+description = "Turnkey API private key (32-byte hex)"
+regex = '''(?i)(turnkey[_-]?api[_-]?private[_-]?key)['"\s:=]{1,5}['"]?[a-f0-9]{64}'''
+tags = ["api-key", "turnkey"]
+
+[allowlist]
+# Do not flag known-rotated keys that we deliberately keep around in
+# wallet-store migrations and SECURITY.md to recognise stale state on
+# upgrade.
+description = "Rotated keys retained for migration / docs"
+regexes = [
+  '''D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog''',
+  '''OZfoD0ZJh6kQpd3Lr4TvLbnocS2g_eooZlQ7VEfbE4M''',
+  '''x7NaU5AHiZ0UZxGLTm2WMqWsZkWB3B2cvnwL9RUDDLw''',
+  '''arch_live_lALRxJatV7EdPcYYWpW062daTnaeJGFPgSTRcL1Y6dXpZnFq''',
+]
+paths = [
+  '''SECURITY\.md''',
+  '''docs/security/.*''',
+  '''.gitleaks\.toml''',
+  '''apps/chrome-wallet/src/state/wallet-store\.ts''',
+  '''apps/mobile-wallet/src/store/wallet-store\.ts''',
+]

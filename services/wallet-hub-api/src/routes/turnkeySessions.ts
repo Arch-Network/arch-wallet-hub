@@ -57,18 +57,28 @@ export const registerTurnkeySessionRoutes: FastifyPluginAsync = async (server) =
       if (row.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
 
       const turnkey = getTurnkeyClient();
-      // Important:
-      // We must register the IndexedDB public key in the *parent* org (the org that owns the backend API key),
-      // not the sub-org. Turnkey resolves keys from an org or its parent; registering in the parent avoids
-      // "organization mismatch" errors when the backend API key is a parent-org voter.
-      const whoami: any = await turnkey.ping();
-      const parentOrgUserId = String(whoami?.userId ?? "");
-      if (!parentOrgUserId) return reply.internalServerError("Turnkey whoami missing userId");
+      // SECURITY: register the IndexedDB session public key in the
+      // user's *sub-org* against the sub-org's root user, NOT in the
+      // parent org. Earlier revisions registered against the parent
+      // org's root user (via whoami), which meant a compromised
+      // IndexedDB session key inherited parent-org signing authority
+      // and could affect every wallet in the org.
+      //
+      // The required identifiers come from the stored
+      // `turnkey_resources` row (`organization_id` and
+      // `turnkey_root_user_id`), which were captured at sub-org
+      // creation time and never re-read from Turnkey.
+      const subOrgId = row.organization_id;
+      const subOrgRootUserId = row.turnkey_root_user_id;
+      if (!subOrgId || !subOrgRootUserId) {
+        return reply.conflict(
+          "Resource is missing sub-org user identifiers; cannot register IndexedDB key safely"
+        );
+      }
 
-      const orgId = server.config.TURNKEY_ORGANIZATION_ID;
       const created = await turnkey.createApiKeyForUser({
-        organizationId: orgId,
-        userId: parentOrgUserId,
+        organizationId: subOrgId,
+        userId: subOrgRootUserId,
         apiKeyName,
         publicKey,
         curveType: "API_KEY_CURVE_P256",
@@ -77,8 +87,8 @@ export const registerTurnkeySessionRoutes: FastifyPluginAsync = async (server) =
 
       return {
         resourceId,
-        organizationId: orgId,
-        turnkeyUserId: parentOrgUserId,
+        organizationId: subOrgId,
+        turnkeyUserId: subOrgRootUserId,
         apiKeyIds: created.apiKeyIds,
         activityId: created.activityId
       };

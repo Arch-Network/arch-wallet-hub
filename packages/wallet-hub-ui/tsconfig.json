@@ -6,7 +6,7 @@
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {
-      "@arch/wallet-hub-sdk": ["../wallet-hub-sdk/src/index.ts"]
+      "@arch-network/wallet-hub-sdk": ["../wallet-hub-sdk/src/index.ts"]
     },
     "declaration": true,
     "outDir": "dist",

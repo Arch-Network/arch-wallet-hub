@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ArchNetwork } from "@arch/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";

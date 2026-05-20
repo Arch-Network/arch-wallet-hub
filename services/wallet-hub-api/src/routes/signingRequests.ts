@@ -1244,14 +1244,16 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           turnkeyActivityId: body.turnkeyActivityId ?? null
         };
 
-        await withDbTransaction(db, async (client) => {
-          // Record the submitted signature for audit parity with the transfer path, then
-          // mark succeeded in the same transaction.
-          await markSigningRequestSubmitted(client, {
+        const claimed = await withDbTransaction(db, async (client) => {
+          // Atomic pending -> submitted transition; if it returns
+          // false, another parallel submit already claimed this row
+          // and we MUST NOT also report success on it.
+          const ok = await markSigningRequestSubmitted(client, {
             id: row.id,
             submittedSignatureJson: submittedSigJson,
             resultJson: result
           });
+          if (!ok) return false;
           await markSigningRequestSucceeded(client, { id: row.id, resultJson: result });
           await auditEvent({
             client,
@@ -1266,8 +1268,14 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             payloadJson: { actionType: "arch.sign_message", signWith: storedSignWith },
             outcome: "succeeded"
           });
+          return true;
         });
 
+        if (!claimed) {
+          return reply.conflict(
+            "Signing request was already submitted by another concurrent request"
+          );
+        }
         return { signingRequestId: row.id, status: "succeeded", result };
       }
 
@@ -1344,6 +1352,24 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       );
 
       if (!archRpcUrl) return reply.notImplemented("ARCH_RPC_NODE_URL not configured");
+
+      // SECURITY: claim the row atomically BEFORE broadcasting so two
+      // parallel /submit calls can't both reach `submitArchTransaction`
+      // for the same signing request (would result in double-submit /
+      // double-spend exposure on the Arch network).
+      const claimed = await withDbTransaction(db, (client) =>
+        markSigningRequestSubmitted(client, {
+          id: row.id,
+          submittedSignatureJson: submittedSigJson,
+          resultJson: null
+        })
+      );
+      if (!claimed) {
+        return reply.conflict(
+          "Signing request was already submitted by another concurrent request"
+        );
+      }
+
       server.log.info(
         {
           signingRequestId: row.id,
@@ -1353,7 +1379,18 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         },
         "arch.send_transaction.requested"
       );
-      const txidHex = await submitArchTransaction({ nodeUrl: archRpcUrl, tx: runtimeTransaction });
+      let txidHex: string;
+      try {
+        txidHex = await submitArchTransaction({ nodeUrl: archRpcUrl, tx: runtimeTransaction });
+      } catch (err: any) {
+        await withDbTransaction(db, (client) =>
+          markSigningRequestFailed(client, {
+            id: row.id,
+            errorJson: { phase: "broadcast", message: err?.message ?? String(err) }
+          })
+        );
+        throw err;
+      }
       // Arch RPC txids are 32-byte values; the RPC returns them as a 64-hex string.
       // For client UX (wallet/explorer-like), we return base58 while preserving the hex for RPC lookups.
       const txidBase58 = (() => {
@@ -1381,13 +1418,20 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         }
       };
 
-      // Persist as submitted immediately (tx broadcast).
+      // The row was already transitioned to `submitted` above; here we
+      // just record the broadcast result so client status reads have
+      // the txid. We update by id only (status is already submitted).
       await withDbTransaction(db, async (client) => {
-        await markSigningRequestSubmitted(client, {
-          id: row.id,
-          submittedSignatureJson: submittedSigJson,
-          resultJson: { txid: txidBase58 ?? txidHex, txidHex, txidBase58 }
-        });
+        await client.query(
+          `UPDATE signing_requests
+              SET result_json = $2::jsonb,
+                  updated_at = NOW()
+            WHERE id = $1`,
+          [
+            row.id,
+            JSON.stringify({ txid: txidBase58 ?? txidHex, txidHex, txidBase58 })
+          ]
+        );
       });
 
       // Best-effort: wait briefly for execution result so we can return a truthful status to clients/UX.

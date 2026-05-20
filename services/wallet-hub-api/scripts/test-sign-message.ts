@@ -21,7 +21,7 @@
  * signing the payload locally/on-device.
  */
 
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 import { TurnkeyClient } from "@turnkey/http";
 import { ApiKeyStamper } from "@turnkey/api-key-stamper";
 import { Buffer } from "node:buffer";

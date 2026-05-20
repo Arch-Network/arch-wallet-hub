@@ -1,8 +1,8 @@
 import { useState, useCallback } from "react";
 // @ts-ignore - sats-connect types
 import { getAddress, AddressPurpose } from "sats-connect";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { ArchNetwork } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 
 declare global {

@@ -23,7 +23,15 @@ import { passkeyBootstrap } from "../session/bootstrap-passkey";
 import { EmailBootstrap, type EmailBootstrapArgs } from "../session/bootstrap-email";
 
 const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
+/**
+ * Old chrome-wallet builds shipped a literal hub API key in source.
+ * That key has been rotated; this constant is kept ONLY so the
+ * migration in `migrateApiConfig` can recognize and overwrite stale
+ * values still sitting in users' encrypted state on upgrade. Do not
+ * use this for any new requests.
+ */
 const LEGACY_HUB_API_KEY = "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog";
+const ROTATED_LEAKED_HUB_API_KEY = "OZfoD0ZJh6kQpd3Lr4TvLbnocS2g_eooZlQ7VEfbE4M";
 const INSTALL_ID_KEY = "arch_wallet_install_id";
 
 async function getOrCreateInstallId(): Promise<string> {
@@ -78,7 +86,10 @@ function migrateApiConfig(state: any): boolean {
   if (!state.hubApiKey) {
     state.hubApiKey = DEFAULT_HUB_API_KEY;
     migrated = true;
-  } else if (state.hubApiKey === LEGACY_HUB_API_KEY) {
+  } else if (
+    state.hubApiKey === LEGACY_HUB_API_KEY ||
+    state.hubApiKey === ROTATED_LEAKED_HUB_API_KEY
+  ) {
     state.hubApiKey = DEFAULT_HUB_API_KEY;
     migrated = true;
   }

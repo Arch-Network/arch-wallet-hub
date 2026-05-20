@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 // @ts-ignore - sats-connect types
 import { getAddress, AddressPurpose } from "sats-connect";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 import type { WalletState, WalletType } from "../WizardFlow";
 
 interface ConnectStepProps {

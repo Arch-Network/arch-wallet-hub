@@ -1,7 +1,7 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { HashRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { ArchNetwork } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import type { ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import type { ConnectedWallet } from "./types";
 import AppShell from "./components/layout/AppShell";
 import ConnectView from "./views/ConnectView";

@@ -78,7 +78,7 @@ There are two internal packages. Only one is load-bearing.
 
 | Package | Path | What's in it | Who uses it |
 |---|---|---|---|
-| `@arch/wallet-hub-sdk` | `packages/wallet-hub-sdk/` | Thin `WalletHubClient` (fetch wrapper) + TS types for every API request/response | chrome-wallet, mobile-wallet, demo-dapp, wallet-hub-api |
+| `@arch-network/wallet-hub-sdk` | `packages/wallet-hub-sdk/` | Thin `WalletHubClient` (fetch wrapper) + TS types for every API request/response | chrome-wallet, mobile-wallet, demo-dapp, wallet-hub-api |
 | `@arch/wallet-hub-ui` | `packages/wallet-hub-ui/` | Small React hooks/components kit. Pre-redesign scaffolding. | Not consumed by the extension today (extension has its own CSS + React components). Effectively vestigial. |
 
 Both are linked via `file:../../packages/...` (npm workspaces, no publish).
@@ -127,7 +127,7 @@ I'd pick (a). We'll ship faster and not couple mobile's timeline to product deci
 
 **iOS team state:** No one assigned. No contractor in talks that I know of.
 
-The `apps/mobile-wallet` directory exists as an Expo SDK 55 / React Native 0.83 scaffold (tabs for Send / Receive / History / Settings / Browser; one `src/services/turnkey.ts`; uses `@arch/wallet-hub-sdk` for API calls and `@turnkey/react-native-passkey-stamper` + `@turnkey/http` for signing). It's a scaffold — not an app. I wrote the scaffold to de-risk the React Native + Turnkey passkey-stamper wiring; it is not feature-complete.
+The `apps/mobile-wallet` directory exists as an Expo SDK 55 / React Native 0.83 scaffold (tabs for Send / Receive / History / Settings / Browser; one `src/services/turnkey.ts`; uses `@arch-network/wallet-hub-sdk` for API calls and `@turnkey/react-native-passkey-stamper` + `@turnkey/http` for signing). It's a scaffold — not an app. I wrote the scaffold to de-risk the React Native + Turnkey passkey-stamper wiring; it is not feature-complete.
 
 If the plan calls for native Swift, that's a separate effort; the scaffold would be thrown away. If the plan accepts React Native (Expo) iOS, we have a ~10% head start.
 

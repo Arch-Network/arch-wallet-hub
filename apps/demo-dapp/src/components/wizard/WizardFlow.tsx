@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, ReactNode } from "react";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 import ConnectStep from "./steps/ConnectStep";
 import ActionStep from "./steps/ActionStep";
 import DetailsStep from "./steps/DetailsStep";

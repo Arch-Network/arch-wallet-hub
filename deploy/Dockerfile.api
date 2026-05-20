@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Build stage
 FROM node:20-alpine AS builder
 
@@ -6,27 +7,39 @@ WORKDIR /app
 # Copy SDK first (all files, then install + build)
 COPY packages/wallet-hub-sdk ./packages/wallet-hub-sdk/
 WORKDIR /app/packages/wallet-hub-sdk
-RUN npm install && npm run build
+RUN npm ci || npm install \
+ && npm run build
 
 # Copy and build API
 WORKDIR /app/services/wallet-hub-api
 COPY services/wallet-hub-api/package.json services/wallet-hub-api/package-lock.json* ./
-RUN npm install
+RUN npm ci || npm install
 COPY services/wallet-hub-api ./
-RUN npm run build
+RUN npm run build \
+ # Drop devDependencies from the runtime install to reduce attack surface.
+ && npm prune --omit=dev
 
 # Production stage
 FROM node:20-alpine
 
+# SECURITY: do not run as root. The upstream node image already
+# provides uid 1000 (`node`); we just need to make sure the runtime
+# files are readable by that uid and that the workdir is writable
+# (Fastify logs to stdout so this is mostly belt-and-braces).
 WORKDIR /app/services/wallet-hub-api
 
-COPY --from=builder /app/services/wallet-hub-api ./
-COPY --from=builder /app/packages/wallet-hub-sdk /app/packages/wallet-hub-sdk
+COPY --from=builder --chown=node:node /app/services/wallet-hub-api ./
+COPY --from=builder --chown=node:node /app/packages/wallet-hub-sdk /app/packages/wallet-hub-sdk
 
 ENV NODE_ENV=production
 ENV PORT=3005
 ENV DB_RUN_MIGRATIONS=true
 
+USER node
+
 EXPOSE 3005
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD wget -q -O - "http://127.0.0.1:3005/v1/health" || exit 1
 
 CMD ["npm", "start"]

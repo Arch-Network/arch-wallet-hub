@@ -1,4 +1,4 @@
-import type { PortfolioResponse } from "@arch/wallet-hub-sdk";
+import type { PortfolioResponse } from "@arch-network/wallet-hub-sdk";
 
 type ArchSummary = {
   balance?: string;

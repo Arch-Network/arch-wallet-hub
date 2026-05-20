@@ -22,7 +22,23 @@ const EnvSchema = z.object({
     .default("info"),
 
   // Postgres
-  DATABASE_URL: z.string().min(1),
+  //
+  // Two ways to configure the DB:
+  //   1. DATABASE_URL=postgres://...  (single string, dev / docker-compose)
+  //   2. DB_HOST + DB_PORT + DB_NAME + DB_USER + DB_PASSWORD
+  //      (production / Fargate; password injected from Secrets Manager
+  //      via `ecs.Secret.fromSecretsManager(dbSecret, "password")`).
+  //
+  // Either form is accepted; if both are set, DATABASE_URL wins. The
+  // four DB_* fields are validated below and assembled into a URL at
+  // pool init time so the password is never logged.
+  DATABASE_URL: z.string().optional(),
+  DB_HOST: z.string().optional(),
+  DB_PORT: z.coerce.number().int().positive().optional(),
+  DB_NAME: z.string().optional(),
+  DB_USER: z.string().optional(),
+  DB_PASSWORD: z.string().optional(),
+  DB_SSLMODE: z.enum(["disable", "require", "verify-full"]).default("require"),
   DB_RUN_MIGRATIONS: z
     .enum(["true", "false"])
     .default("false")
@@ -94,5 +110,32 @@ export function getEnv(rawEnv: NodeJS.ProcessEnv): Env {
       .join("; ");
     throw new Error(`Invalid environment: ${message}`);
   }
-  return parsed.data;
+  const env = parsed.data;
+  if (!env.DATABASE_URL) {
+    // Synthesize DATABASE_URL from DB_* fields.
+    const missing = (["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"] as const).filter(
+      (k) => !env[k],
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        `Invalid environment: provide either DATABASE_URL or all of DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD (missing: ${missing.join(", ")})`,
+      );
+    }
+    const user = encodeURIComponent(env.DB_USER!);
+    const pass = encodeURIComponent(env.DB_PASSWORD!);
+    env.DATABASE_URL = `postgresql://${user}:${pass}@${env.DB_HOST}:${env.DB_PORT}/${env.DB_NAME}?sslmode=${env.DB_SSLMODE}`;
+  }
+  if (env.NODE_ENV === "production") {
+    if (!env.PLATFORM_ADMIN_API_KEY) {
+      throw new Error(
+        "Invalid environment: PLATFORM_ADMIN_API_KEY is required in production",
+      );
+    }
+    if (!env.CORS_ALLOW_ORIGINS || env.CORS_ALLOW_ORIGINS.trim() === "*") {
+      throw new Error(
+        "Invalid environment: CORS_ALLOW_ORIGINS must be an explicit comma-separated list in production (not '*')",
+      );
+    }
+  }
+  return env;
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { ArchNetwork, BtcTransaction } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import type { ArchNetwork, BtcTransaction } from "@arch-network/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
 import { formatArchId } from "../../utils/archFormat";

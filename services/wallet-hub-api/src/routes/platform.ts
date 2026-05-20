@@ -1,22 +1,51 @@
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
+import crypto from "node:crypto";
 import { getDbPool } from "../db/pool.js";
 import { withDbTransaction } from "../db/tx.js";
 import { createApp, insertAppApiKey } from "../db/apps.js";
 import { generateApiKey } from "../platform/apiKeys.js";
 
+/**
+ * Constant-time string comparison. `crypto.timingSafeEqual` requires
+ * equal-length inputs, so we normalize lengths and *always* run the
+ * comparison (over the longer length) to keep timing independent of
+ * the provided key's length. Returns false when either input is empty.
+ */
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const len = Math.max(a.length, b.length);
+  const aBuf = Buffer.alloc(len);
+  const bBuf = Buffer.alloc(len);
+  aBuf.write(a);
+  bBuf.write(b);
+  const eq = crypto.timingSafeEqual(aBuf, bBuf);
+  return eq && a.length === b.length;
+}
+
 function requireAdmin(server: any, request: any, reply: any) {
-  const expected = server.config.PLATFORM_ADMIN_API_KEY;
-  if (!expected) return reply.notImplemented("PLATFORM_ADMIN_API_KEY not configured");
+  const expected = server.config.PLATFORM_ADMIN_API_KEY as string | undefined;
+  if (!expected) {
+    // Hard-fail in production: an un-configured admin key effectively
+    // disables app/key creation, which is OK, but we want to surface
+    // it as a misconfiguration rather than a 501 that ops might miss.
+    if (server.config.NODE_ENV === "production") {
+      request.log.error("PLATFORM_ADMIN_API_KEY is required in production");
+      return reply.serviceUnavailable("Admin API disabled");
+    }
+    return reply.notImplemented("PLATFORM_ADMIN_API_KEY not configured");
+  }
 
   const auth = request.headers["authorization"];
   const x = request.headers["x-admin-api-key"];
   const provided =
     (typeof x === "string" && x.trim()) ||
     (typeof auth === "string" && auth.match(/^Bearer\s+(.+)$/i)?.[1]?.trim()) ||
-    null;
+    "";
 
-  if (!provided || provided !== expected) return reply.unauthorized("Invalid admin API key");
+  if (!timingSafeEqualStrings(provided, expected)) {
+    return reply.unauthorized("Invalid admin API key");
+  }
 }
 
 const CreateAppBody = Type.Object({

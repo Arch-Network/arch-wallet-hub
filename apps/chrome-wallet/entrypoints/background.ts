@@ -13,8 +13,57 @@ const AUTO_LOCK_ALARM = "arch-wallet-auto-lock";
 const PENDING_GC_ALARM = "arch-wallet-pending-gc";
 const PENDING_TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Cryptographically random request id (122 bits of entropy).
+ * Previous implementation combined `Date.now()` + 31 bits of
+ * `Math.random()`, which was guessable from a co-resident dapp tab
+ * and let an attacker forge APPROVE_/REJECT_REQUEST messages.
+ */
 function genId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  (globalThis.crypto ?? (require("node:crypto") as Crypto)).getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * SECURITY: every chrome.runtime.onMessage handler must verify the
+ * sender, otherwise:
+ *   - A co-installed malicious extension can call
+ *     `chrome.runtime.sendMessage(OUR_EXTENSION_ID, ...)` and drive
+ *     our provider APIs (CONNECT/SIGN_MESSAGE/SIGN_PSBT/SEND_TRANSFER)
+ *     while spoofing `sender.tab.url` to make us record a wrong origin.
+ *   - The same extension can call APPROVE_REQUEST/REJECT_REQUEST to
+ *     consent on the user's behalf without a popup ever opening.
+ *
+ * We only ever accept messages from our own extension. Anything else
+ * is rejected and audited.
+ */
+function isOwnSender(sender: chrome.runtime.MessageSender): boolean {
+  // sender.id is set for both content-script and extension-page
+  // senders. Cross-extension messages also carry sender.id but it'll
+  // be the *other* extension's id.
+  return sender?.id === chrome.runtime.id;
+}
+
+/**
+ * Approve-popup messages additionally must come from an extension
+ * page (popup.html / sidepanel.html), not a content script. Content
+ * scripts have `sender.tab` populated; extension pages don't (unless
+ * the page is loaded inside a tab, which we treat the same way as a
+ * popup since it's still our extension origin).
+ */
+function isInternalUiSender(sender: chrome.runtime.MessageSender): boolean {
+  if (!isOwnSender(sender)) return false;
+  const url = sender.url ?? "";
+  if (!url) return true; // direct service-worker -> service-worker (rare)
+  // chrome-extension://<id>/popup.html ... or sidepanel.html
+  if (url.startsWith(chrome.runtime.getURL("/popup.html"))) return true;
+  if (url.startsWith(chrome.runtime.getURL("/sidepanel.html"))) return true;
+  // chrome-extension://<id>/ for anything else our extension serves.
+  return url.startsWith(chrome.runtime.getURL("/"));
 }
 
 /**
@@ -71,26 +120,37 @@ async function lockNow(): Promise<void> {
 }
 
 /**
+ * Deliver an RPC response back to the originating dapp tab only. We
+ * used to broadcast to every tab via `chrome.tabs.query({})` which
+ * widened leakage of signatures / PSBT bytes: any page with the
+ * content script injected could observe other dapps' responses if it
+ * could correlate request ids. Per-tab routing closes that hole.
+ */
+function deliverResponseToTab(
+  sourceTabId: number | undefined,
+  requestId: string,
+  response: { success: boolean; data?: unknown; error?: string },
+): void {
+  if (typeof sourceTabId !== "number") return;
+  chrome.tabs
+    .sendMessage(sourceTabId, {
+      channel: "arch-wallet-provider",
+      direction: "to-page",
+      requestId,
+      response,
+    })
+    .catch(() => {});
+}
+
+/**
  * Reject every still-pending dapp request that originated from a window
  * we're about to close. Called both on chrome.windows.onRemoved and on
  * the alarms-based GC sweep.
  */
 async function rejectAndCleanup(requestId: string, reason: string): Promise<void> {
+  const pending = await pendingRequestsStore.get(requestId);
   await pendingRequestsStore.remove(requestId);
-  chrome.tabs.query({}, (tabs) => {
-    for (const tab of tabs) {
-      if (tab.id) {
-        chrome.tabs
-          .sendMessage(tab.id, {
-            channel: "arch-wallet-provider",
-            direction: "to-page",
-            requestId,
-            response: { success: false, error: reason },
-          })
-          .catch(() => {});
-      }
-    }
-  });
+  deliverResponseToTab(pending?.sourceTabId, requestId, { success: false, error: reason });
 }
 
 export default defineBackground(() => {
@@ -146,21 +206,48 @@ export default defineBackground(() => {
 
   chrome.runtime.onMessage.addListener(
     (message: any, sender, sendResponse: (r: any) => void) => {
+      // SECURITY: reject any cross-extension message outright. The
+      // chrome runtime allows other extensions to address us by ID; if
+      // we don't filter, they can drive every code path below.
+      if (!isOwnSender(sender)) {
+        console.warn("[arch-wallet] dropping message from unknown sender", {
+          senderId: sender?.id,
+          ourId: chrome.runtime.id,
+          messageType: message?.type,
+        });
+        sendResponse({ id: message?.id, success: false, error: "Sender not authorized" });
+        return false;
+      }
 
-      // --- Internal messages from the Approve popup ---
+      // --- Internal messages from the Approve popup / side panel ---
+      // These all mutate state on the user's behalf (consenting to a
+      // dapp request) so they MUST originate from our own UI, never
+      // from a content script. `isInternalUiSender` enforces that.
 
       if (message?.type === "GET_PENDING_REQUEST") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse(null);
+          return false;
+        }
         pendingRequestsStore.get(message.requestId).then((req) => sendResponse(req ?? null));
         return true;
       }
 
       if (message?.type === "USER_ACTIVE") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ ok: false });
+          return false;
+        }
         rescheduleAutoLock();
         sendResponse({ ok: true });
         return false;
       }
 
       if (message?.type === "APPROVE_CONNECT") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ ok: false, error: "Not authorized" });
+          return false;
+        }
         (async () => {
           const accountId = message.account?.address ?? "";
           await walletStore.connectSite(message.origin, {
@@ -171,20 +258,11 @@ export default defineBackground(() => {
             accountId,
             permissions: message.permissions ?? { ...DEFAULT_SITE_PERMISSIONS },
           });
+          const pending = await pendingRequestsStore.get(message.requestId);
           await pendingRequestsStore.remove(message.requestId);
-          chrome.tabs.query({}, (tabs) => {
-            for (const tab of tabs) {
-              if (tab.id) {
-                chrome.tabs
-                  .sendMessage(tab.id, {
-                    channel: "arch-wallet-provider",
-                    direction: "to-page",
-                    requestId: message.requestId,
-                    response: { success: true, data: message.account },
-                  })
-                  .catch(() => {});
-              }
-            }
+          deliverResponseToTab(pending?.sourceTabId, message.requestId, {
+            success: true,
+            data: message.account,
           });
           sendResponse({ ok: true });
         })();
@@ -192,21 +270,16 @@ export default defineBackground(() => {
       }
 
       if (message?.type === "APPROVE_REQUEST") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ ok: false, error: "Not authorized" });
+          return false;
+        }
         (async () => {
+          const pending = await pendingRequestsStore.get(message.requestId);
           await pendingRequestsStore.remove(message.requestId);
-          chrome.tabs.query({}, (tabs) => {
-            for (const tab of tabs) {
-              if (tab.id) {
-                chrome.tabs
-                  .sendMessage(tab.id, {
-                    channel: "arch-wallet-provider",
-                    direction: "to-page",
-                    requestId: message.requestId,
-                    response: { success: true, data: message.result },
-                  })
-                  .catch(() => {});
-              }
-            }
+          deliverResponseToTab(pending?.sourceTabId, message.requestId, {
+            success: true,
+            data: message.result,
           });
           sendResponse({ ok: true });
         })();
@@ -214,6 +287,10 @@ export default defineBackground(() => {
       }
 
       if (message?.type === "REJECT_REQUEST") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ ok: false, error: "Not authorized" });
+          return false;
+        }
         rejectAndCleanup(message.requestId, "User rejected the request").then(() =>
           sendResponse({ ok: true }),
         );
@@ -221,6 +298,13 @@ export default defineBackground(() => {
       }
 
       // --- Provider messages from content scripts ---
+      // These MUST come from a tab (sender.tab is set), not from
+      // another extension page (extension page messages should be the
+      // internal handlers above).
+      if (!sender.tab?.id || !sender.tab?.url) {
+        sendResponse({ id: message?.id, success: false, error: "Provider messages require a tab context" });
+        return false;
+      }
       handleProviderRequest(message, sender)
         .then(sendResponse)
         .catch((err) => {
@@ -247,11 +331,16 @@ export default defineBackground(() => {
   }
 
   async function handleProviderRequest(msg: any, sender: chrome.runtime.MessageSender) {
-    const origin = sender.tab?.url
-      ? new URL(sender.tab.url).origin
-      : sender.url
-        ? new URL(sender.url).origin
-        : "unknown";
+    // Origin derivation: only from sender.tab.url. We already
+    // rejected non-tab senders above, so `sender.tab.url` is the
+    // authoritative source. Do NOT fall back to `sender.url` because
+    // for cross-extension messages that field would be attacker-set
+    // (and we've rejected those above, but keep this defensive).
+    const tabUrl = sender.tab?.url ?? "";
+    if (!tabUrl) {
+      return { id: msg?.id, success: false, error: "Missing tab origin" };
+    }
+    const origin = new URL(tabUrl).origin;
     const sourceTabId = sender.tab?.id;
     const dappName = sender.tab?.title;
     const dappIconUrl = sender.tab?.favIconUrl;
@@ -264,6 +353,15 @@ export default defineBackground(() => {
       }
       case "GET_ACCOUNT": {
         if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
+        // SECURITY: previously we returned address/pubkey to ANY site
+        // the extension was injected into (which is `<all_urls>`).
+        // Connecting requires user consent; identity reads must too,
+        // otherwise every banking/healthcare/etc. site fingerprints
+        // the user's wallet without opt-in.
+        const connected = await walletStore.isSiteConnected(origin);
+        if (!connected) {
+          return { id: msg.id, success: false, error: "Site not connected" };
+        }
         const account = await walletStore.getAccountForOrigin(origin);
         if (!account) return { id: msg.id, success: false, error: "No active account" };
         return {
@@ -325,10 +423,22 @@ export default defineBackground(() => {
         const connected = await walletStore.isSiteConnected(origin);
         if (!connected) return { id: msg.id, success: false, error: "Site not connected" };
 
-        // Per-origin permissions: if the user has granted blanket
-        // auto-approval for this method, the request is fulfilled
-        // without spawning a popup. Today we still require a popup for
-        // every signing request; this scaffold makes Phase 3.2 trivial.
+        // Per-origin permissions.
+        //
+        // SECURITY POSTURE (2026-05): the previous scaffold computed
+        // `allowsAuto` and stamped it onto every PendingRequest, but
+        // never actually consumed it. The popup-bypass path that would
+        // have honored the flag was never wired, leaving a footgun: a
+        // future change that connects the popup-skip path would
+        // instantly become a silent-sign vector for any dapp that ever
+        // received an auto-approve permission.
+        //
+        // We now compute `allowsAuto` ONLY for telemetry/UX hinting in
+        // the popup ("This site has auto-approve enabled — Approve in
+        // one click") and never persist it as a directive. Silent
+        // signing requires a separate, deliberate code path with its
+        // own re-auth gate; until that exists, no message-type can
+        // bypass the approval popup.
         const permissions = await walletStore.getSitePermissions(origin);
         const allowsAuto =
           permissions &&
@@ -347,6 +457,8 @@ export default defineBackground(() => {
           dappIconUrl,
           createdAt: Date.now(),
           sourceTabId,
+          // UI-only hint; the background NEVER acts on this flag
+          // (popup is always opened above via `openApprovalPopup`).
           autoApproveAllowed: !!allowsAuto,
         };
         const windowId = await openApprovalPopup(req);

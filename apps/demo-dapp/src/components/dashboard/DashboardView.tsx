@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
-import type { ArchNetwork, WalletOverviewResponse } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import type { ArchNetwork, WalletOverviewResponse } from "@arch-network/wallet-hub-sdk";
 import type { ConnectedWallet } from "../../types";
 import AddressDisplay from "../shared/AddressDisplay";
 import TokenList from "./TokenList";

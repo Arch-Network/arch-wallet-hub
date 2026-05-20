@@ -33,7 +33,7 @@
 
 import { Turnkey } from "@turnkey/sdk-browser";
 import type { WalletAccount } from "../state/types";
-import { TURNKEY_API_BASE_URL } from "./constants";
+import { PASSKEY_RP_ID, TURNKEY_API_BASE_URL } from "./constants";
 import type { SessionBootstrap } from "./types";
 
 function base64UrlToBytes(value: string): Uint8Array {
@@ -63,15 +63,14 @@ function allowCredentialsForAccount(
 }
 
 function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
-  // rpId must match the WebAuthn relying party recorded at
-  // registration. In dev that's localhost; in production it's
-  // whatever document.location.hostname resolves to inside the
-  // extension popup/sidepanel context.
-  const hostname = globalThis.location?.hostname ?? "localhost";
+  // rpId is pinned in constants.ts and never derives from runtime
+  // location. See PASSKEY_RP_ID for rationale (RP confusion + ext-id
+  // drift). The id is the same across popup, sidepanel and tab
+  // contexts and across extension-id changes.
   return new Turnkey({
     apiBaseUrl: TURNKEY_API_BASE_URL,
     defaultOrganizationId: account.organizationId,
-    rpId: hostname === "localhost" ? "localhost" : hostname,
+    rpId: PASSKEY_RP_ID,
   });
 }
 
@@ -89,9 +88,15 @@ export class PasskeyBootstrap implements SessionBootstrap {
     // authenticator. Turnkey's policy engine pins the new "Login
     // API key" to the same user that owns the stamping credential,
     // so we don't have to pass userId explicitly.
+    //
+    // SECURITY: we force `userVerification: "required"` so that a
+    // hardware key satisfying mere user-presence (button tap, no
+    // biometric/PIN) is rejected. The unlock gate must be a real UV
+    // factor.
     await tk.passkeyClient({
       allowCredentials: allowCredentialsForAccount(args.account),
-    }).stampLogin({
+      userVerification: "required",
+    } as any).stampLogin({
       publicKey: args.publicKeyHex,
       expirationSeconds: String(args.expirationSeconds),
       // Don't invalidate prior keys -- if we did, recovering on a

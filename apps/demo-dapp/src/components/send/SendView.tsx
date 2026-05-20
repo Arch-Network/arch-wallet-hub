@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import type { WalletHubClient, ArchNetwork } from "@arch/wallet-hub-sdk";
+import type { WalletHubClient, ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
 import type { ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";

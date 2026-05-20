@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 // @ts-ignore - sats-connect types
 import { request } from "sats-connect";
 import { Turnkey } from "@turnkey/sdk-browser";

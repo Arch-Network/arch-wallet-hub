@@ -172,15 +172,26 @@ export const DEFAULT_HUB_BASE_URL =
  * client without per-user provisioning. (Individual wallet auth still
  * happens server-side via Turnkey + sub-org isolation.)
  *
- * If a future build needs a different key (e.g. dev vs prod), set
- * `globalThis.__ARCH_WALLET_DEFAULT_HUB_API_KEY` before this module
- * loads -- the override takes precedence. The wallet-store migration
- * also rewrites stale keys (`LEGACY_HUB_API_KEY` -> this value) so
- * upgrades don't require re-onboarding.
+ * Resolution order (first non-empty wins):
+ *   1. `globalThis.__ARCH_WALLET_DEFAULT_HUB_API_KEY` (test/runtime override)
+ *   2. `import.meta.env.WXT_HUB_API_KEY` (production build, set via CI secret)
+ *   3. `import.meta.env.WXT_HUB_API_KEY_DEV` (developer .env.local)
+ *   4. empty string -> Hub returns 401 until the user supplies one via Settings
+ *
+ * NO literal default is baked into source; this avoids re-leaking a key
+ * if a build ever ships without env vars. The wallet-store migration
+ * rewrites known stale keys (`LEGACY_HUB_API_KEY`) forward to the
+ * env-supplied value.
  */
+const buildHubKey =
+  ((import.meta as any)?.env?.WXT_HUB_API_KEY as string | undefined) ?? "";
+const devHubKey =
+  ((import.meta as any)?.env?.WXT_HUB_API_KEY_DEV as string | undefined) ?? "";
 export const DEFAULT_HUB_API_KEY =
   ((globalThis as any).__ARCH_WALLET_DEFAULT_HUB_API_KEY as string | undefined) ||
-  "OZfoD0ZJh6kQpd3Lr4TvLbnocS2g_eooZlQ7VEfbE4M";
+  buildHubKey ||
+  devHubKey ||
+  "";
 
 export const MAX_RECENT_RECIPIENTS = 20;
 export const MAX_CONTACTS = 100;

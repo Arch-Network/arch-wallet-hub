@@ -67,12 +67,41 @@ export async function getSigningRequestForApp(client: PoolClient, params: {
   return res.rows[0] ?? null;
 }
 
+/**
+ * Like `getSigningRequestForApp` but takes a row-level lock for the
+ * duration of the surrounding transaction. Use this anywhere we are
+ * about to transition status (e.g. pending -> submitted) so two
+ * concurrent submits can't both observe `pending` and both proceed.
+ */
+export async function getSigningRequestForAppForUpdate(client: PoolClient, params: {
+  id: string;
+  appId: string;
+}): Promise<SigningRequestRow | null> {
+  const res = await client.query<SigningRequestRow>(
+    `SELECT * FROM signing_requests WHERE id = $1 AND app_id = $2 FOR UPDATE`,
+    [params.id, params.appId]
+  );
+  return res.rows[0] ?? null;
+}
+
+/**
+ * Atomically transition a signing request from `pending` -> `submitted`.
+ *
+ * Returns `true` if this caller won the race and the row transitioned.
+ * Returns `false` if another caller already submitted the row (or it
+ * was expired / cancelled). Callers MUST treat `false` as
+ * "another concurrent submission already happened, abort this one"
+ * to avoid double-submitting the same signature to Arch.
+ *
+ * The `AND status = 'pending'` precondition is what makes this safe
+ * even without a row-level lock around the surrounding RPC work.
+ */
 export async function markSigningRequestSubmitted(client: PoolClient, params: {
   id: string;
   submittedSignatureJson: unknown;
   resultJson?: unknown;
-}) {
-  await client.query(
+}): Promise<boolean> {
+  const res = await client.query(
     `
       UPDATE signing_requests
       SET
@@ -81,9 +110,11 @@ export async function markSigningRequestSubmitted(client: PoolClient, params: {
         result_json = COALESCE($3::jsonb, result_json),
         updated_at = NOW()
       WHERE id = $1
+        AND status = 'pending'
     `,
     [params.id, JSON.stringify(params.submittedSignatureJson), params.resultJson ? JSON.stringify(params.resultJson) : null]
   );
+  return (res.rowCount ?? 0) > 0;
 }
 
 export async function markSigningRequestSucceeded(client: PoolClient, params: {

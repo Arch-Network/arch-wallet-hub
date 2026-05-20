@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Build stage
 FROM node:20-alpine AS builder
 
@@ -9,19 +10,20 @@ WORKDIR /app
 # Copy and build SDK
 COPY packages/wallet-hub-sdk /app/packages/wallet-hub-sdk
 WORKDIR /app/packages/wallet-hub-sdk
-RUN npm install && npm run build
+RUN npm ci || npm install \
+ && npm run build
 
 # Copy UI source, rewrite SDK dep to file: reference, install deps (skip lifecycle), build
 COPY packages/wallet-hub-ui /app/packages/wallet-hub-ui
 WORKDIR /app/packages/wallet-hub-ui
-RUN npm pkg set "dependencies.@arch/wallet-hub-sdk=file:../wallet-hub-sdk" \
-    && npm install --ignore-scripts \
-    && npm run build
+RUN npm pkg set "dependencies.@arch-network/wallet-hub-sdk=file:../wallet-hub-sdk" \
+ && npm install --ignore-scripts \
+ && npm run build
 
 # Copy and build frontend
 WORKDIR /app/apps/demo-dapp
 COPY apps/demo-dapp/package.json apps/demo-dapp/package-lock.json* ./
-RUN npm install
+RUN npm ci || npm install
 COPY apps/demo-dapp ./
 
 ENV VITE_WALLET_HUB_BASE_URL=$VITE_WALLET_HUB_BASE_URL
@@ -29,13 +31,31 @@ ENV VITE_WALLET_HUB_API_KEY=$VITE_WALLET_HUB_API_KEY
 RUN npm run build
 
 # Production stage - nginx
-FROM nginx:alpine
+#
+# SECURITY:
+#   - Listen on port 8080 (unprivileged) so we can drop root.
+#   - Run as the unprivileged `nginx` user that ships with the image.
+#   - Add a /healthz file so ALB health checks don't depend on the
+#     SPA's index.html being fetched.
+FROM nginx:1.27-alpine
 
-ARG NGINX_CONF=deploy/nginx.conf.template
+ARG NGINX_CONF=deploy/nginx-fargate.conf.template
 
 COPY --from=builder /app/apps/demo-dapp/dist /usr/share/nginx/html
-COPY ${NGINX_CONF} /etc/nginx/templates/default.conf.template
+COPY ${NGINX_CONF} /etc/nginx/conf.d/default.conf
+COPY deploy/nginx-non-root.conf /etc/nginx/nginx.conf
 
-EXPOSE 80 443
+# Quick reachability + health probe target.
+RUN printf 'ok' > /usr/share/nginx/html/healthz \
+ # Make the dirs nginx needs writable by uid 101.
+ && touch /var/run/nginx.pid \
+ && chown -R nginx:nginx /var/cache/nginx /var/run/nginx.pid /etc/nginx /usr/share/nginx/html
+
+USER nginx
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -q -O - "http://127.0.0.1:8080/healthz" || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

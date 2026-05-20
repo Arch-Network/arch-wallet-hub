@@ -1,0 +1,106 @@
+import Svg, { Path, Rect } from "react-native-svg";
+
+interface IconProps {
+  size?: number;
+  color?: string;
+  strokeWidth?: number;
+}
+
+export function ArchLogoIcon({ size = 28, color = "#c19a5b" }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="-310 -10 1220 900" fill="none">
+      <Path
+        d="M554.569 873.994H514.625C510.446 873.994 506.52 871.884 504.291 868.317L311.385 560.676C306.851 553.492 299.784 552.713 296.947 552.713C294.136 552.713 286.968 553.467 282.51 560.676L89.6039 868.317C87.3749 871.884 83.4489 873.994 79.2696 873.994H39.3258C29.7767 873.994 23.951 863.569 28.9915 855.531L233.093 530.181C246.923 508.076 270.833 494.963 297.023 494.963C323.239 494.963 347.124 508.076 360.954 530.181L565.055 855.531C570.096 863.569 564.295 873.994 554.721 873.994H554.569Z"
+        fill={color}
+      />
+      <Path
+        d="M666.206 873.996H626.077C621.878 873.996 617.934 871.878 615.695 868.297L323.37 402.476C317.543 393.221 308.026 387.951 297.033 387.951C286.066 387.951 276.447 393.221 270.696 402.476L-21.6288 868.297C-23.868 871.878 -27.8122 873.996 -32.0108 873.996H-72.1394C-81.7326 873.996 -87.5852 863.53 -82.5214 855.461L220.975 371.887C237.438 345.635 265.836 329.975 297.033 329.975C312.632 329.975 327.467 333.884 340.597 341.122C353.625 348.334 364.873 358.799 373.092 371.887L676.562 855.461C681.651 863.53 675.799 873.996 666.206 873.996Z"
+        fill={color}
+      />
+      <Path
+        d="M773.154 873.998H733.294C729.124 873.998 725.206 871.875 722.982 868.287L334.821 244.229C326.48 230.861 312.679 223.205 296.907 223.205C281.135 223.205 267.36 230.861 258.993 244.229L-129.143 868.287C-131.367 871.875 -135.285 873.998 -139.455 873.998H-179.315C-188.844 873.998 -194.658 863.511 -189.628 855.424L209.68 213.476C228.157 183.759 259.853 165.691 294.784 165.009C331.585 164.251 365.834 183.835 385.322 215.093L783.619 855.349C788.648 863.435 782.86 873.922 773.306 873.922L773.154 873.998Z"
+        fill={color}
+      />
+      <Path
+        d="M884.642 873.999H844.655C840.471 873.999 836.541 871.874 834.31 868.281L346.734 85.8787C335.806 68.3182 317.676 58.2475 296.909 58.2475C276.142 58.2475 258.038 68.3182 247.084 85.8787L-240.466 868.281C-242.697 871.874 -246.627 873.999 -250.811 873.999H-290.798C-300.357 873.999 -306.189 863.499 -301.143 855.401L197.64 55.0846C219.167 20.6469 256.263 -0.000610352 297.011 -0.000610352C337.784 -0.000610352 374.854 20.5456 396.382 55.0846L895.139 855.401C900.185 863.499 894.379 873.999 884.819 873.999H884.642Z"
+        fill={color}
+      />
+    </Svg>
+  );
+}
+
+export function SendIcon({ size = 22, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M22 2L11 13" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M22 2L15 22l-4-9-9-4 20-7z" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function ReceiveIcon({ size = 22, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M12 3v13" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M5 12l7 7 7-7" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M3 21h18" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function AirdropIcon({ size = 22, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M12 2v6" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M8 6l4 4 4-4" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M4 14c0 4.4 3.6 8 8 8s8-3.6 8-8" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M7 13.5C7 11 9.2 9 12 9s5 2 5 4.5" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function SpinnerIcon({ size = 22, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M21 12a9 9 0 1 1-6.2-8.6" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function TokensIcon({ size = 22, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Rect x="3" y="3" width="7" height="7" rx="1" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Rect x="14" y="3" width="7" height="7" rx="1" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Rect x="3" y="14" width="7" height="7" rx="1" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Rect x="14" y="14" width="7" height="7" rx="1" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function HomeIcon({ size = 20, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M9 22V12h6v10" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function HistoryIcon({ size = 20, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M12 8v4l3 3" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M3.05 11a9 9 0 1 1 .5 4m-.5 5v-5h5" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+export function SettingsIcon({ size = 20, color = "#c19a5b", strokeWidth = 1.8 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}

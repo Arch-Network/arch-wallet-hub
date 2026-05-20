@@ -9,6 +9,8 @@ import { registerTurnkey } from "./plugins/turnkey.js";
 import { registerIndexer } from "./plugins/indexer.js";
 import { registerAppAuth } from "./plugins/appAuth.js";
 import { registerCors } from "./plugins/cors.js";
+import { registerSecurityHeaders } from "./plugins/securityHeaders.js";
+import { registerRateLimit } from "./plugins/rateLimit.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
@@ -37,6 +39,7 @@ export async function createServer() {
           "req.headers.authorization",
           "req.headers.cookie",
           "req.headers['x-api-key']",
+          "req.headers['x-admin-api-key']",
           "req.headers['turnkey-api-private-key']",
           "req.headers['turnkey-api-public-key']",
           "req.headers['x-turnkey-api-private-key']",
@@ -49,7 +52,15 @@ export async function createServer() {
     genReqId(req) {
       // If client provides x-request-id, Fastify will use it; otherwise generate a short one.
       return req.headers["x-request-id"]?.toString() ?? crypto.randomUUID();
-    }
+    },
+    // Behind ALB / CloudFront we receive X-Forwarded-For; opt in so
+    // `request.ip` reflects the real client. Required for per-IP rate
+    // limiting and audit-log correctness.
+    trustProxy: true,
+    // Hard cap on request body size. Largest legitimate payload is a
+    // signed PSBT or Arch transaction (well under 256 KiB); the
+    // default 1 MiB leaves room for JSON parse DoS.
+    bodyLimit: 256 * 1024
   });
 
   server.decorate("config", config);
@@ -59,6 +70,9 @@ export async function createServer() {
   );
 
   await server.register(sensible);
+  // Security headers run before everything so even error responses
+  // carry them.
+  await server.register(registerSecurityHeaders);
   // CORS must run before auth so OPTIONS preflights don't get rejected.
   await server.register(registerCors);
   await server.register(registerObservability);
@@ -67,6 +81,9 @@ export async function createServer() {
   await server.register(registerIndexer);
   await server.register(registerOpenApi, { basePath: "/v1" });
   await server.register(registerAppAuth);
+  // Rate limit AFTER appAuth so the keyGenerator can use the
+  // authenticated apiKeyId.
+  await server.register(registerRateLimit);
   await server.register(registerHealthRoutes, { prefix: "/v1" });
   await server.register(registerPlatformRoutes, { prefix: "/v1" });
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });

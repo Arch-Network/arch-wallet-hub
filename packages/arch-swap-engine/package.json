@@ -14,7 +14,7 @@
     "@bitcoinerlab/secp256k1": "^1.2.0",
     "@saturnbtcio/arch-sdk": "^0.0.24",
     "@saturnbtcio/bip322-js": "^3.0.1",
-    "bitcoinjs-lib": "^6.1.7"
+    "bitcoinjs-lib": "^7.0.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.0",

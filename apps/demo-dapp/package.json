@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@arch/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
+    "@arch-network/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
     "@arch/wallet-hub-ui": "file:../../packages/wallet-hub-ui",
     "@scure/btc-signer": "^2.0.1",
     "@turnkey/sdk-browser": "^5.2.1",

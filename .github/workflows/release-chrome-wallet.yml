@@ -16,12 +16,14 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: write
+# Default deny; each job opts into only what it needs.
+permissions: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -29,10 +31,10 @@ jobs:
       zip-name: ${{ steps.zip.outputs.name }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: "20"
           cache: "npm"
@@ -52,13 +54,13 @@ jobs:
       - name: Build wallet-hub-sdk
         working-directory: packages/wallet-hub-sdk
         run: |
-          npm install
+          npm ci || npm install
           npm run build
 
       - name: Build arch-swap-engine
         working-directory: packages/arch-swap-engine
         run: |
-          npm install
+          npm ci || npm install
           npm run build
 
       - name: Install chrome-wallet dependencies
@@ -73,6 +75,9 @@ jobs:
 
       - name: Build extension
         working-directory: apps/chrome-wallet
+        env:
+          WXT_HUB_API_KEY: ${{ secrets.WXT_HUB_API_KEY }}
+          WXT_INDEXER_API_KEY: ${{ secrets.WXT_INDEXER_API_KEY }}
         run: npm run build
 
       - name: Create zip archive
@@ -89,7 +94,7 @@ jobs:
           echo "name=arch-wallet-${{ steps.version.outputs.version }}.zip" >> "$GITHUB_OUTPUT"
 
       - name: Upload zip artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: extension-zip
           path: apps/chrome-wallet/${{ steps.zip.outputs.path }}
@@ -97,14 +102,16 @@ jobs:
   github-release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download zip artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: extension-zip
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@01570a1f39cb168c169c802c3bceb9e93fb10974 # v2.1.0
         with:
           tag_name: ${{ needs.build.outputs.tag }}
           name: "Arch Wallet v${{ needs.build.outputs.version }}"
@@ -133,6 +140,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: ${{ !inputs.skip_cws }}
+    # Minimal scope: this job only needs to download the artifact and
+    # publish to the Chrome Web Store. No repo write needed.
+    permissions:
+      contents: read
     steps:
       - name: Check CWS secrets are configured
         run: |
@@ -158,19 +169,22 @@ jobs:
 
       - name: Download zip artifact
         if: steps.check.outputs.skip != 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
         with:
           name: extension-zip
 
       - name: Setup Node.js
         if: steps.check.outputs.skip != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
           node-version: "20"
 
-      - name: Install chrome-webstore-upload-cli
+      - name: Install chrome-webstore-upload-cli (pinned)
         if: steps.check.outputs.skip != 'true'
-        run: npm install -g chrome-webstore-upload-cli
+        # Pinned to a specific version so an unattended global `npm
+        # install` does not pull a future compromised release on top of
+        # CWS refresh-token-bearing job context.
+        run: npm install -g chrome-webstore-upload-cli@3.3.2
 
       - name: Upload to Chrome Web Store
         if: steps.check.outputs.skip != 'true'

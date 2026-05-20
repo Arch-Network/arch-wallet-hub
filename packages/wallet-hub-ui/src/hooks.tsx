@@ -1,12 +1,42 @@
 import { useCallback, useMemo, useState } from "react";
-import { WalletHubClient } from "@arch/wallet-hub-sdk";
+import {
+  WalletHubClient,
+  type PortfolioResponse,
+  type WalletHubClientOptions,
+} from "@arch-network/wallet-hub-sdk";
 
-export function useWalletHubClient(params: { baseUrl: string; apiKey: string }) {
-  return useMemo(() => new WalletHubClient(params), [params.baseUrl, params.apiKey]);
+/**
+ * Build (and memoise) a `WalletHubClient`.
+ *
+ * Hardened in the 2026-05 pass:
+ *   - `apiKey` is no longer required at the type level (it's a
+ *     platform gate that may be injected by a reverse proxy; dApps
+ *     using a session-token model never need to ship one).
+ *   - `sessionToken` is the per-user credential. Callers should pass
+ *     it (or call `client.setSessionToken`) after they obtain it
+ *     from `verifyWalletLinkChallenge`.
+ *   - The constructor enforces `https://` on `baseUrl` (except for
+ *     localhost dev hosts), and the client itself adds a default
+ *     request timeout.
+ */
+export function useWalletHubClient(
+  params: Pick<
+    WalletHubClientOptions,
+    "baseUrl" | "apiKey" | "sessionToken" | "network" | "requestTimeoutMs"
+  >,
+) {
+  return useMemo(
+    () => new WalletHubClient(params),
+    // Each piece of identity matters for memoisation.
+    [params.baseUrl, params.apiKey, params.sessionToken, params.network, params.requestTimeoutMs],
+  );
 }
 
-export function usePortfolio(params: { client: WalletHubClient; address: string | null }) {
-  const [data, setData] = useState<unknown | null>(null);
+export function usePortfolio(params: {
+  client: WalletHubClient;
+  address: string | null;
+}) {
+  const [data, setData] = useState<PortfolioResponse | null>(null);
   const [error, setError] = useState<unknown | null>(null);
   const [loading, setLoading] = useState(false);
 

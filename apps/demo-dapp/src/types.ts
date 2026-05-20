@@ -1,4 +1,4 @@
-import type { WalletHubClient } from "@arch/wallet-hub-sdk";
+import type { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 
 export type WalletType = "xverse" | "unisat" | "turnkey";
 

@@ -1,4 +1,4 @@
-import type { GetSigningRequestResponse, SigningRequestReadiness } from "@arch/wallet-hub-sdk";
+import type { GetSigningRequestResponse, SigningRequestReadiness } from "@arch-network/wallet-hub-sdk";
 
 export function SigningRequestStatus(props: {
   signingRequest: GetSigningRequestResponse;
