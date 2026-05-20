@@ -50,8 +50,12 @@ export function computeBip322ToSignTaprootSighash(params: {
   });
   const psbt = Psbt.fromBase64(psbtBase64);
 
-  // Verify that tapInternalKey was set correctly in the PSBT
-  const psbtTapInternalKey = psbt.data.inputs[0]?.tapInternalKey;
+  // Verify that tapInternalKey was set correctly in the PSBT.
+  // bitcoinjs-lib v7+ types this field as a plain Uint8Array (no .equals /
+  // .toString("hex")), so wrap in Buffer for the comparison and the
+  // hex-encoded error message.
+  const psbtTapInternalKeyRaw = psbt.data.inputs[0]?.tapInternalKey;
+  const psbtTapInternalKey = psbtTapInternalKeyRaw ? Buffer.from(psbtTapInternalKeyRaw) : undefined;
   if (!psbtTapInternalKey || !psbtTapInternalKey.equals(xOnlyPubkey)) {
     throw new Error(`PSBT tapInternalKey mismatch: expected ${xOnlyPubkey.toString("hex")}, got ${psbtTapInternalKey?.toString("hex") ?? "undefined"}`);
   }
@@ -126,11 +130,12 @@ export function computeBip322ToSignTaprootSighash(params: {
       }
     }
     
-    // Replicate Verifier.getHashForSigP2TR exactly (line 308)
+    // Replicate Verifier.getHashForSigP2TR exactly (line 308).
+    // bitcoinjs-lib v7+ requires bigint values here.
     const prevoutScript = witnessUtxo.script;
-    const prevoutValue = 0;
+    const prevoutValue = 0n;
     const SIGHASH_DEFAULT = 0x00;
-    
+
     const digest = toSignTx.hashForWitnessV1(
       0,
       [prevoutScript],

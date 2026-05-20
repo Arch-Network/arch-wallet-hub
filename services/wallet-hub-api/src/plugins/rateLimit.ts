@@ -36,8 +36,11 @@ const rateLimitPlugin: FastifyPluginAsync = async (server) => {
       "x-ratelimit-reset": true,
       "retry-after": true,
     },
-    // Health & docs aren't worth counting.
-    skip(req) {
+    // Health & docs aren't worth counting. `@fastify/rate-limit` 9.x uses
+    // `allowList`, not `skip` (the latter was silently ignored, so prior
+    // to this rename health checks were actually counting against the
+    // 300/min/key quota).
+    allowList(req: FastifyRequest) {
       const url = req.url || "";
       if (url === "/v1/health" || url.startsWith("/v1/health/")) return true;
       if (url.startsWith("/v1/docs") || url.startsWith("/documentation")) return true;

@@ -103,21 +103,24 @@ async function buildUnsignedPsbt(params: {
   const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
   const psbt = new bitcoin.Psbt({ network });
 
+  // bitcoinjs-lib v7+ takes bigint for PSBT value fields. Our utxo / fee
+  // / change math runs in `number` (safe for any realistic BTC amount in
+  // sats), so we only convert at the PSBT boundary.
   for (const utxo of selected) {
     psbt.addInput({
       hash: utxo.txid,
       index: utxo.vout,
       witnessUtxo: {
         script: bitcoin.address.toOutputScript(fromAddress, network),
-        value: utxo.value,
+        value: BigInt(utxo.value),
       },
     });
   }
 
-  psbt.addOutput({ address: toAddress, value: amountSats });
+  psbt.addOutput({ address: toAddress, value: BigInt(amountSats) });
 
   if (changeSats > 546) {
-    psbt.addOutput({ address: fromAddress, value: changeSats });
+    psbt.addOutput({ address: fromAddress, value: BigInt(changeSats) });
   }
 
   return {

@@ -15,7 +15,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const registerDb: FastifyPluginAsync = async (server) => {
+  // env.ts guarantees DATABASE_URL is set after env validation (either
+  // passed directly or synthesized from DB_HOST/DB_PORT/etc.), but the
+  // Zod schema types it as optional. Re-check at the boundary so tsc
+  // can narrow it for the rest of this function.
   const rawConnStr = server.config.DATABASE_URL;
+  if (!rawConnStr) {
+    throw new Error("DATABASE_URL is required but missing after env validation");
+  }
   const needsSsl = /sslmode=(require|verify)/i.test(rawConnStr);
   const connStr = needsSsl
     ? rawConnStr.replace(/[?&]sslmode=(require|verify-ca|verify-full|no-verify)[^&]*/gi, "")
