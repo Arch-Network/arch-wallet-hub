@@ -4,24 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Arch Wallet</title>
-    <!-- See popup/index.html for why this runs in the head; same reason. -->
-    <script>
-      (function () {
-        if (typeof globalThis.global === "undefined") globalThis.global = globalThis;
-        if (typeof globalThis.process === "undefined") {
-          globalThis.process = {
-            env: {},
-            version: "v20.0.0",
-            browser: true,
-            platform: "browser",
-            nextTick: function (cb) {
-              var args = Array.prototype.slice.call(arguments, 1);
-              queueMicrotask(function () { cb.apply(null, args); });
-            },
-          };
-        }
-      })();
-    </script>
+    <!-- See popup/index.html for why this is an external script; same reason (MV3 CSP blocks inline). -->
+    <script src="/node-globals-shim.js"></script>
   </head>
   <body data-mode="sidepanel">
     <div id="root"></div>

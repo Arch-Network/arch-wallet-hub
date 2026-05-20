@@ -1,11 +1,12 @@
 {
   "name": "@arch/chrome-wallet",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
+    "postbuild": "node scripts/check-no-inline-scripts.mjs",
     "zip": "wxt zip",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
