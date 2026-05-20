@@ -14,6 +14,7 @@ export type SwapValidation =
   | { kind: "quote-loading" }
   | { kind: "quote-failed"; message: string }
   | { kind: "custodial-unsupported" }
+  | { kind: "external-unsupported" }
   | { kind: "valid" };
 
 type Props = {
@@ -39,6 +40,8 @@ function labelFor(validation: SwapValidation, isSubmitting: boolean): ReactNode 
       return "Retry quote";
     case "custodial-unsupported":
       return "Email wallet swaps coming soon";
+    case "external-unsupported":
+      return "Create Arch Wallet to swap";
     case "valid":
       return "Confirm swap";
   }

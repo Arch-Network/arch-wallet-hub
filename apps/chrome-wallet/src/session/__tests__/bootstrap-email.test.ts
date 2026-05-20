@@ -41,6 +41,7 @@ const makeAccount = (): WalletAccount =>
     label: "Email wallet",
     btcAddress: "tb1q-email",
     publicKeyHex: "pk",
+    kind: "turnkey",
     turnkeyResourceId: "res-1",
     organizationId: "sub-org-1",
     authMethod: "email",

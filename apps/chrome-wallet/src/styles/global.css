@@ -2888,6 +2888,25 @@ a {
   outline: none;
 }
 
+.onboarding-choice-card[data-selected="true"] {
+  border-color: var(--accent);
+  background: rgba(193, 154, 91, 0.12);
+  box-shadow: 0 0 0 1px rgba(193, 154, 91, 0.35),
+              0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+.onboarding-choice-card[data-selected="true"]::after {
+  content: "Selected";
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
 .onboarding-choice-card-icon {
   width: 36px;
   height: 36px;

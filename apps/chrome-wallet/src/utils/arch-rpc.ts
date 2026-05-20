@@ -1,6 +1,6 @@
 import bs58 from "bs58";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { ed25519 } from "@noble/curves/ed25519.js";
+import { sha256 } from "@noble/hashes/sha256";
+import { ed25519 } from "@noble/curves/ed25519";
 import type { ArchIndexerClient } from "./indexer";
 
 const METADATA_PROGRAM_ID = "MetaLUJnthcRKvy3ayXTnVcxaXqca1fbaQox8ChQqAk";

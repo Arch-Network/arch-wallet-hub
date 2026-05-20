@@ -33,7 +33,7 @@ import {
   makeSwapSigner,
 } from "@arch/swap-engine";
 
-import type { AppState, NetworkId, WalletAccount } from "../state/types";
+import { isExternalAccount, type AppState, type NetworkId, type WalletAccount } from "../state/types";
 import { INDEXER_BASE_URL, DEFAULT_INDEXER_API_KEY } from "./explorer-config";
 import { getBtcUsdPrice } from "./btc-price";
 import { signerForAccount, type Signer } from "../signers/Signer";
@@ -149,7 +149,9 @@ export function walletStateForEngine(
     taprootAddress: account.btcAddress,
     identity: {
       providerId:
-        account.authMethod === "email"
+        isExternalAccount(account)
+          ? `external-${account.externalProvider}`
+          : account.authMethod === "email"
           ? "wallet-hub-email-session"
           : "wallet-hub-passkey-session",
       providerLabel: account.label || "Arch Wallet",
@@ -165,6 +167,9 @@ export function walletStateForEngine(
  * email wallets, and that happens before this signer is built).
  */
 export function digestSignerForAccount(account: WalletAccount): WalletDigestSigner {
+  if (isExternalAccount(account)) {
+    throw new Error("Swaps with linked external wallets are not supported yet.");
+  }
   const signer: Signer = signerForAccount(account);
   return signer;
 }

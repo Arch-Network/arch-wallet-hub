@@ -22,6 +22,8 @@ import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, t
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { walletStore } from "../../state/wallet-store";
+import { isExternalAccount } from "../../state/types";
+import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
 
@@ -273,6 +275,29 @@ export default function Send({ networkStatus }: SendProps) {
     [activeAccount]
   );
 
+  const signWithExternalWallet = useCallback(
+    async (signingRequestId: string, psbtBase64: string): Promise<string> => {
+      if (!isExternalAccount(activeAccount)) {
+        throw new Error("Active account is not an external wallet");
+      }
+      const adapter = getExternalWalletAdapter(activeAccount.externalProvider);
+      const signature64Hex = await adapter.signPsbt({
+        address: activeAccount.btcAddress,
+        psbtBase64,
+        network: state.network,
+      });
+      const client = await getClient();
+      const externalUserId = await getExternalUserId();
+      const submitRes = await client.submitSigningRequest(signingRequestId, {
+        externalUserId,
+        signature64Hex,
+      });
+      const res = (submitRes as any).result ?? submitRes;
+      return res?.txid || res?.txidHex || signingRequestId;
+    },
+    [activeAccount, state.network],
+  );
+
   const handlePrepareBtc = useCallback(async () => {
     if (!activeAccount || !recipient || !amount) return;
     setPreparing(true);
@@ -347,6 +372,10 @@ export default function Send({ networkStatus }: SendProps) {
     if (!activeAccount) return;
 
     if (asset === "btc") {
+      if (isExternalAccount(activeAccount)) {
+        setError("BTC sends from external wallets are not supported yet. Send BTC from the source wallet.");
+        return;
+      }
       return handleBtcSign();
     }
 
@@ -384,9 +413,21 @@ export default function Send({ networkStatus }: SendProps) {
 
         const sr = await client.createSigningRequest({
           externalUserId,
-          signer: { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
+          signer: isExternalAccount(activeAccount)
+            ? {
+                kind: "external",
+                taprootAddress: activeAccount.btcAddress,
+                publicKeyHex: activeAccount.publicKeyHex || undefined,
+              }
+            : { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
           action,
         });
+
+        if (isExternalAccount(activeAccount)) {
+          const psbtBase64 = (sr.payloadToSign as any)?.psbtBase64;
+          if (!psbtBase64) throw new Error("No PSBT available for external wallet signing");
+          return await signWithExternalWallet(sr.signingRequestId, psbtBase64);
+        }
 
         // Unified local-sign path for both passkey and email wallets.
         // The session-stamped signer takes care of whichever bootstrap
@@ -403,7 +444,11 @@ export default function Send({ networkStatus }: SendProps) {
       } catch (err) {
         if (isWalletHubAuthError(err)) {
           await resetHubConfigToDefaults();
-        } else if (isWalletHubUnknownResourceError(err) && activeAccount.authMethod !== "email") {
+        } else if (
+          isWalletHubUnknownResourceError(err) &&
+          !isExternalAccount(activeAccount) &&
+          activeAccount.authMethod !== "email"
+        ) {
           const client = await getClient();
           const registered = await client.registerExistingPasskeyWallet({
             externalUserId: await getExternalUserId(),
@@ -442,7 +487,7 @@ export default function Send({ networkStatus }: SendProps) {
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, handleBtcSign, addRecentRecipient, state.network]);
+  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, signWithExternalWallet, handleBtcSign, addRecentRecipient, state.network]);
 
   const resetFlow = useCallback(() => {
     setStep(1);
@@ -462,6 +507,7 @@ export default function Send({ networkStatus }: SendProps) {
   const btcExplorerBase = isTestnet
     ? "https://mempool.space/testnet4/tx/"
     : "https://mempool.space/tx/";
+  const activeIsExternal = isExternalAccount(activeAccount);
 
   // Step 1: Choose asset
   if (step === 1) {
@@ -473,12 +519,25 @@ export default function Send({ networkStatus }: SendProps) {
         </div>
         {error && <div className="error-banner">{error}</div>}
         <div className="send-asset-list">
-          <button className="card send-asset-card" onClick={() => { setAsset("btc"); setStep(2); }}>
+          <button
+            className="card send-asset-card"
+            disabled={activeIsExternal}
+            onClick={() => {
+              if (activeIsExternal) {
+                setError("BTC sends from external wallets are not supported yet. Send BTC from the source wallet.");
+                return;
+              }
+              setAsset("btc");
+              setStep(2);
+            }}
+          >
             <div className="asset-row send-asset-row">
               {renderAssetIcon("btc", null)}
               <div className="asset-info">
                 <div className="asset-name">Bitcoin</div>
-                <div className="asset-sub">BTC</div>
+                <div className="asset-sub">
+                  {activeIsExternal ? "Send from source wallet" : "BTC"}
+                </div>
               </div>
               <div className="send-asset-balance-wrap">
                 <div className="send-asset-balance-label">Available</div>

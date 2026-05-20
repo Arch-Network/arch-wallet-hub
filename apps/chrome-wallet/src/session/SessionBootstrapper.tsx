@@ -39,7 +39,11 @@ import type { RecoveryEmailCandidate } from "@arch-network/wallet-hub-sdk";
 import { useNavigate } from "react-router-dom";
 import { walletStore } from "../state/wallet-store";
 import { generateRecoveryKeypair } from "../crypto/turnkey-bundle";
-import type { WalletAccount } from "../state/types";
+import {
+  DEFAULT_HUB_API_KEY,
+  DEFAULT_HUB_BASE_URL,
+  type WalletAccount,
+} from "../state/types";
 import { log } from "../utils/log";
 
 interface Props {
@@ -141,9 +145,15 @@ export default function SessionBootstrapper({
 
   const buildClient = useCallback(async () => {
     const state = await walletStore.getState().catch(() => null);
+    const apiKey = state?.hubApiKey || DEFAULT_HUB_API_KEY || "";
+    if (!apiKey) {
+      throw new Error(
+        "Missing Wallet Hub API key. Set WXT_HUB_API_KEY_DEV in apps/chrome-wallet/.env.local and rebuild.",
+      );
+    }
     return new WalletHubClient({
-      baseUrl: state?.hubBaseUrl ?? "",
-      ...(state?.hubApiKey ? { apiKey: state.hubApiKey } : {}),
+      baseUrl: state?.hubBaseUrl || DEFAULT_HUB_BASE_URL,
+      ...(apiKey ? { apiKey } : {}),
     });
   }, []);
 

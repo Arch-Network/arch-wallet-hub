@@ -20,7 +20,8 @@ import DappHeader from "../../components/Approve/DappHeader";
 import { interpretMessage } from "../../utils/sign-message";
 import { summarizePsbt, formatSats, type PsbtSummary } from "../../utils/psbt-summary";
 import { signerForAccount } from "../../signers/Signer";
-import type { WalletAccount } from "../../state/types";
+import { isExternalAccount, type NetworkId, type WalletAccount } from "../../state/types";
+import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 
 interface RequestDetails {
   type: string;
@@ -37,8 +38,25 @@ async function signAndSubmitRequest(
   signingRequestId: string,
   payloadToSign: any,
   externalUserId: string,
+  network: NetworkId,
 ): Promise<any> {
   const client = await getClient();
+
+  if (isExternalAccount(activeAccount)) {
+    const psbtBase64 = payloadToSign?.psbtBase64;
+    if (!psbtBase64) throw new Error("No PSBT available for external wallet signing");
+    const adapter = getExternalWalletAdapter(activeAccount.externalProvider);
+    const signature64Hex = await adapter.signPsbt({
+      address: activeAccount.btcAddress,
+      psbtBase64,
+      network,
+    });
+    const submitRes = await client.submitSigningRequest(signingRequestId, {
+      externalUserId,
+      signature64Hex,
+    });
+    return (submitRes as any).result ?? submitRes;
+  }
 
   const payloadHex = payloadToSign?.payloadHex;
   if (!payloadHex) throw new Error("No payload available for signing");
@@ -359,10 +377,16 @@ export default function Approve() {
               };
         const sr = await client.createSigningRequest({
           externalUserId,
-          signer: { kind: "turnkey", resourceId: selectedAccount.turnkeyResourceId },
+          signer: isExternalAccount(selectedAccount)
+            ? {
+                kind: "external",
+                taprootAddress: selectedAccount.btcAddress,
+                publicKeyHex: selectedAccount.publicKeyHex || undefined,
+              }
+            : { kind: "turnkey", resourceId: selectedAccount.turnkeyResourceId },
           action,
         });
-        const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
+        const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const txid = extractTxid(submitResult, sr.signingRequestId);
         sendApproved({ txid });
         return;
@@ -373,10 +397,16 @@ export default function Approve() {
         if (!messageHex) throw new Error("SIGN_MESSAGE missing payload.message");
         const sr = await client.createSigningRequest({
           externalUserId,
-          signer: { kind: "turnkey", resourceId: selectedAccount.turnkeyResourceId },
+          signer: isExternalAccount(selectedAccount)
+            ? {
+                kind: "external",
+                taprootAddress: selectedAccount.btcAddress,
+                publicKeyHex: selectedAccount.publicKeyHex || undefined,
+              }
+            : { kind: "turnkey", resourceId: selectedAccount.turnkeyResourceId },
           action: { type: "arch.sign_message", messageHex },
         });
-        const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId);
+        const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const signature = submitResult?.signature64Hex || submitResult?.signature;
         if (!signature) throw new Error("Hub did not return a signature");
         sendApproved({ signature });
@@ -386,6 +416,9 @@ export default function Approve() {
       if (request.type === "SIGN_PSBT") {
         const psbtPayload: string = request.payload?.psbt;
         if (!psbtPayload) throw new Error("SIGN_PSBT missing payload.psbt");
+        if (isExternalAccount(selectedAccount)) {
+          throw new Error("Raw PSBT signing is not supported for linked external wallets yet. Open the source wallet directly.");
+        }
 
         // Same path for both auth methods now: the session-stamped
         // signer signs locally regardless of how the session was
@@ -401,7 +434,7 @@ export default function Approve() {
     } finally {
       setLoading(false);
     }
-  }, [request, selectedAccount, requestId, sendApproved, signPsbtLocally]);
+  }, [request, selectedAccount, requestId, sendApproved, signPsbtLocally, state.network]);
 
   const handleReject = useCallback(() => {
     chrome.runtime.sendMessage({ type: "REJECT_REQUEST", requestId });

@@ -31,7 +31,7 @@ import {
   getSignedTransactionFromActivity,
 } from "@turnkey/http";
 import { bytesToHex, computeBip322ToSignTaprootSighash, hexToBytes } from "../utils/bip322";
-import type { WalletAccount } from "../state/types";
+import { isExternalAccount, type WalletAccount } from "../state/types";
 import { sessionManager } from "../session/SessionManager";
 
 export interface SignArchOptions {
@@ -158,6 +158,9 @@ export class SessionStampedSigner implements Signer {
 }
 
 export function signerForAccount(account: WalletAccount): Signer {
+  if (isExternalAccount(account)) {
+    throw new Error("External wallets must sign in their source wallet");
+  }
   return new SessionStampedSigner(account);
 }
 

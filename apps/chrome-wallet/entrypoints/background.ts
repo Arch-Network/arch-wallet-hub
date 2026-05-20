@@ -7,7 +7,7 @@ import { pendingRequestsStore } from "../src/messaging/pending-requests";
 import { keystore } from "../src/crypto/keystore";
 import type { PendingRequest } from "../src/messaging/types";
 import type { OpenAsMode } from "../src/state/types";
-import { DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
+import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
 
 const AUTO_LOCK_ALARM = "arch-wallet-auto-lock";
 const PENDING_GC_ALARM = "arch-wallet-pending-gc";
@@ -142,6 +142,143 @@ function deliverResponseToTab(
     .catch(() => {});
 }
 
+// ── External-wallet connector window ─────────────────────────────────
+//
+// Rather than depending on whatever tab the user happens to have
+// active, we open a small popup window on a URL we control
+// (/v1/extension/connect on the configured Hub). External wallets
+// (Xverse / UniSat / Magic Eden) inject their providers into that page
+// because it's a normal http(s) origin, our content script attaches
+// automatically (host_permissions: <all_urls>), and we get a stable,
+// scriptable target for every bridge call until the flow completes.
+//
+// Lifecycle:
+//   - opened lazily on first bridge call
+//   - reused across subsequent calls in the same flow
+//   - closed when the popup signals CLOSE_EXTERNAL_CONNECTOR
+//   - closed on idle (no bridge call for CONNECTOR_IDLE_MS)
+//   - cleared if the user closes the window manually
+
+type ConnectorTab = { windowId: number; tabId: number };
+let connectorTab: ConnectorTab | null = null;
+let connectorIdleAlarmName = "arch-wallet-external-connector-idle";
+const CONNECTOR_IDLE_MS = 90_000;
+
+async function getConnectorUrl(): Promise<string> {
+  let base = DEFAULT_HUB_BASE_URL;
+  try {
+    const state = await walletStore.getState();
+    if (state?.hubBaseUrl) base = state.hubBaseUrl;
+  } catch {
+    /* keystore may be locked or uninitialized; default is fine */
+  }
+  return `${base.replace(/\/+$/, "")}/v1/extension/connect`;
+}
+
+function waitForTabComplete(tabId: number, timeoutMs = 15_000): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      clearTimeout(timer);
+    };
+    const finish = (err?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      err ? reject(err) : resolve();
+    };
+    const listener = (changedId: number, info: chrome.tabs.TabChangeInfo) => {
+      if (changedId === tabId && info.status === "complete") finish();
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    const timer = setTimeout(
+      () => finish(new Error("Connector window did not finish loading in time")),
+      timeoutMs,
+    );
+    chrome.tabs.get(tabId).then(
+      (tab) => {
+        if (tab?.status === "complete") finish();
+      },
+      () => finish(new Error("Connector tab disappeared")),
+    );
+  });
+}
+
+async function ensureConnectorTab(): Promise<ConnectorTab> {
+  if (connectorTab) {
+    try {
+      const tab = await chrome.tabs.get(connectorTab.tabId);
+      if (tab?.id) return connectorTab;
+    } catch {
+      /* tab gone, fall through */
+    }
+    connectorTab = null;
+  }
+  const url = await getConnectorUrl();
+  const win = await chrome.windows.create({
+    url,
+    type: "popup",
+    width: 360,
+    height: 440,
+    focused: true,
+  });
+  const tab = win?.tabs?.[0];
+  if (!win?.id || !tab?.id) {
+    throw new Error("Failed to open Arch Wallet connector window");
+  }
+  await waitForTabComplete(tab.id);
+  connectorTab = { windowId: win.id, tabId: tab.id };
+  return connectorTab;
+}
+
+async function closeConnectorTab(): Promise<void> {
+  const tab = connectorTab;
+  connectorTab = null;
+  if (!tab) return;
+  try {
+    await chrome.windows.remove(tab.windowId);
+  } catch {
+    /* already closed */
+  }
+}
+
+function scheduleConnectorIdleClose(): void {
+  // Single rolling alarm. Each bridge call resets it; we close the
+  // window if no activity for CONNECTOR_IDLE_MS. Guards against the
+  // popup crashing / being dismissed without the explicit close
+  // signal.
+  chrome.alarms.create(connectorIdleAlarmName, {
+    delayInMinutes: CONNECTOR_IDLE_MS / 60_000,
+  });
+}
+
+async function requestExternalWalletViaConnector(message: any): Promise<any> {
+  const target = await ensureConnectorTab();
+  const payload = {
+    type: "EXTERNAL_WALLET_PAGE_REQUEST",
+    requestId:
+      globalThis.crypto?.randomUUID?.() ??
+      `external-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    request: message.request,
+  };
+  scheduleConnectorIdleClose();
+  try {
+    return await chrome.tabs.sendMessage(target.tabId, payload);
+  } catch (err: any) {
+    if (!String(err?.message ?? "").includes("Receiving end does not exist")) {
+      throw err;
+    }
+    // Content script not attached yet (rare: the page loaded before
+    // chrome.scripting bound our matches). Force-inject and retry.
+    await chrome.scripting.executeScript({
+      target: { tabId: target.tabId },
+      files: ["content-scripts/content.js"],
+    });
+    return await chrome.tabs.sendMessage(target.tabId, payload);
+  }
+}
+
 /**
  * Reject every still-pending dapp request that originated from a window
  * we're about to close. Called both on chrome.windows.onRemoved and on
@@ -181,6 +318,9 @@ export default defineBackground(() => {
         }
       }
     }
+    if (alarm.name === connectorIdleAlarmName) {
+      await closeConnectorTab();
+    }
   });
 
   if (chrome.idle?.onStateChanged) {
@@ -195,6 +335,9 @@ export default defineBackground(() => {
 
   if (chrome.windows?.onRemoved) {
     chrome.windows.onRemoved.addListener(async (windowId) => {
+      if (connectorTab && connectorTab.windowId === windowId) {
+        connectorTab = null;
+      }
       const all = await pendingRequestsStore.list();
       for (const req of all) {
         if (req.windowId === windowId) {
@@ -241,6 +384,28 @@ export default defineBackground(() => {
         rescheduleAutoLock();
         sendResponse({ ok: true });
         return false;
+      }
+
+      if (message?.type === "EXTERNAL_WALLET_REQUEST") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ success: false, error: "Not authorized" });
+          return false;
+        }
+        requestExternalWalletViaConnector(message)
+          .then(sendResponse)
+          .catch((err) => {
+            sendResponse({ success: false, error: err?.message || "External wallet request failed" });
+          });
+        return true;
+      }
+
+      if (message?.type === "CLOSE_EXTERNAL_CONNECTOR") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ ok: false, error: "Not authorized" });
+          return false;
+        }
+        closeConnectorTab().finally(() => sendResponse({ ok: true }));
+        return true;
       }
 
       if (message?.type === "APPROVE_CONNECT") {

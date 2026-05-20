@@ -14,6 +14,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_HUB_BASE_URL,
   DEFAULT_HUB_API_KEY,
+  isExternalAccount,
 } from "./types";
 import { deriveArchAccountAddress } from "../utils/sdk";
 import { INDEXER_BASE_URL, DEFAULT_INDEXER_API_KEY } from "../utils/explorer-config";
@@ -116,6 +117,10 @@ function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
   let migrated = false;
 
   for (const acct of state.accounts) {
+    if (!acct.kind) {
+      acct.kind = "turnkey";
+      migrated = true;
+    }
     // v3 -> v4: derive authMethod from the deprecated isCustodial flag.
     //
     // Naïve mapping (which we previously shipped) was:
@@ -150,6 +155,10 @@ function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
     }
     if ((acct as any).isCustodial !== undefined) {
       delete (acct as any).isCustodial;
+      migrated = true;
+    }
+    if (acct.kind === "external" && acct.authMethod !== "external") {
+      acct.authMethod = "external";
       migrated = true;
     }
     if (!acct.archAddress && acct.publicKeyHex && acct.publicKeyHex.length >= 64) {
@@ -485,6 +494,9 @@ export const walletStore = {
       ? state.accounts.find((a) => a.id === state.activeAccountId)
       : null;
     if (!account) throw new Error("No active account to open a session for");
+    if (isExternalAccount(account)) {
+      throw new Error("External wallets sign in their source wallet; no Turnkey session is available");
+    }
     if (account.authMethod !== "passkey") {
       throw new Error(
         `openPasskeySession called for a ${account.authMethod} wallet; use openEmailSession instead`,
@@ -511,6 +523,9 @@ export const walletStore = {
       ? state.accounts.find((a) => a.id === state.activeAccountId)
       : null;
     if (!account) throw new Error("No active account to open a session for");
+    if (isExternalAccount(account)) {
+      throw new Error("External wallets sign in their source wallet; no Turnkey session is available");
+    }
     if (account.authMethod !== "email") {
       throw new Error(
         `openEmailSession called for a ${account.authMethod} wallet; use openPasskeySession instead`,

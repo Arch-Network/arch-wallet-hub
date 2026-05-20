@@ -22,15 +22,28 @@ export default defineContentScript({
   runAt: "document_start",
 
   main() {
+    if ((globalThis as any).__ARCH_WALLET_CONTENT_BRIDGE_INSTALLED) return;
+    (globalThis as any).__ARCH_WALLET_CONTENT_BRIDGE_INSTALLED = true;
+
     const pageOrigin = window.location.origin;
 
-    const script = document.createElement("script");
-    script.src = chrome.runtime.getURL("/injected.js");
-    script.type = "module";
-    (document.head || document.documentElement).appendChild(script);
-    script.onload = () => script.remove();
+    const injectedReady = new Promise<void>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = chrome.runtime.getURL("/injected.js");
+      script.type = "module";
+      script.onload = () => {
+        script.remove();
+        resolve();
+      };
+      script.onerror = () => {
+        script.remove();
+        reject(new Error("Failed to load Arch Wallet page bridge"));
+      };
+      (document.head || document.documentElement).appendChild(script);
+    });
 
     const pendingByRequestId = new Map<string, string>();
+    const externalRequests = new Map<string, (response: unknown) => void>();
 
     function postToPage(payload: Record<string, unknown>) {
       window.postMessage({ channel: CHANNEL, direction: "to-page", ...payload }, pageOrigin);
@@ -57,6 +70,14 @@ export default defineContentScript({
     window.addEventListener("message", (event) => {
       if (event.source !== window) return;
       if (event.origin !== pageOrigin) return;
+      if (event.data?.channel === "arch-wallet-external-wallet") {
+        if (event.data?.direction !== "to-content") return;
+        const resolve = externalRequests.get(event.data.id);
+        if (!resolve) return;
+        externalRequests.delete(event.data.id);
+        resolve(event.data.response);
+        return;
+      }
       if (event.data?.channel !== CHANNEL) return;
       if (event.data?.direction !== "to-extension") return;
 
@@ -68,6 +89,9 @@ export default defineContentScript({
     });
 
     chrome.runtime.onMessage.addListener((message) => {
+      if (message?.type === "EXTERNAL_WALLET_PAGE_REQUEST") {
+        return;
+      }
       if (message?.channel !== CHANNEL) return;
       if (message?.direction !== "to-page") return;
       if (!message?.requestId) return;
@@ -76,6 +100,39 @@ export default defineContentScript({
       if (!msgId) return;
       pendingByRequestId.delete(message.requestId);
       postToPage({ id: msgId, response: message.response });
+    });
+
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message?.type !== "EXTERNAL_WALLET_PAGE_REQUEST") return false;
+      (async () => {
+        try {
+          await injectedReady;
+          const id =
+            typeof message.requestId === "string" && message.requestId
+              ? message.requestId
+              : self.crypto?.randomUUID?.() ??
+                `external-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          externalRequests.set(id, sendResponse);
+          window.postMessage(
+            {
+              channel: "arch-wallet-external-wallet",
+              direction: "to-page",
+              id,
+              request: message.request,
+            },
+            pageOrigin,
+          );
+          window.setTimeout(() => {
+            const resolve = externalRequests.get(id);
+            if (!resolve) return;
+            externalRequests.delete(id);
+            resolve({ success: false, error: "External wallet request timed out" });
+          }, 30_000);
+        } catch (err: any) {
+          sendResponse({ success: false, error: err?.message || "External wallet bridge failed" });
+        }
+      })();
+      return true;
     });
 
     // Heartbeat: ping the SW while we have outstanding requests so a

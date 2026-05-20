@@ -6,9 +6,15 @@ import { walletStore } from "../../state/wallet-store";
 import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
 import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
-import { type WalletAccount } from "../../state/types";
+import {
+  DEFAULT_HUB_API_KEY,
+  DEFAULT_HUB_BASE_URL,
+  type ExternalWalletProvider,
+  type WalletAccount,
+} from "../../state/types";
 import { PASSKEY_RP_ID } from "../../session/constants";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
+import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -40,7 +46,7 @@ type Step = "welcome" | "secure" | "creating";
  * the user is never staring at more than two inputs at a time.
  */
 type WizardStep = 0 | 1 | 2;
-type WizardMethod = "passkey" | "email" | null;
+type WizardMethod = "passkey" | "email" | "external" | null;
 
 const MIN_PASSWORD_LENGTH = 8;
 const ONBOARDING_HANDOFF_PREFIX = "arch_wallet_onboarding_handoff:";
@@ -152,6 +158,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   // re-pick when correcting an earlier field.
   const [wizardStep, setWizardStep] = useState<WizardStep>(0);
   const [wizardMethod, setWizardMethod] = useState<WizardMethod>(null);
+  const [externalProvider, setExternalProvider] = useState<ExternalWalletProvider | null>(null);
 
   // `lastWizardStep` collapses the password screen out of the
   // flow when we're adding a wallet to an already-unlocked
@@ -204,10 +211,21 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
   const buildClient = useCallback(async () => {
     const state = await walletStore.getState().catch(() => null);
+    const apiKey = state?.hubApiKey || DEFAULT_HUB_API_KEY || "";
+    if (!apiKey) {
+      throw new Error(
+        "Missing Wallet Hub API key. Set WXT_HUB_API_KEY_DEV in apps/chrome-wallet/.env.local and rebuild, or add the key in Settings after onboarding.",
+      );
+    }
     return new WalletHubClient({
-      baseUrl: state?.hubBaseUrl ?? "",
-      ...(state?.hubApiKey ? { apiKey: state.hubApiKey } : {}),
+      baseUrl: state?.hubBaseUrl || DEFAULT_HUB_BASE_URL,
+      ...(apiKey ? { apiKey } : {}),
     });
+  }, []);
+
+  const networkForHub = useCallback(async () => {
+    const state = await walletStore.getState().catch(() => null);
+    return state?.network === "mainnet" ? "mainnet" : "testnet";
   }, []);
 
   const finishOnboarding = useCallback(() => {
@@ -358,6 +376,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         archAddress: result.defaultPublicKeyHex
           ? deriveArchAccountAddress(result.defaultPublicKeyHex)
           : undefined,
+        kind: "turnkey",
         turnkeyResourceId: result.resourceId,
         organizationId: result.organizationId,
         authMethod: "passkey",
@@ -428,6 +447,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         archAddress: result.defaultPublicKeyHex
           ? deriveArchAccountAddress(result.defaultPublicKeyHex)
           : undefined,
+        kind: "turnkey",
         turnkeyResourceId: result.resourceId,
         organizationId: result.organizationId,
         authMethod: "email",
@@ -449,6 +469,138 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     }
   }, [finishOnboarding, buildClient, addMode, walletName, email, password, validatePassword]);
 
+  const connectExternalWallet = useCallback(async () => {
+    const err = validatePassword();
+    if (err) {
+      setError(err);
+      return;
+    }
+    if (!externalProvider) {
+      setError("Choose a wallet to connect");
+      return;
+    }
+    setStep("creating");
+    setError(null);
+    setStatusMessage("Connecting to your wallet...");
+    let phase: string = "init";
+    try {
+      phase = "buildClient";
+      console.log("[ArchWallet] external onboarding:", phase);
+      const client = await buildClient();
+      const state = await walletStore.getState().catch(() => null);
+      const network = state?.network ?? "testnet4";
+      const hubNetwork = await networkForHub();
+      const externalUserId = await getExternalUserId();
+      const adapter = getExternalWalletAdapter(externalProvider);
+
+      phase = "adapter.connect";
+      console.log("[ArchWallet] external onboarding:", phase);
+      const connected = await withTimeout(
+        adapter.connect(network),
+        30_000,
+        `Connecting ${adapter.label}`,
+      );
+
+      setStatusMessage("Preparing ownership challenge...");
+      phase = "createWalletLinkChallenge";
+      console.log("[ArchWallet] external onboarding:", phase, {
+        externalUserId,
+        walletProvider: connected.provider,
+        address: connected.address,
+        network: hubNetwork,
+      });
+      const challenge = await withTimeout(
+        client.createWalletLinkChallenge({
+          externalUserId,
+          walletProvider: connected.provider,
+          address: connected.address,
+          network: hubNetwork,
+        }),
+        15_000,
+        "Creating wallet-link challenge",
+      );
+
+      setStatusMessage(`Confirm ownership in ${adapter.label}...`);
+      phase = "adapter.signMessage";
+      console.log("[ArchWallet] external onboarding:", phase);
+      const signed = await withTimeout(
+        adapter.signMessage({
+          address: connected.address,
+          message: challenge.message,
+          network,
+        }),
+        60_000,
+        `Signing with ${adapter.label}`,
+      );
+
+      setStatusMessage("Verifying linked wallet...");
+      phase = "verifyWalletLinkChallenge";
+      console.log("[ArchWallet] external onboarding:", phase, {
+        challengeId: challenge.challengeId,
+        schemeHint: signed.schemeHint,
+      });
+      const verified = await withTimeout(
+        client.verifyWalletLinkChallenge({
+          externalUserId,
+          challengeId: challenge.challengeId,
+          signature: signed.signature,
+          schemeHint: signed.schemeHint,
+        }),
+        15_000,
+        "Verifying wallet link",
+      );
+
+      const account: WalletAccount = {
+        id: verified.linkedWalletId,
+        label: walletName.trim() || `${adapter.label} Wallet`,
+        btcAddress: verified.address,
+        publicKeyHex: connected.publicKeyHex,
+        archAddress:
+          verified.archAccountAddress ||
+          (connected.publicKeyHex ? deriveArchAccountAddress(connected.publicKeyHex) : undefined),
+        kind: "external",
+        turnkeyResourceId: "",
+        organizationId: "",
+        authMethod: "external",
+        externalProvider: connected.provider,
+        linkedWalletId: verified.linkedWalletId,
+        verificationScheme: verified.verificationScheme,
+        createdAt: Date.now(),
+      };
+
+      phase = addMode ? "walletStore.addAccount" : "walletStore.completeOnboarding";
+      console.log("[ArchWallet] external onboarding:", phase);
+      if (addMode) {
+        await walletStore.addAccount(account);
+      } else {
+        await walletStore.completeOnboarding(password, account);
+      }
+      finishOnboarding();
+    } catch (e: any) {
+      console.error("[ArchWallet] external onboarding failed at phase:", phase, e);
+      setError(`[${phase}] ${e?.message || "Failed to connect external wallet"}`);
+      setStep("welcome");
+    } finally {
+      // Tear down the background-managed connector popup regardless of
+      // success/failure. Background also auto-closes on idle as a
+      // belt-and-braces safety net.
+      try {
+        await chrome.runtime.sendMessage({ type: "CLOSE_EXTERNAL_CONNECTOR" });
+      } catch {
+        /* SW gone / no connector ever opened */
+      }
+    }
+  }, [
+    addMode,
+    buildClient,
+    externalProvider,
+    finishOnboarding,
+    networkForHub,
+    password,
+    validatePassword,
+    walletName,
+  ]);
+
   // ── Wizard navigation ──────────────────────────────────────
   //
   // The wizard is deliberately simple: a single linear flow with
@@ -462,7 +614,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   // gives users time to consider. Adding a modal on top would
   // double-prompt for the same decision.
 
-  const chooseMethod = useCallback((method: "passkey" | "email") => {
+  const chooseMethod = useCallback((method: "passkey" | "email" | "external") => {
     setWizardMethod(method);
     setError(null);
     setWizardStep(1);
@@ -481,10 +633,12 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   const submitWizard = useCallback(() => {
     if (wizardMethod === "passkey") void createNonCustodialWallet();
     else if (wizardMethod === "email") void createEmailWallet();
-  }, [wizardMethod, createNonCustodialWallet, createEmailWallet]);
+    else if (wizardMethod === "external") void connectExternalWallet();
+  }, [wizardMethod, createNonCustodialWallet, createEmailWallet, connectExternalWallet]);
 
   // Per-step validity drives the Next button's disabled state.
-  const detailsValid = email.trim().length > 0;
+  const detailsValid =
+    wizardMethod === "external" ? Boolean(externalProvider) : email.trim().length > 0;
   const passwordValid =
     addMode ||
     (password.length >= MIN_PASSWORD_LENGTH && password === confirmPassword);
@@ -582,6 +736,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         : "Pick how you want to sign in. You can add another wallet later.";
     }
     if (wizardStep === 1) {
+      if (wizardMethod === "external") return "Pick the wallet you already use.";
       return wizardMethod === "email"
         ? "We'll email a one-time code to this address whenever you unlock."
         : "Give the wallet a name and recovery email.";
@@ -616,13 +771,22 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       )}
 
       {wizardStep === 1 && (
-        <DetailsStep
-          method={wizardMethod}
-          walletName={walletName}
-          email={email}
-          onWalletName={setWalletName}
-          onEmail={setEmail}
-        />
+        wizardMethod === "external" ? (
+          <ExternalProviderStep
+            selected={externalProvider}
+            walletName={walletName}
+            onWalletName={setWalletName}
+            onSelect={setExternalProvider}
+          />
+        ) : (
+          <DetailsStep
+            method={wizardMethod}
+            walletName={walletName}
+            email={email}
+            onWalletName={setWalletName}
+            onEmail={setEmail}
+          />
+        )
       )}
 
       {wizardStep === 2 && (
@@ -654,7 +818,9 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
             {onLastStep
               ? wizardMethod === "passkey"
                 ? "Create with passkey"
-                : "Create with email"
+                : wizardMethod === "email"
+                  ? "Create with email"
+                  : "Connect wallet"
               : "Continue"}
           </button>
         </div>
@@ -698,7 +864,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 // add prop-drilling without re-use elsewhere.
 
 interface MethodChoiceStepProps {
-  onPick: (method: "passkey" | "email") => void;
+  onPick: (method: "passkey" | "email" | "external") => void;
 }
 
 function MethodChoiceStep({ onPick }: MethodChoiceStepProps) {
@@ -754,6 +920,98 @@ function MethodChoiceStep({ onPick }: MethodChoiceStepProps) {
           </p>
         </div>
       </button>
+
+      <button
+        type="button"
+        className="onboarding-choice-card"
+        onClick={() => onPick("external")}
+      >
+        <span className="onboarding-choice-card-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="M7 9h10" />
+            <path d="M7 13h6" />
+            <path d="M17 16l2 2 3-4" />
+          </svg>
+        </span>
+        <div className="onboarding-choice-card-body">
+          <p className="onboarding-choice-card-title">Connect existing wallet</p>
+          <p className="onboarding-choice-card-sub">
+            Keep funds in Xverse, UniSat, or Magic Eden while using Arch balances
+            and supported signing flows.
+          </p>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+interface ExternalProviderStepProps {
+  selected: ExternalWalletProvider | null;
+  walletName: string;
+  onWalletName: (v: string) => void;
+  onSelect: (provider: ExternalWalletProvider) => void;
+}
+
+function ExternalProviderStep({
+  selected,
+  walletName,
+  onWalletName,
+  onSelect,
+}: ExternalProviderStepProps) {
+  return (
+    <div className="onboarding-card">
+      <div className="onboarding-field">
+        <label className="onboarding-field-label">Account label</label>
+        <input
+          className="input"
+          type="text"
+          value={walletName}
+          onChange={(e) => onWalletName(e.target.value)}
+          placeholder="e.g. My Xverse Wallet"
+          autoFocus
+        />
+        <p className="onboarding-field-hint">
+          This only labels the linked wallet inside Arch Wallet.
+        </p>
+      </div>
+
+      <div className="onboarding-divider" />
+
+      <div className="onboarding-choice">
+        {(Object.keys(externalWalletAdapters) as ExternalWalletProvider[]).map((provider) => {
+          const adapter = externalWalletAdapters[provider];
+          const installed = adapter.isInstalled();
+          return (
+            <button
+              key={provider}
+              type="button"
+              className="onboarding-choice-card"
+              aria-pressed={selected === provider}
+              data-selected={selected === provider ? "true" : "false"}
+              onClick={() => onSelect(provider)}
+            >
+              <span className="onboarding-choice-card-icon" aria-hidden="true">
+                {adapter.label.slice(0, 1)}
+              </span>
+              <div className="onboarding-choice-card-body">
+                <p className="onboarding-choice-card-title">
+                  {adapter.label}
+                  {!installed && (
+                    <span className="onboarding-choice-card-badge">Not detected</span>
+                  )}
+                </p>
+                <p className="onboarding-choice-card-sub">
+                  You'll sign a message to prove ownership. Funds stay in your
+                  existing wallet.
+                </p>
+              </div>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

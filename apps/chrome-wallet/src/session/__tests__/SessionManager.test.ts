@@ -38,6 +38,7 @@ const makeAccount = (id: string, organizationId = `org-${id}`): WalletAccount =>
     label: `Wallet ${id}`,
     btcAddress: `tb1q-${id}`,
     publicKeyHex: `pk-${id}`,
+    kind: "turnkey",
     turnkeyResourceId: `res-${id}`,
     organizationId,
     authMethod: "passkey",

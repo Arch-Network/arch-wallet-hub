@@ -13,11 +13,11 @@
   },
   "dependencies": {
     "@arch-network/arch-sdk": "^0.0.26",
-    "@arch/swap-engine": "file:../../packages/arch-swap-engine",
     "@arch-network/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
+    "@arch/swap-engine": "file:../../packages/arch-swap-engine",
     "@bitcoinerlab/secp256k1": "^1.2.0",
-    "@noble/curves": "^2.0.1",
-    "@noble/hashes": "^2.0.1",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "@saturnbtcio/bip322-js": "^3.0.1",
     "@turnkey/api-key-stamper": "^0.6.6",
     "@turnkey/crypto": "^2.9.0",
@@ -30,7 +30,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^7.1.1",
-    "reflect-metadata": "^0.2.2"
+    "reflect-metadata": "^0.2.2",
+    "sats-connect": "^4.2.1"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",
@@ -43,7 +44,7 @@
     "zod": "^3.23.8"
   },
   "overrides": {
-    "@noble/curves": "^2.0.1",
-    "@noble/hashes": "^2.0.1"
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0"
   }
 }

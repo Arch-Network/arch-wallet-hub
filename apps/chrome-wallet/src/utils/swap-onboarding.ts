@@ -31,7 +31,7 @@ import {
   type SwapAccountReadiness,
 } from "@arch/swap-engine";
 
-import type { WalletAccount } from "../state/types";
+import { isExternalAccount, type WalletAccount } from "../state/types";
 import { walletStore } from "../state/wallet-store";
 import {
   swapTransactionSignerForAccount,
@@ -102,6 +102,9 @@ export interface EnsureOnboardingInput {
  * a fresh passkey prompt instead of replaying SessionLockedError.
  */
 export async function ensureSwapSigningSession(account: WalletAccount): Promise<void> {
+  if (isExternalAccount(account)) {
+    throw new Error("Swaps with linked external wallets are not supported yet.");
+  }
   if (account.authMethod !== "passkey") {
     throw new Error("Swaps with email wallets are not supported yet.");
   }

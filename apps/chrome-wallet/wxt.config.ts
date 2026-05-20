@@ -27,7 +27,7 @@ export default defineConfig({
     // Note: `tabs` is intentionally NOT requested. The background uses
     // tabs.query + tabs.sendMessage which are gated by host_permissions
     // <all_urls> below (required to talk to the content script).
-    permissions: ["storage", "alarms", "idle", "activeTab", "sidePanel"],
+    permissions: ["storage", "alarms", "idle", "activeTab", "sidePanel", "scripting"],
     host_permissions: ["<all_urls>"],
     // Defense-in-depth on top of MV3 defaults. MV3 already forbids
     // `unsafe-eval` and remote scripts; we restate the intent and

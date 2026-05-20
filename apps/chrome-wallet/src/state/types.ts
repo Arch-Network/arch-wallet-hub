@@ -14,8 +14,11 @@ export type RecipientAsset = "btc" | "arch" | "apl";
  *     migration but kept readable so the UI can surface a "this
  *     wallet type is no longer supported; please re-create" notice)
  *   - isCustodial === false -> authMethod = "passkey"
+ *
+ * v4 -> v5: accounts gain `kind`. Existing accounts are Turnkey-backed;
+ * newly linked Xverse/UniSat/Magic Eden accounts use `kind="external"`.
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * How a wallet authenticates to Turnkey. Both methods produce the
@@ -28,7 +31,9 @@ export const CURRENT_SCHEMA_VERSION = 4;
  * that wallet class was removed in the move to "fully user-controlled"
  * sub-org wallets per Turnkey's embedded-wallet production checklist.
  */
-export type WalletAuthMethod = "passkey" | "email";
+export type WalletAuthMethod = "passkey" | "email" | "external";
+export type WalletAccountKind = "turnkey" | "external";
+export type ExternalWalletProvider = "xverse" | "unisat" | "magiceden";
 
 /**
  * A recipient address the user has previously sent to. Surfaced on the Send
@@ -71,10 +76,15 @@ export interface WalletAccount {
   btcAddress: string;
   publicKeyHex: string;
   archAddress?: string;
+  /** Turnkey accounts can sign in-wallet; external accounts delegate to their source wallet. */
+  kind: WalletAccountKind;
   turnkeyResourceId: string;
   organizationId: string;
   /** How this wallet bootstraps a Turnkey IndexedDB session. */
   authMethod: WalletAuthMethod;
+  externalProvider?: ExternalWalletProvider;
+  linkedWalletId?: string;
+  verificationScheme?: string;
   /** WebAuthn credential id registered with Turnkey for this passkey wallet. */
   passkeyCredentialId?: string;
   /** Email captured at sign-up for recovery; never sent to dapps. */
@@ -86,6 +96,19 @@ export interface WalletAccount {
    */
   seedBackedUp?: boolean;
   createdAt: number;
+}
+
+export function isExternalAccount(account: WalletAccount | null | undefined): account is WalletAccount & {
+  kind: "external";
+  externalProvider: ExternalWalletProvider;
+} {
+  return account?.kind === "external";
+}
+
+export function isTurnkeyAccount(account: WalletAccount | null | undefined): account is WalletAccount & {
+  kind: "turnkey";
+} {
+  return account?.kind === "turnkey";
 }
 
 /**

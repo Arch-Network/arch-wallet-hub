@@ -9,7 +9,7 @@ import CopyButton from "../../components/CopyButton";
 import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
 import TestRecoveryEmailButton from "../../components/TestRecoveryEmailButton";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
-import { DEFAULT_HUB_BASE_URL } from "../../state/types";
+import { DEFAULT_HUB_BASE_URL, isExternalAccount } from "../../state/types";
 import { INDEXER_BASE_URL } from "../../utils/explorer-config";
 import { APP_VERSION } from "../../utils/version";
 
@@ -33,6 +33,24 @@ function isHttpsUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+function accountAuthLabel(account: WalletAccount): string {
+  if (isExternalAccount(account)) {
+    if (account.externalProvider === "magiceden") return "Magic Eden";
+    if (account.externalProvider === "unisat") return "UniSat";
+    return "Xverse";
+  }
+  return account.authMethod === "email" ? "Email" : "Passkey";
+}
+
+function accountAuthTone(account: WalletAccount): { background: string; color: string } {
+  if (isExternalAccount(account)) {
+    return { background: "rgba(255,176,32,0.16)", color: "#ffb020" };
+  }
+  return account.authMethod === "email"
+    ? { background: "rgba(123,104,238,0.15)", color: "#7b68ee" }
+    : { background: "rgba(46,204,113,0.15)", color: "#2ecc71" };
 }
 
 export default function Settings() {
@@ -227,7 +245,7 @@ export default function Settings() {
               We pin to the active account so the Hub returns only
               this wallet's candidates, skipping the wallet-picker
               step when there's a single match. */}
-          {activeAccount && (
+          {activeAccount && !isExternalAccount(activeAccount) && (
             <>
               <RecoverViaEmailCta
                 pinToActiveAccount
@@ -284,6 +302,7 @@ export default function Settings() {
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           {state.accounts.map((acct: WalletAccount) => {
             const isActive = acct.id === state.activeAccountId;
+            const badgeTone = accountAuthTone(acct);
             return (
               <button
                 key={acct.id}
@@ -320,15 +339,13 @@ export default function Settings() {
                         fontWeight: 700,
                         padding: "1px 5px",
                         borderRadius: 4,
-                        background: acct.authMethod === "email"
-                          ? "rgba(123,104,238,0.15)"
-                          : "rgba(46,204,113,0.15)",
-                        color: acct.authMethod === "email" ? "#7b68ee" : "#2ecc71",
+                        background: badgeTone.background,
+                        color: badgeTone.color,
                         letterSpacing: 0.5,
                         textTransform: "uppercase",
                       }}
                     >
-                      {acct.authMethod === "email" ? "Email" : "Passkey"}
+                      {accountAuthLabel(acct)}
                     </span>
                   </div>
                   <div className="mono" style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -375,15 +392,13 @@ export default function Settings() {
                     fontWeight: 700,
                     padding: "1px 5px",
                     borderRadius: 4,
-                    background: activeAccount.authMethod === "email"
-                      ? "rgba(123,104,238,0.15)"
-                      : "rgba(46,204,113,0.15)",
-                    color: activeAccount.authMethod === "email" ? "#7b68ee" : "#2ecc71",
+                    background: accountAuthTone(activeAccount).background,
+                    color: accountAuthTone(activeAccount).color,
                     letterSpacing: 0.5,
                     textTransform: "uppercase",
                   }}
                 >
-                  {activeAccount.authMethod === "email" ? "Email" : "Passkey"}
+                  {accountAuthLabel(activeAccount)}
                 </span>
               </div>
             </div>
