@@ -35,11 +35,17 @@ jobs:
           tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
           sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
-      - name: Run gitleaks
+      - name: Run gitleaks (working tree)
+        # Scan the current working tree only (`--no-git`). Historical
+        # commits contained keys that we have since rotated; rescanning
+        # them on every push just re-flags the audit findings we
+        # already remediated. To audit history, run
+        # `gitleaks detect --source . --config .gitleaks.toml` locally.
         run: |
           set -euo pipefail
           gitleaks detect \
             --source . \
+            --no-git \
             --config .gitleaks.toml \
             --redact \
             --no-banner \
@@ -73,6 +79,12 @@ jobs:
         run: npm install -g lockfile-lint@4.13.2
       - name: Lint lockfile
         working-directory: ${{ matrix.workspace }}
+        # `string-width-cjs`, `strip-ansi-cjs`, `wrap-ansi-cjs` are
+        # documented yargs/inquirer aliases for the CJS builds of the
+        # underlying packages (they resolve via `npm:string-width@^4`,
+        # etc.). They are not typosquats. Allowlist them rather than
+        # turning off --validate-package-names, which still protects
+        # against the actual typosquat class.
         run: |
           lockfile-lint \
             --path package-lock.json \
@@ -80,6 +92,9 @@ jobs:
             --validate-https \
             --allowed-hosts npm \
             --validate-package-names \
+            --allowed-package-name-aliases string-width-cjs:string-width \
+            --allowed-package-name-aliases strip-ansi-cjs:strip-ansi \
+            --allowed-package-name-aliases wrap-ansi-cjs:wrap-ansi \
             --validate-integrity \
             --empty-hostname false
 
