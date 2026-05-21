@@ -1,6 +1,6 @@
 {
   "name": "@arch/chrome-wallet",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -40,6 +40,7 @@
     "@types/react-dom": "^18.3.5",
     "@wxt-dev/module-react": "^1.1.2",
     "typescript": "5.7.3",
+    "vite-plugin-node-polyfills": "^0.28.0",
     "vitest": "^3.2.4",
     "wxt": "^0.20.20",
     "zod": "^3.23.8"
