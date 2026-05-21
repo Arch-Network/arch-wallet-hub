@@ -133,6 +133,11 @@ export default function Send({ networkStatus }: SendProps) {
   const presetMint = searchParams.get("mint");
   const presetAsset = searchParams.get("asset");
   const [loading, setLoading] = useState(false);
+  // Phase hint shown on the primary button while a signing flow is
+  // in-flight. External-wallet flows hop through several async stages
+  // (wallet popup → Hub submit → broadcast); without per-phase copy
+  // the spinner reads as "frozen" and users assume it's hung.
+  const [signStatus, setSignStatus] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [txResult, setTxResult] = useState<{ txid: string; rawTxid: string } | null>(null);
 
@@ -281,11 +286,13 @@ export default function Send({ networkStatus }: SendProps) {
         throw new Error("Active account is not an external wallet");
       }
       const adapter = getExternalWalletAdapter(activeAccount.externalProvider);
+      setSignStatus(`Waiting for ${adapter.label} to sign…`);
       const signature64Hex = await adapter.signPsbt({
         address: activeAccount.btcAddress,
         psbtBase64,
         network: state.network,
       });
+      setSignStatus("Submitting to Wallet Hub…");
       const client = await getClient();
       const externalUserId = await getExternalUserId();
       const submitRes = await client.submitSigningRequest(signingRequestId, {
@@ -340,20 +347,42 @@ export default function Send({ networkStatus }: SendProps) {
     setLoading(true);
     setError("");
     try {
-      if (!activeAccount.organizationId)
-        throw new Error("Missing organization ID for this wallet");
-
-      // Unified path: locally-built PSBT, session-stamped signer,
-      // local broadcast. The signer figures out whether the active
-      // session was bootstrapped via WebAuthn (passkey) or OTP
-      // (email); the call site doesn't need to care.
-      const { signedPsbtHex } = await signerForAccount(activeAccount).signPsbt({
-        psbtHex: btcPrepare.psbtHex,
-      });
-
       const isTestnet = state.network === "testnet4";
       const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
-      const rawTxHex = finalizeSignedPsbt(hexToBase64(signedPsbtHex), network);
+
+      // Two signing paths: external (Xverse / UniSat / Magic Eden)
+      // and internal (Turnkey passkey / email session). The PSBT we
+      // built locally is the same for both; only the signer differs.
+      // We always finalize and broadcast through our indexer so our
+      // own pending-UTXO view stays in sync regardless of who signed.
+      let signedPsbtBase64: string;
+      if (isExternalAccount(activeAccount)) {
+        const adapter = getExternalWalletAdapter(activeAccount.externalProvider);
+        setSignStatus(`Waiting for ${adapter.label} to sign…`);
+        const inputIndexes = Array.from({ length: btcPrepare.inputCount }, (_, i) => i);
+        const signed = await adapter.signBtcPsbt({
+          address: activeAccount.btcAddress,
+          psbtBase64: btcPrepare.psbtBase64,
+          network: state.network,
+          inputIndexes,
+        });
+        signedPsbtBase64 = signed.signedPsbtBase64;
+      } else {
+        if (!activeAccount.organizationId)
+          throw new Error("Missing organization ID for this wallet");
+        setSignStatus("Signing transaction…");
+        // Locally-built PSBT, session-stamped signer. The signer
+        // figures out whether the active session was bootstrapped via
+        // WebAuthn (passkey) or OTP (email); the call site doesn't
+        // need to care.
+        const { signedPsbtHex } = await signerForAccount(activeAccount).signPsbt({
+          psbtHex: btcPrepare.psbtHex,
+        });
+        signedPsbtBase64 = hexToBase64(signedPsbtHex);
+      }
+
+      setSignStatus("Broadcasting transaction…");
+      const rawTxHex = finalizeSignedPsbt(signedPsbtBase64, network);
 
       const indexer = await getIndexer();
       const txid = await indexer.broadcastBtc(rawTxHex);
@@ -365,6 +394,7 @@ export default function Send({ networkStatus }: SendProps) {
       setError(err.message || "Transaction signing failed");
     } finally {
       setLoading(false);
+      setSignStatus(null);
     }
   }, [activeAccount, btcPrepare, state.network, recipient, addRecentRecipient]);
 
@@ -372,15 +402,12 @@ export default function Send({ networkStatus }: SendProps) {
     if (!activeAccount) return;
 
     if (asset === "btc") {
-      if (isExternalAccount(activeAccount)) {
-        setError("BTC sends from external wallets are not supported yet. Send BTC from the source wallet.");
-        return;
-      }
       return handleBtcSign();
     }
 
     setLoading(true);
     setError("");
+    setSignStatus("Preparing signing request…");
     try {
       const archLamports = String(Math.round((Number(amount) || 0) * 1e9));
       const aplRawAmount =
@@ -486,6 +513,7 @@ export default function Send({ networkStatus }: SendProps) {
       setError(formatWalletHubError(err, "Transaction failed"));
     } finally {
       setLoading(false);
+      setSignStatus(null);
     }
   }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, signWithExternalWallet, handleBtcSign, addRecentRecipient, state.network]);
 
@@ -507,7 +535,6 @@ export default function Send({ networkStatus }: SendProps) {
   const btcExplorerBase = isTestnet
     ? "https://mempool.space/testnet4/tx/"
     : "https://mempool.space/tx/";
-  const activeIsExternal = isExternalAccount(activeAccount);
 
   // Step 1: Choose asset
   if (step === 1) {
@@ -521,12 +548,7 @@ export default function Send({ networkStatus }: SendProps) {
         <div className="send-asset-list">
           <button
             className="card send-asset-card"
-            disabled={activeIsExternal}
             onClick={() => {
-              if (activeIsExternal) {
-                setError("BTC sends from external wallets are not supported yet. Send BTC from the source wallet.");
-                return;
-              }
               setAsset("btc");
               setStep(2);
             }}
@@ -535,9 +557,7 @@ export default function Send({ networkStatus }: SendProps) {
               {renderAssetIcon("btc", null)}
               <div className="asset-info">
                 <div className="asset-name">Bitcoin</div>
-                <div className="asset-sub">
-                  {activeIsExternal ? "Send from source wallet" : "BTC"}
-                </div>
+                <div className="asset-sub">BTC</div>
               </div>
               <div className="send-asset-balance-wrap">
                 <div className="send-asset-balance-label">Available</div>
@@ -954,7 +974,7 @@ export default function Send({ networkStatus }: SendProps) {
           onClick={handleSubmit}
           disabled={loading}
         >
-          {loading ? "Signing…" : "Confirm & Sign"}
+          {loading ? (signStatus || "Signing…") : "Confirm & Sign"}
         </button>
       </div>
     );

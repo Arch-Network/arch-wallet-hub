@@ -263,6 +263,16 @@ async function requestExternalWalletViaConnector(message: any): Promise<any> {
     request: message.request,
   };
   scheduleConnectorIdleClose();
+  // Refocus the connector window before each bridge call. The
+  // external wallet's confirmation UI (Xverse / UniSat / Magic Eden)
+  // mounts inside the connector page; if the window is in the
+  // background the prompt is invisible to the user, which presents
+  // as a silent hang while we wait for a response.
+  try {
+    await chrome.windows.update(target.windowId, { focused: true, drawAttention: true });
+  } catch {
+    /* window may have been closed between ensureConnectorTab and now */
+  }
   try {
     return await chrome.tabs.sendMessage(target.tabId, payload);
   } catch (err: any) {

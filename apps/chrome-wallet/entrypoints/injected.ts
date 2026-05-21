@@ -18,7 +18,16 @@
 import { archProvider } from "../src/provider/arch-provider";
 import { bitcoinProvider } from "../src/provider/bitcoin-provider";
 import { registerWalletStandard } from "../src/provider/wallet-standard";
-import { AddressPurpose, request } from "sats-connect";
+import {
+  AddressPurpose,
+  BitcoinNetworkType,
+  MessageSigningProtocols,
+  getAddress,
+  signMessage as xverseSignMessage,
+  signTransaction as xverseSignTransaction,
+  type GetAddressResponse,
+  type SignTransactionResponse,
+} from "sats-connect";
 
 type ExternalProvider = "xverse" | "unisat" | "magiceden";
 type ExternalRequest =
@@ -32,6 +41,16 @@ type ExternalRequest =
       provider: ExternalProvider;
       method: "signPsbt";
       args: { address: string; psbtBase64: string; network: "testnet4" | "mainnet" };
+    }
+  | {
+      provider: ExternalProvider;
+      method: "signBtcPsbt";
+      args: {
+        address: string;
+        psbtBase64: string;
+        network: "testnet4" | "mainnet";
+        inputIndexes: number[];
+      };
     };
 
 const externalInFlight = new Set<string>();
@@ -54,32 +73,45 @@ function satsNetwork(network: "testnet4" | "mainnet"): "Mainnet" | "Testnet" {
   return network === "mainnet" ? "Mainnet" : "Testnet";
 }
 
-function xverseNetwork(network: "testnet4" | "mainnet"): "Mainnet" | "Testnet4" {
-  // BitcoinNetworkType in sats-connect 4.x supports "Testnet4" directly
-  // for wallet_connect. Pass it through so the user is not nagged with
-  // a redundant network-switch modal when Xverse is already on Testnet4.
-  return network === "mainnet" ? "Mainnet" : "Testnet4";
+function xverseBitcoinNetwork(network: "testnet4" | "mainnet"): BitcoinNetworkType {
+  // Xverse's legacy callback API accepts Testnet4 and will surface a
+  // "Mismatched Network" modal if the user's wallet is set to a
+  // different network -- this is the desired UX because it tells the
+  // user exactly what to do (switch Xverse to Testnet4). We previously
+  // tried mapping testnet4 -> Testnet in the hope that Xverse would
+  // auto-bridge, but that path silently hangs instead of prompting, so
+  // Testnet4 is the better trade.
+  return network === "mainnet" ? BitcoinNetworkType.Mainnet : BitcoinNetworkType.Testnet4;
 }
 
-function describeXverseFailure(prefix: string, response: any): Error {
-  const code = response?.error?.code;
-  const message = response?.error?.message || "Xverse request failed";
-  // Surface code + message together so we can tell apart "Invalid
-  // parameters" (validation), "User rejected", "Wallet locked", etc.
-  // when the only thing the popup gets back is a string. We also
-  // serialize `error.data` (Xverse 4.x sometimes attaches a hint
-  // describing which field failed validation).
-  let detail = code != null ? `${message} (code ${code})` : message;
-  const data = response?.error?.data;
-  if (data !== undefined) {
-    try {
-      detail += ` data=${JSON.stringify(data)}`;
-    } catch {
-      detail += ` data=<unserializable>`;
-    }
-  }
-  console.warn(`[ArchWallet] ${prefix} failed:`, response);
-  return new Error(`${prefix}: ${detail}`);
+/**
+ * Promisify sats-connect's legacy callback API (`getAddress`,
+ * `signMessage`, `signTransaction`).
+ *
+ * Why legacy API: sats-connect's newer `request("wallet_connect", …)`
+ * JSON-RPC dispatch goes through `BitcoinProvider.request(method,
+ * params)` on Xverse. In some Xverse builds that method registers but
+ * never resolves -- the approval popup never opens and the promise
+ * hangs forever. The legacy callback API instead dispatches via
+ * `BitcoinProvider.connect()` / `.signMessage()` / `.signTransaction()`,
+ * which the Xverse SW actually responds to today.
+ *
+ * The callback API returns `Promise<void>` and reports its result
+ * through `onFinish` / `onCancel`; this helper bridges it back to a
+ * normal awaitable promise.
+ */
+function promisifyXverse<T>(
+  fn: (opts: any) => Promise<void>,
+  payload: any,
+  label: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    fn({
+      payload,
+      onFinish: (response: T) => resolve(response),
+      onCancel: () => reject(new Error(`${label} cancelled in Xverse`)),
+    }).catch(reject);
+  });
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -107,51 +139,71 @@ function magicEdenProvider(): any | null {
 
 async function handleExternalRequest(req: ExternalRequest): Promise<unknown> {
   if (req.provider === "xverse") {
+    const network = { type: xverseBitcoinNetwork(req.args.network) };
+
     if (req.method === "connect") {
-      const params = {
-        addresses: [AddressPurpose.Payment, AddressPurpose.Ordinals],
-        message: "Connect to Arch Wallet",
-        network: xverseNetwork(req.args.network),
-      };
-      console.log("[ArchWallet] xverse wallet_connect →", params);
-      const response: any = await request("wallet_connect" as any, params as any);
-      console.log("[ArchWallet] xverse wallet_connect ←", response);
-      if (response?.status !== "success") {
-        throw describeXverseFailure("Xverse connect", response);
-      }
-      const taproot = pickTaprootAddress(response.result?.addresses ?? []);
+      console.log("[ArchWallet] xverse getAddress → network", network.type);
+      const response = await promisifyXverse<GetAddressResponse>(
+        getAddress,
+        {
+          purposes: [AddressPurpose.Payment, AddressPurpose.Ordinals],
+          message: "Connect to Arch Wallet",
+          network,
+        },
+        "Connect",
+      );
+      console.log("[ArchWallet] xverse getAddress ← addresses:", response?.addresses?.length ?? 0);
+      const taproot = pickTaprootAddress(response.addresses ?? []);
       if (!taproot?.address) throw new Error("No Taproot address found in Xverse");
       return { provider: "xverse", address: taproot.address, publicKeyHex: taproot.publicKey || "" };
     }
+
     if (req.method === "signMessage") {
-      const params = {
-        address: req.args.address,
-        message: req.args.message,
-        protocol: "BIP322",
-      };
-      console.log("[ArchWallet] xverse signMessage →", {
-        address: params.address,
-        protocol: params.protocol,
-        messageLength: params.message.length,
-        messagePreview: params.message.slice(0, 120),
-      });
-      const response: any = await request("signMessage", params as any);
-      console.log("[ArchWallet] xverse signMessage ←", response);
-      if (response?.status !== "success") {
-        throw describeXverseFailure("Xverse signMessage", response);
-      }
-      return { signature: response.result?.signature, schemeHint: "bip322" };
+      console.log("[ArchWallet] xverse signMessage → address", req.args.address);
+      const signature = await promisifyXverse<string>(
+        xverseSignMessage,
+        {
+          address: req.args.address,
+          message: req.args.message,
+          protocol: MessageSigningProtocols.BIP322,
+          network,
+        },
+        "Sign message",
+      );
+      console.log(
+        "[ArchWallet] xverse signMessage ←",
+        signature ? `${signature.length} chars` : "<empty>",
+      );
+      return { signature, schemeHint: "bip322" };
     }
-    const response: any = await request("signPsbt", {
-      psbt: req.args.psbtBase64,
-      signInputs: { [req.args.address]: [0] },
-      broadcast: false,
-    } as any);
-    console.log("[ArchWallet] xverse signPsbt ←", response);
-    if (response?.status !== "success") {
-      throw describeXverseFailure("Xverse signPsbt", response);
-    }
-    return { signedPsbtBase64: response.result?.psbt };
+
+    // signPsbt and signBtcPsbt both go through legacy signTransaction
+    // with broadcast: false -- the caller finalizes and pushes via our
+    // indexer. The only difference is which input indexes are signed:
+    // [0] for Arch PSBTs (single Taproot input), all UTXO indexes for
+    // a BTC send.
+    const signingIndexes = req.method === "signBtcPsbt" ? req.args.inputIndexes : [0];
+    const txMessage =
+      req.method === "signBtcPsbt" ? "Sign Bitcoin transaction" : "Sign Arch transaction";
+    console.log(
+      "[ArchWallet] xverse signTransaction →",
+      req.method,
+      "indexes:",
+      signingIndexes,
+    );
+    const txResponse = await promisifyXverse<SignTransactionResponse>(
+      xverseSignTransaction,
+      {
+        psbtBase64: req.args.psbtBase64,
+        inputsToSign: [{ address: req.args.address, signingIndexes }],
+        broadcast: false,
+        message: txMessage,
+        network,
+      },
+      "Sign transaction",
+    );
+    console.log("[ArchWallet] xverse signTransaction ← psbt:", txResponse?.psbtBase64?.length ?? 0);
+    return { signedPsbtBase64: txResponse.psbtBase64 };
   }
 
   if (req.provider === "unisat") {
@@ -170,10 +222,26 @@ async function handleExternalRequest(req: ExternalRequest): Promise<unknown> {
       };
     }
     if (!window.unisat.signPsbt) throw new Error("UniSat PSBT signing is not available");
+    if (req.method === "signPsbt") {
+      return {
+        signedPsbtHex: await window.unisat.signPsbt(base64ToHex(req.args.psbtBase64), {
+          autoFinalized: false,
+        }),
+      };
+    }
+    // signBtcPsbt: pass each input index explicitly with our address so
+    // UniSat targets exactly the UTXOs we built into the PSBT (no
+    // ambiguity if the wallet holds multiple addresses). Keep
+    // autoFinalized: false so our caller finalizes via bitcoinjs-lib;
+    // the indexer broadcasts the extracted raw tx.
     return {
       signedPsbtHex: await window.unisat.signPsbt(base64ToHex(req.args.psbtBase64), {
         autoFinalized: false,
-      }),
+        toSignInputs: req.args.inputIndexes.map((index) => ({
+          index,
+          address: req.args.address,
+        })),
+      } as any),
     };
   }
 
@@ -199,12 +267,16 @@ async function handleExternalRequest(req: ExternalRequest): Promise<unknown> {
   }
   const signer = provider.signPsbt ?? provider.signTransaction;
   if (!signer) throw new Error("Magic Eden PSBT signing is not available");
+  const signingIndexes =
+    req.method === "signBtcPsbt" ? req.args.inputIndexes : [0];
+  const message =
+    req.method === "signBtcPsbt" ? "Sign Bitcoin transaction" : "Sign Arch transaction";
   const result = await signer.call(provider, {
     network: satsNetwork(req.args.network),
-    message: "Sign Arch transaction",
+    message,
     psbtBase64: req.args.psbtBase64,
     broadcast: false,
-    inputsToSign: [{ address: req.args.address, signingIndexes: [0] }],
+    inputsToSign: [{ address: req.args.address, signingIndexes }],
   });
   return {
     signedPsbtBase64:

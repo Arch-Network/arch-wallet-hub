@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
@@ -14,6 +14,7 @@ import {
 } from "../../state/types";
 import { PASSKEY_RP_ID } from "../../session/constants";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
+import ArchLogoAnimated from "../../components/ArchLogoAnimated";
 import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
 
 interface OnboardingProps {
@@ -653,6 +654,20 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     else goNext();
   }, [onLastStep, submitWizard, goNext]);
 
+  // Used by the <form> wrappers below so pressing Enter inside any
+  // input on steps 1/2 triggers the same Continue/Create action as
+  // the primary button. We re-check `nextDisabled` here because the
+  // submit button's `disabled` attribute alone won't stop an implicit
+  // form submission when validation flips between renders.
+  const handleWizardSubmit = useCallback(
+    (e: FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      if (nextDisabled) return;
+      handlePrimary();
+    },
+    [nextDisabled, handlePrimary],
+  );
+
   if (step === "creating") {
     return (
       <div className="onboarding">
@@ -682,10 +697,11 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   }
 
   if (step === "secure") {
+    const secureDisabled = !password || password !== confirmPassword;
     return (
       <div className="onboarding">
         <div className="onboarding-logo">
-          <img src="/arch-logo.svg" alt="Arch" />
+          <ArchLogoAnimated />
         </div>
         <h1 className="onboarding-title">Secure your wallet</h1>
         <p className="onboarding-sub">
@@ -695,24 +711,34 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
         {error && <div className="error-banner">{error}</div>}
 
-        <div className="onboarding-card">
-          <PasswordFields
-            password={password}
-            confirm={confirmPassword}
-            onPassword={setPassword}
-            onConfirm={setConfirmPassword}
-          />
-        </div>
+        <form
+          className="onboarding-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (secureDisabled) return;
+            void sealLegacyAndExit();
+          }}
+          noValidate
+        >
+          <div className="onboarding-card">
+            <PasswordFields
+              password={password}
+              confirm={confirmPassword}
+              onPassword={setPassword}
+              onConfirm={setConfirmPassword}
+            />
+          </div>
 
-        <div className="onboarding-actions">
-          <button
-            className="btn btn-primary btn-full"
-            onClick={sealLegacyAndExit}
-            disabled={!password || password !== confirmPassword}
-          >
-            Encrypt &amp; Continue
-          </button>
-        </div>
+          <div className="onboarding-actions">
+            <button
+              type="submit"
+              className="btn btn-primary btn-full"
+              disabled={secureDisabled}
+            >
+              Encrypt &amp; Continue
+            </button>
+          </div>
+        </form>
       </div>
     );
   }
@@ -747,7 +773,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   return (
     <div className="onboarding">
       <div className="onboarding-logo">
-        <img src="/arch-logo.svg" alt="Arch" />
+        <ArchLogoAnimated />
       </div>
 
       <div className="onboarding-progress" aria-hidden="true">
@@ -770,60 +796,67 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         <MethodChoiceStep onPick={chooseMethod} />
       )}
 
-      {wizardStep === 1 && (
-        wizardMethod === "external" ? (
-          <ExternalProviderStep
-            selected={externalProvider}
-            walletName={walletName}
-            onWalletName={setWalletName}
-            onSelect={setExternalProvider}
-          />
-        ) : (
-          <DetailsStep
-            method={wizardMethod}
-            walletName={walletName}
-            email={email}
-            onWalletName={setWalletName}
-            onEmail={setEmail}
-          />
-        )
-      )}
-
-      {wizardStep === 2 && (
-        <div className="onboarding-card">
-          <PasswordFields
-            password={password}
-            confirm={confirmPassword}
-            onPassword={setPassword}
-            onConfirm={setConfirmPassword}
-          />
-        </div>
-      )}
-
+      {/* Steps 1 and 2 wrap their inputs + nav in a <form> so the
+          browser's implicit "submit on Enter" behavior fires the
+          primary action (Continue / Create wallet). The submit
+          handler re-validates because the button's `disabled`
+          attribute alone doesn't reliably block implicit submit
+          across all browsers. */}
       {wizardStep > 0 && (
-        <div className="onboarding-nav">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={goBack}
-          >
-            Back
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={handlePrimary}
-            disabled={nextDisabled}
-          >
-            {onLastStep
-              ? wizardMethod === "passkey"
-                ? "Create with passkey"
-                : wizardMethod === "email"
-                  ? "Create with email"
-                  : "Connect wallet"
-              : "Continue"}
-          </button>
-        </div>
+        <form className="onboarding-form" onSubmit={handleWizardSubmit} noValidate>
+          {wizardStep === 1 && (
+            wizardMethod === "external" ? (
+              <ExternalProviderStep
+                selected={externalProvider}
+                walletName={walletName}
+                onWalletName={setWalletName}
+                onSelect={setExternalProvider}
+              />
+            ) : (
+              <DetailsStep
+                method={wizardMethod}
+                walletName={walletName}
+                email={email}
+                onWalletName={setWalletName}
+                onEmail={setEmail}
+              />
+            )
+          )}
+
+          {wizardStep === 2 && (
+            <div className="onboarding-card">
+              <PasswordFields
+                password={password}
+                confirm={confirmPassword}
+                onPassword={setPassword}
+                onConfirm={setConfirmPassword}
+              />
+            </div>
+          )}
+
+          <div className="onboarding-nav">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={goBack}
+            >
+              Back
+            </button>
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={nextDisabled}
+            >
+              {onLastStep
+                ? wizardMethod === "passkey"
+                  ? "Create with passkey"
+                  : wizardMethod === "email"
+                    ? "Create with email"
+                    : "Connect wallet"
+                : "Continue"}
+            </button>
+          </div>
+        </form>
       )}
 
       {wizardStep === 0 && (

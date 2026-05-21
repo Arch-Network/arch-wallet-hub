@@ -1638,12 +1638,14 @@ a {
   transform: translateY(-1px);
 }
 
-.send-asset-card-disabled {
-  cursor: default;
+.send-asset-card-disabled,
+.send-asset-card:disabled {
+  cursor: not-allowed;
   opacity: 0.55;
 }
 
-.send-asset-card-disabled:hover {
+.send-asset-card-disabled:hover,
+.send-asset-card:disabled:hover {
   border-color: var(--border-primary);
   background: var(--bg-card);
   transform: none;
@@ -1958,8 +1960,14 @@ a {
 
 /* ═══════════════════ Network Pill ═══════════════════ */
 
+/* `.network-switcher` itself is intentionally NOT a positioning context.
+   The popover (`.network-menu`) is absolute-positioned relative to
+   `.header-inner` so its right edge can align with the header band's
+   right edge, instead of the small pill's right edge. The pill sits to
+   the left of the address chip and lock button, so anchoring to the
+   pill would push a 240px-wide menu off the left edge of a 400px popup
+   (and similarly off the main-column edge in narrow side panels). */
 .network-switcher {
-  position: relative;
   display: inline-flex;
 }
 
@@ -2646,11 +2654,100 @@ a {
     transparent 70%
   );
   margin-bottom: -4px; /* tighten the gap to title without changing the parent's gap */
+  /* Slow breathing halo. The keyframe scales the whole element
+     (including the radial-gradient background) so the glow swells in
+     and out around the mark. The inner SVG counter-scales so the
+     logo glyph itself stays visually stable; only the halo breathes. */
+  animation: arch-logo-halo 4.2s ease-in-out infinite;
+  will-change: transform;
 }
 
 .onboarding-logo img {
   width: 56px;
   height: 56px;
+}
+
+/* ── Animated hero logo (ArchLogoAnimated) ──────────────────
+   Two layered effects:
+   - On mount, each chevron rises + fades in with a stagger
+     (innermost first → outermost last), reading as a "build up"
+     of the mark.
+   - After the build-up, a slow continuous shimmer cycles through
+     the chevrons so the hero never goes fully static. */
+
+.arch-logo-animated {
+  width: 56px;
+  height: 56px;
+  display: block;
+  overflow: visible;
+  /* Counter-scale the halo's breath so the glyph itself stays
+     visually fixed while the surrounding glow swells. */
+  animation: arch-logo-counter 4.2s ease-in-out infinite;
+}
+
+.arch-logo-animated__chevron {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  /* Continuous cascade: each chevron rises in, holds, then
+     dissolves upward, looping forever. The per-chevron --i
+     staggers the start so the cascade reads as a wave
+     (innermost → outermost), then the whole mark briefly
+     dissolves before rebuilding. */
+  animation: arch-chevron-loop 4.2s cubic-bezier(0.2, 0.7, 0.2, 1) infinite;
+  animation-delay: calc(var(--i, 0) * 180ms);
+}
+
+@keyframes arch-chevron-loop {
+  0%   { opacity: 0; transform: translateY(8%) scale(0.9); }
+  18%  { opacity: 1; transform: translateY(0)  scale(1); }
+  70%  { opacity: 1; transform: translateY(0)  scale(1); }
+  88%  { opacity: 0; transform: translateY(-4%) scale(1.04); }
+  100% { opacity: 0; transform: translateY(8%) scale(0.9); }
+}
+
+/* Metallic flare: a bright specular streak that travels left → right
+   across the chevron silhouette once per cycle. The rect starts
+   parked off-screen left, glides across during the cascade's peak
+   visibility window (~25–70% of the cycle), then sits parked
+   off-screen right until the next loop. Same total duration as the
+   chevron loop so the sweep and the cascade stay in lockstep. */
+.arch-logo-animated__flare {
+  transform-box: fill-box;
+  transform-origin: 0 0;
+  mix-blend-mode: screen;
+  will-change: transform;
+  animation: arch-logo-flare 4.2s ease-in-out infinite;
+}
+
+@keyframes arch-logo-flare {
+  0%, 25%   { transform: translateX(0); }
+  70%, 100% { transform: translateX(1700px); }
+}
+
+@keyframes arch-logo-halo {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.08); }
+}
+
+@keyframes arch-logo-counter {
+  /* Inverse of arch-logo-halo so the glyph stays put while the
+     halo breathes. 1 / 1.08 ≈ 0.9259. */
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(0.9259); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-logo,
+  .arch-logo-animated,
+  .arch-logo-animated__flare {
+    animation: none;
+  }
+  .arch-logo-animated__chevron {
+    opacity: 1;
+    transform: none;
+    animation: none;
+  }
 }
 
 .onboarding-title {
@@ -2956,6 +3053,19 @@ a {
 
 /* The Back/Next bar lives outside the card so the card itself
    stays focused on the user's one input for that step. */
+/* The wizard inputs + primary/back nav are wrapped in a <form> so
+   pressing Enter inside any input submits the step. The form sits
+   in place of the old card+nav siblings inside `.onboarding` (a
+   flex column with `gap: 14px` and `align-items: center`), so it
+   needs to take full width and re-establish the same vertical
+   rhythm internally — otherwise the card would touch the nav. */
+.onboarding-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .onboarding-nav {
   display: flex;
   gap: 8px;
