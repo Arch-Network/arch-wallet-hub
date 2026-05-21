@@ -206,10 +206,13 @@ export const DEFAULT_HUB_BASE_URL =
  * rewrites known stale keys (`LEGACY_HUB_API_KEY`) forward to the
  * env-supplied value.
  */
-const buildHubKey =
-  ((import.meta as any)?.env?.WXT_HUB_API_KEY as string | undefined) ?? "";
-const devHubKey =
-  ((import.meta as any)?.env?.WXT_HUB_API_KEY_DEV as string | undefined) ?? "";
+// IMPORTANT: keep these as a plain non-optional property access on
+// `import.meta.env.X`. Vite/Rolldown only substitutes that exact pattern
+// at bundle-time; optional chaining (`import.meta?.env?.X`) is left
+// untouched by Rolldown on Node 20 and the env value never reaches the
+// bundle. The `?? ""` covers the dev-server case where the var is unset.
+const buildHubKey: string = import.meta.env.WXT_HUB_API_KEY ?? "";
+const devHubKey: string = import.meta.env.WXT_HUB_API_KEY_DEV ?? "";
 export const DEFAULT_HUB_API_KEY =
   ((globalThis as any).__ARCH_WALLET_DEFAULT_HUB_API_KEY as string | undefined) ||
   buildHubKey ||
