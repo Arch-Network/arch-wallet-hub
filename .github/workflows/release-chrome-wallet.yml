@@ -24,6 +24,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Job-level env so EVERY build invocation (incl. the rebuild that
+    # `wxt zip` triggers internally during the zip step) sees the keys.
+    # Previously these were only on the "Build extension" step, so
+    # `wxt zip` rebuilt from scratch with empty env and shipped a zip
+    # that lacked the API keys.
+    env:
+      WXT_HUB_API_KEY: ${{ secrets.WXT_HUB_API_KEY }}
+      WXT_INDEXER_API_KEY: ${{ secrets.WXT_INDEXER_API_KEY }}
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -73,25 +81,19 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           npm pkg set version="$VERSION"
 
-      - name: Build extension
+      - name: Verify build-time secrets are populated
         # Fail fast if WXT_HUB_API_KEY is missing; otherwise end users hit
         # "Missing Wallet Hub API key" at onboarding (the popup throws and
-        # the wallet is unusable). The secret is consumed by
-        # `import.meta.env.WXT_HUB_API_KEY` via Vite's standard env-prefix
-        # substitution -- keep the access in source as a non-optional
-        # property reference, Rolldown does not substitute optional chains.
-        working-directory: apps/chrome-wallet
-        env:
-          WXT_HUB_API_KEY: ${{ secrets.WXT_HUB_API_KEY }}
-          WXT_INDEXER_API_KEY: ${{ secrets.WXT_INDEXER_API_KEY }}
-          CI: "1"
+        # the wallet is unusable).
         run: |
           if [ -z "$WXT_HUB_API_KEY" ]; then
             echo "::error::WXT_HUB_API_KEY secret is empty"
             exit 1
           fi
-          echo "[diag] WXT_HUB_API_KEY len=${#WXT_HUB_API_KEY} sha1=$(printf '%s' "$WXT_HUB_API_KEY" | sha1sum | cut -c1-12)"
-          npm run build
+
+      - name: Build extension
+        working-directory: apps/chrome-wallet
+        run: npm run build
 
       - name: Create zip archive
         working-directory: apps/chrome-wallet
