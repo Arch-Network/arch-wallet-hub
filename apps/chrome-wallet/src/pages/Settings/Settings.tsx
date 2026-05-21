@@ -37,7 +37,6 @@ function isHttpsUrl(url: string): boolean {
 
 function accountAuthLabel(account: WalletAccount): string {
   if (isExternalAccount(account)) {
-    if (account.externalProvider === "magiceden") return "Magic Eden";
     if (account.externalProvider === "unisat") return "UniSat";
     return "Xverse";
   }
@@ -131,6 +130,38 @@ export default function Settings() {
     await walletStore.setActiveAccount(accountId);
     await refresh();
   }, [refresh]);
+
+  /**
+   * Disconnect a linked external wallet.
+   *
+   * "Disconnect" = remove the link from Arch Wallet's local state only.
+   * The user's Xverse / UniSat wallet (and the funds inside it) is
+   * untouched -- we never held its keys to begin with. The Hub-side
+   * link record persists too; the user can re-link the same address
+   * later and get the same `linkedWalletId` back.
+   *
+   * Last-wallet edge case: if this is the only wallet on the device,
+   * `walletStore.forgetAccount` wipes the keystore and routes the next
+   * mount back to Onboarding. Surface that in the confirm copy so the
+   * user isn't surprised by the reset.
+   */
+  const handleDisconnectWallet = useCallback(
+    async (account: WalletAccount) => {
+      const providerLabel = accountAuthLabel(account);
+      const isLast = state.accounts.length === 1;
+      const message = isLast
+        ? `Disconnect "${account.label}" (${providerLabel})?\n\n` +
+          `This is your only wallet, so Arch Wallet will reset to onboarding on this device.\n\n` +
+          `Your ${providerLabel} wallet itself is unaffected — you can re-link it anytime.`
+        : `Disconnect "${account.label}" (${providerLabel})?\n\n` +
+          `This only removes the link from Arch Wallet on this device. ` +
+          `Your ${providerLabel} wallet (and its funds) is unaffected — you can re-link it anytime.`;
+      if (!window.confirm(message)) return;
+      await walletStore.forgetAccount(account.id);
+      await refresh();
+    },
+    [refresh, state.accounts.length],
+  );
 
   const handleChangePassword = useCallback(async () => {
     setPwError(null);
@@ -303,59 +334,94 @@ export default function Settings() {
           {state.accounts.map((acct: WalletAccount) => {
             const isActive = acct.id === state.activeAccountId;
             const badgeTone = accountAuthTone(acct);
+            // Only external (Xverse / UniSat) wallets get the disconnect
+            // affordance: those are pure links to user-owned wallets we
+            // never held keys for, so "disconnect" is a clean operation.
+            // Removing passkey/email wallets is a much riskier action
+            // (only doable via the existing Reset flow) and intentionally
+            // not exposed inline here.
+            const canDisconnect = isExternalAccount(acct);
             return (
-              <button
+              <div
                 key={acct.id}
-                onClick={() => handleSwitchWallet(acct.id)}
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  width: "100%",
-                  padding: "10px 12px",
-                  border: "none",
+                  alignItems: "stretch",
                   borderBottom: "1px solid var(--border-primary)",
                   background: isActive ? "rgba(193,154,91,0.08)" : "transparent",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  color: "inherit",
                 }}
               >
-                <span
+                <button
+                  onClick={() => handleSwitchWallet(acct.id)}
                   style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: isActive ? "var(--success)" : "var(--border-primary)",
-                    flexShrink: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    flex: 1,
+                    minWidth: 0,
+                    padding: "10px 12px",
+                    border: "none",
+                    background: "transparent",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    color: "inherit",
                   }}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
-                    {acct.label}
-                    <span
-                      style={{
-                        fontSize: 9,
-                        fontWeight: 700,
-                        padding: "1px 5px",
-                        borderRadius: 4,
-                        background: badgeTone.background,
-                        color: badgeTone.color,
-                        letterSpacing: 0.5,
-                        textTransform: "uppercase",
-                      }}
-                    >
-                      {accountAuthLabel(acct)}
-                    </span>
+                >
+                  <span
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      background: isActive ? "var(--success)" : "var(--border-primary)",
+                      flexShrink: 0,
+                    }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                      {acct.label}
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 700,
+                          padding: "1px 5px",
+                          borderRadius: 4,
+                          background: badgeTone.background,
+                          color: badgeTone.color,
+                          letterSpacing: 0.5,
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {accountAuthLabel(acct)}
+                      </span>
+                    </div>
+                    <div className="mono" style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {truncateAddress(acct.btcAddress, 10)}
+                    </div>
                   </div>
-                  <div className="mono" style={{ fontSize: 10, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {truncateAddress(acct.btcAddress, 10)}
-                  </div>
-                </div>
-                {isActive && (
-                  <span style={{ fontSize: 10, color: "var(--accent)", fontWeight: 700 }}>Active</span>
+                  {isActive && (
+                    <span style={{ fontSize: 10, color: "var(--accent)", fontWeight: 700 }}>Active</span>
+                  )}
+                </button>
+                {canDisconnect && (
+                  <button
+                    onClick={() => handleDisconnectWallet(acct)}
+                    title={`Disconnect ${acct.label}`}
+                    aria-label={`Disconnect ${acct.label}`}
+                    style={{
+                      padding: "0 12px",
+                      border: "none",
+                      background: "transparent",
+                      cursor: "pointer",
+                      color: "var(--text-muted)",
+                      fontSize: 18,
+                      lineHeight: 1,
+                      flexShrink: 0,
+                    }}
+                  >
+                    ×
+                  </button>
                 )}
-              </button>
+              </div>
             );
           })}
           <button

@@ -29,7 +29,7 @@ import {
   type SignTransactionResponse,
 } from "sats-connect";
 
-type ExternalProvider = "xverse" | "unisat" | "magiceden";
+type ExternalProvider = "xverse" | "unisat";
 type ExternalRequest =
   | { provider: ExternalProvider; method: "connect"; args: { network: "testnet4" | "mainnet" } }
   | {
@@ -63,14 +63,7 @@ declare global {
       signMessage?(message: string, type?: string): Promise<string>;
       signPsbt?(psbtHex: string, options?: { autoFinalized?: boolean }): Promise<string>;
     };
-    magicEden?: {
-      bitcoin?: any;
-    };
   }
-}
-
-function satsNetwork(network: "testnet4" | "mainnet"): "Mainnet" | "Testnet" {
-  return network === "mainnet" ? "Mainnet" : "Testnet";
 }
 
 function xverseBitcoinNetwork(network: "testnet4" | "mainnet"): BitcoinNetworkType {
@@ -128,13 +121,6 @@ function pickTaprootAddress(addresses: any[]): any | null {
     addresses.find((a) => a.address?.startsWith("tb1p") || a.address?.startsWith("bc1p")) ||
     null
   );
-}
-
-function magicEdenProvider(): any | null {
-  const direct = window.magicEden?.bitcoin;
-  if (direct) return direct;
-  const legacy = (window as any).BitcoinProvider;
-  return legacy?.isMagicEden ? legacy : null;
 }
 
 async function handleExternalRequest(req: ExternalRequest): Promise<unknown> {
@@ -245,43 +231,11 @@ async function handleExternalRequest(req: ExternalRequest): Promise<unknown> {
     };
   }
 
-  const provider = magicEdenProvider();
-  if (!provider) throw new Error("Magic Eden wallet not detected in this tab");
-  if (req.method === "connect") {
-    const raw = provider.connect ? await provider.connect() : await provider.getAccounts?.();
-    const addresses = Array.isArray(raw) ? raw : raw?.addresses ?? [];
-    const taproot = pickTaprootAddress(addresses);
-    if (!taproot?.address) throw new Error("No Taproot address found in Magic Eden");
-    return { provider: "magiceden", address: taproot.address, publicKeyHex: taproot.publicKey || "" };
-  }
-  if (req.method === "signMessage") {
-    if (!provider.signMessage) throw new Error("Magic Eden message signing is not available");
-    return {
-      signature: await provider.signMessage({
-        address: req.args.address,
-        message: req.args.message,
-        protocol: "BIP322",
-      }),
-      schemeHint: "bip322",
-    };
-  }
-  const signer = provider.signPsbt ?? provider.signTransaction;
-  if (!signer) throw new Error("Magic Eden PSBT signing is not available");
-  const signingIndexes =
-    req.method === "signBtcPsbt" ? req.args.inputIndexes : [0];
-  const message =
-    req.method === "signBtcPsbt" ? "Sign Bitcoin transaction" : "Sign Arch transaction";
-  const result = await signer.call(provider, {
-    network: satsNetwork(req.args.network),
-    message,
-    psbtBase64: req.args.psbtBase64,
-    broadcast: false,
-    inputsToSign: [{ address: req.args.address, signingIndexes }],
-  });
-  return {
-    signedPsbtBase64:
-      typeof result === "string" ? result : result.psbtBase64 || result.signedPsbtBase64,
-  };
+  // Exhaustive guard: ExternalProvider is "xverse" | "unisat" today, so
+  // we should never reach this. Throw a clear error so the connector UI
+  // surfaces a usable message if a future provider sneaks in without a
+  // branch above.
+  throw new Error(`Unsupported external wallet provider: ${(req as any).provider}`);
 }
 
 export default defineUnlistedScript({

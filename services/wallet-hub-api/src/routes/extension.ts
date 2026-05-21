@@ -3,7 +3,7 @@ import type { FastifyPluginAsync } from "fastify";
 /**
  * Extension connector page.
  *
- * Why this exists: external Bitcoin wallets (Xverse, UniSat, Magic Eden)
+ * Why this exists: external Bitcoin wallets (Xverse, UniSat)
  * inject their providers into regular http(s) pages, NOT into
  * `chrome-extension://` URLs. The Arch Wallet extension needs a stable,
  * scriptable origin to host its sats-connect bridge so that wallet

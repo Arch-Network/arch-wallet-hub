@@ -16,7 +16,7 @@ export type RecipientAsset = "btc" | "arch" | "apl";
  *   - isCustodial === false -> authMethod = "passkey"
  *
  * v4 -> v5: accounts gain `kind`. Existing accounts are Turnkey-backed;
- * newly linked Xverse/UniSat/Magic Eden accounts use `kind="external"`.
+ * newly linked Xverse/UniSat accounts use `kind="external"`.
  */
 export const CURRENT_SCHEMA_VERSION = 5;
 
@@ -33,7 +33,16 @@ export const CURRENT_SCHEMA_VERSION = 5;
  */
 export type WalletAuthMethod = "passkey" | "email" | "external";
 export type WalletAccountKind = "turnkey" | "external";
-export type ExternalWalletProvider = "xverse" | "unisat" | "magiceden";
+/**
+ * External Bitcoin wallets the extension can link.
+ *
+ * Magic Eden was previously in this union but is no longer supported:
+ * the Magic Eden wallet has been discontinued, so any `externalProvider
+ * === "magiceden"` rows in stored state are migrated out by
+ * `migrateState` (see `wallet-store.ts`). Anywhere downstream of that
+ * migration can safely assume only the values below appear at runtime.
+ */
+export type ExternalWalletProvider = "xverse" | "unisat";
 
 /**
  * A recipient address the user has previously sent to. Surfaced on the Send

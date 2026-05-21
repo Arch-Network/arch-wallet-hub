@@ -5,7 +5,11 @@ import { Turnkey } from "@turnkey/sdk-browser";
 import { walletStore } from "../../state/wallet-store";
 import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
-import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
+import {
+  isInSidePanel,
+  isInStandalonePopupWindow,
+  openWalletPopup,
+} from "../../utils/runtime-context";
 import {
   DEFAULT_HUB_API_KEY,
   DEFAULT_HUB_BASE_URL,
@@ -67,9 +71,15 @@ const ONBOARDING_HANDOFF_PREFIX = "arch_wallet_onboarding_handoff:";
  * keystroke vs. a credential-leak class of bugs.
  */
 interface OnboardingHandoff {
-  method: "passkey" | "email";
+  method: "passkey" | "email" | "external";
   walletName: string;
   email: string;
+  /**
+   * For "external" handoffs we also remember which provider the user
+   * picked in the originating context so the popup lands on the
+   * password step directly instead of forcing them to re-pick.
+   */
+  externalProvider?: ExternalWalletProvider;
   /**
    * The wizard step the user was on. The popup jumps back to the
    * password step (so the user can re-supply it) unless we are in
@@ -188,6 +198,9 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       setWizardMethod(payload.method);
       setWalletName(payload.walletName);
       setEmail(payload.email);
+      if (payload.externalProvider) {
+        setExternalProvider(payload.externalProvider);
+      }
       // Password is intentionally NOT carried through the handoff.
       // Reseat at the password step so the user re-enters it; the
       // captured method/email/walletName mean they only need to type
@@ -480,6 +493,46 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       setError("Choose a wallet to connect");
       return;
     }
+
+    // Toolbar-popup hosts (the small panel Chrome attaches to the
+    // browser-action icon) are auto-dismissed by Chrome the moment any
+    // other window steals focus. The external-wallet connector is
+    // opened with `focused: true`, so kicking the flow off from the
+    // toolbar popup kills the popup's JS context mid-stream and
+    // strands the user with no UI to land on after the wallet hub
+    // verifies. Rehost into a standalone Chrome popup window (same
+    // pattern createNonCustodialWallet uses to escape the side panel
+    // for passkey ceremonies) so the flow survives focus loss and
+    // lands on /dashboard when it completes.
+    if (!isInSidePanel() && !(await isInStandalonePopupWindow())) {
+      try {
+        const handoffId =
+          self.crypto?.randomUUID?.() ??
+          `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        await chrome.storage.session.set({
+          [`${ONBOARDING_HANDOFF_PREFIX}${handoffId}`]: {
+            method: "external",
+            walletName,
+            email: "",
+            externalProvider,
+            // password is intentionally omitted (see OnboardingHandoff
+            // comment); user re-types it in the popup window.
+            wizardStep: lastWizardStep,
+          } satisfies OnboardingHandoff,
+        });
+        await openWalletPopup({
+          path: addMode ? "/add-wallet" : "/",
+          query: { resumeOnboarding: handoffId },
+        });
+        setError(
+          "Continue in the popup window to finish connecting your wallet.",
+        );
+      } catch (e: any) {
+        setError(e?.message || "Could not open the wallet popup");
+      }
+      return;
+    }
+
     setStep("creating");
     setError(null);
     setStatusMessage("Connecting to your wallet...");
@@ -596,6 +649,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     buildClient,
     externalProvider,
     finishOnboarding,
+    lastWizardStep,
     networkForHub,
     password,
     validatePassword,
@@ -972,7 +1026,7 @@ function MethodChoiceStep({ onPick }: MethodChoiceStepProps) {
         <div className="onboarding-choice-card-body">
           <p className="onboarding-choice-card-title">Connect existing wallet</p>
           <p className="onboarding-choice-card-sub">
-            Keep funds in Xverse, UniSat, or Magic Eden while using Arch balances
+            Keep funds in Xverse or UniSat while using Arch balances
             and supported signing flows.
           </p>
         </div>

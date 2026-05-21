@@ -26,6 +26,38 @@ export function isInSidePanel(): boolean {
 }
 
 /**
+ * True when the wallet UI is rendered inside a standalone Chrome popup
+ * window spawned via `chrome.windows.create({ type: "popup" })`. Used
+ * by flows that open additional `focused: true` popups (external wallet
+ * connector, passkey ceremonies) to decide whether they're safe to run
+ * inline or need to be rehosted into a fresh popup window first.
+ *
+ * Why this matters: the toolbar popup (the small panel attached to the
+ * browser-action icon) is auto-dismissed by Chrome the instant another
+ * window steals focus. If we kick off an external-wallet connect from
+ * the toolbar popup, the connector window grabs focus, the toolbar
+ * popup dies mid-flight, and the rest of the onboarding orchestration
+ * never runs (or completes but has no UI to land on). Standalone popup
+ * windows are not dismissed on focus loss — they survive the trip
+ * through the external wallet's UI and can re-render at /dashboard.
+ *
+ * Detection: `chrome.windows.getCurrent()` reports `type: "popup"` for
+ * windows we opened via `chrome.windows.create({ type: "popup" })`, and
+ * `type: "normal"` for the regular browser windows that host both the
+ * toolbar popup view and the side panel. Side-panel callers should
+ * gate on `isInSidePanel()` instead.
+ */
+export async function isInStandalonePopupWindow(): Promise<boolean> {
+  try {
+    if (typeof chrome === "undefined" || !chrome.windows?.getCurrent) return false;
+    const win = await chrome.windows.getCurrent();
+    return win?.type === "popup";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Default size for the popup window we spawn from the side panel. Kept
  * in sync with the standalone approve window dimensions used by
  * `background.ts::openApprovalPopup` so the user gets a familiar

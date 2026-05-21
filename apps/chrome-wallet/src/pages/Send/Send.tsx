@@ -350,7 +350,7 @@ export default function Send({ networkStatus }: SendProps) {
       const isTestnet = state.network === "testnet4";
       const network = isTestnet ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
 
-      // Two signing paths: external (Xverse / UniSat / Magic Eden)
+      // Two signing paths: external (Xverse / UniSat)
       // and internal (Turnkey passkey / email session). The PSBT we
       // built locally is the same for both; only the signer differs.
       // We always finalize and broadcast through our indexer so our

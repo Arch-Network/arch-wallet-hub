@@ -116,6 +116,30 @@ function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
   const state = { ...DEFAULT_STATE, ...stateInput };
   let migrated = false;
 
+  // v5 -> v5.1: drop Magic Eden linked wallets.
+  //
+  // Magic Eden discontinued their Bitcoin wallet, so any
+  // `externalProvider === "magiceden"` rows no longer have a working
+  // sign path here. We never controlled the keys for those rows in the
+  // first place (they live inside Magic Eden's wallet), so this is a
+  // local cleanup -- the user can re-link via Xverse / UniSat if they
+  // want a usable wallet on this device. Rebind `activeAccountId` if
+  // we just removed whatever was active so the loaded state stays
+  // consistent.
+  const beforeAccounts = state.accounts.length;
+  state.accounts = state.accounts.filter(
+    (a: any) => a?.externalProvider !== "magiceden",
+  );
+  if (state.accounts.length !== beforeAccounts) {
+    migrated = true;
+    if (
+      state.activeAccountId &&
+      !state.accounts.some((a: any) => a.id === state.activeAccountId)
+    ) {
+      state.activeAccountId = state.accounts[0]?.id ?? null;
+    }
+  }
+
   for (const acct of state.accounts) {
     if (!acct.kind) {
       acct.kind = "turnkey";

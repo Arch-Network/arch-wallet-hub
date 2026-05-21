@@ -147,7 +147,7 @@ function deliverResponseToTab(
 // Rather than depending on whatever tab the user happens to have
 // active, we open a small popup window on a URL we control
 // (/v1/extension/connect on the configured Hub). External wallets
-// (Xverse / UniSat / Magic Eden) inject their providers into that page
+// (Xverse / UniSat) inject their providers into that page
 // because it's a normal http(s) origin, our content script attaches
 // automatically (host_permissions: <all_urls>), and we get a stable,
 // scriptable target for every bridge call until the flow completes.
@@ -264,7 +264,7 @@ async function requestExternalWalletViaConnector(message: any): Promise<any> {
   };
   scheduleConnectorIdleClose();
   // Refocus the connector window before each bridge call. The
-  // external wallet's confirmation UI (Xverse / UniSat / Magic Eden)
+  // external wallet's confirmation UI (Xverse / UniSat)
   // mounts inside the connector page; if the window is in the
   // background the prompt is invisible to the user, which presents
   // as a silent hang while we wait for a response.

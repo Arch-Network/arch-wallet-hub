@@ -142,37 +142,6 @@ export const externalWalletAdapters: Record<ExternalWalletProvider, ExternalWall
       return { signedPsbtBase64: hexToBase64(res.signedPsbtHex) };
     },
   },
-  magiceden: {
-    provider: "magiceden",
-    label: "Magic Eden",
-    isInstalled: () => true,
-    connect: (network) => requestExternalWallet("magiceden", "connect", { network }),
-    signMessage: async ({ address, message, network }) => ({
-      ...(await requestExternalWallet<{ signature: string; schemeHint: "bip322" }>(
-        "magiceden",
-        "signMessage",
-        { address, message, network },
-      )),
-    }),
-    signPsbt: async ({ address, psbtBase64, network }) => {
-      const res = await requestExternalWallet<{ signedPsbtBase64?: string }>(
-        "magiceden",
-        "signPsbt",
-        { address, psbtBase64, network },
-      );
-      if (!res.signedPsbtBase64) throw new Error("No signed PSBT returned from Magic Eden");
-      return extractTapKeySigFromPsbtBase64(res.signedPsbtBase64);
-    },
-    signBtcPsbt: async ({ address, psbtBase64, network, inputIndexes }) => {
-      const res = await requestExternalWallet<{ signedPsbtBase64?: string }>(
-        "magiceden",
-        "signBtcPsbt",
-        { address, psbtBase64, network, inputIndexes },
-      );
-      if (!res.signedPsbtBase64) throw new Error("No signed PSBT returned from Magic Eden");
-      return { signedPsbtBase64: res.signedPsbtBase64 };
-    },
-  },
 };
 
 export function getExternalWalletAdapter(provider: ExternalWalletProvider): ExternalWalletAdapter {
