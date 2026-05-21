@@ -78,6 +78,17 @@ export default defineConfig({
   vite: () => ({
     define: {
       "import.meta.env.WXT_APP_VERSION": JSON.stringify(packageJson.version),
+      // Vite's own `import.meta.env.*` substitution table is unreliable
+      // for `WXT_*` keys in CI builds (the resolved env contains the
+      // value, but the substitution table still emits ""). Inject the
+      // build-time hub/indexer keys through a private global token that
+      // doesn't collide with Vite's env namespace.
+      __ARCH_BUILD_HUB_API_KEY__: JSON.stringify(
+        process.env.WXT_HUB_API_KEY ?? "",
+      ),
+      __ARCH_BUILD_INDEXER_API_KEY__: JSON.stringify(
+        process.env.WXT_INDEXER_API_KEY ?? "",
+      ),
     },
     plugins: [
       // bitcoinjs-lib (and its CJS deps) call `require('buffer'|'events'|'stream')`

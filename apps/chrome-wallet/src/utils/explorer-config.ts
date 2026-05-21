@@ -14,11 +14,16 @@
 
 export const INDEXER_BASE_URL = "https://explorer.arch.network/api/v1";
 
-const isProd = ((import.meta as any)?.env?.MODE as string) === "production";
-
-const prodKey =
-  ((import.meta as any)?.env?.WXT_INDEXER_API_KEY as string | undefined) ?? "";
-const devKey =
-  ((import.meta as any)?.env?.WXT_INDEXER_API_KEY_DEV as string | undefined) ?? "";
+// Build-time indexer key is injected via `vite.define` (see wxt.config.ts).
+// `import.meta.env.WXT_INDEXER_API_KEY` substitution is unreliable in CI
+// Vite 8/Rolldown builds (see comments in src/state/types.ts).
+declare const __ARCH_BUILD_INDEXER_API_KEY__: string;
+const prodKey: string = __ARCH_BUILD_INDEXER_API_KEY__ || "";
+const devKey: string =
+  ((import.meta as unknown as { env?: Record<string, string | undefined> })
+    .env?.WXT_INDEXER_API_KEY_DEV as string | undefined) ?? "";
+const isProd =
+  ((import.meta as unknown as { env?: Record<string, string | undefined> })
+    .env?.MODE as string | undefined) === "production";
 
 export const DEFAULT_INDEXER_API_KEY = isProd ? prodKey : devKey || prodKey;

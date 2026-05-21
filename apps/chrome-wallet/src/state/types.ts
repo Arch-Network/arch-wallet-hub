@@ -206,13 +206,22 @@ export const DEFAULT_HUB_BASE_URL =
  * rewrites known stale keys (`LEGACY_HUB_API_KEY`) forward to the
  * env-supplied value.
  */
-// IMPORTANT: keep these as a plain non-optional property access on
-// `import.meta.env.X`. Vite/Rolldown only substitutes that exact pattern
-// at bundle-time; optional chaining (`import.meta?.env?.X`) is left
-// untouched by Rolldown on Node 20 and the env value never reaches the
-// bundle. The `?? ""` covers the dev-server case where the var is unset.
-const buildHubKey: string = import.meta.env.WXT_HUB_API_KEY ?? "";
-const devHubKey: string = import.meta.env.WXT_HUB_API_KEY_DEV ?? "";
+// Build-time keys are injected via `vite.define` in wxt.config.ts as
+// `__ARCH_BUILD_HUB_API_KEY__` / `__ARCH_BUILD_INDEXER_API_KEY__`
+// rather than `import.meta.env.WXT_HUB_API_KEY`. The Vite env path
+// silently drops the value at substitution time in CI builds (Vite 8
+// + Rolldown + Node 20) even though Vite's resolved env has the value
+// -- using a private token bypasses that.
+//
+// Dev fallback (`WXT_HUB_API_KEY_DEV` in `.env.local`) still flows
+// through Vite's standard env machinery; that path works because the
+// dev server resolves it at request-time, not via Rolldown's bundle
+// substitution.
+declare const __ARCH_BUILD_HUB_API_KEY__: string;
+const buildHubKey: string = __ARCH_BUILD_HUB_API_KEY__ || "";
+const devHubKey: string =
+  ((import.meta as unknown as { env?: Record<string, string | undefined> })
+    .env?.WXT_HUB_API_KEY_DEV as string | undefined) ?? "";
 export const DEFAULT_HUB_API_KEY =
   ((globalThis as any).__ARCH_WALLET_DEFAULT_HUB_API_KEY as string | undefined) ||
   buildHubKey ||
