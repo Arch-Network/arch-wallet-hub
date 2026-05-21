@@ -78,28 +78,6 @@ export default defineConfig({
   vite: () => ({
     define: {
       "import.meta.env.WXT_APP_VERSION": JSON.stringify(packageJson.version),
-      // WXT/Vite only auto-loads `WXT_*` env vars from `.env*` files, not
-      // from `process.env`. CI builds (GitHub Actions) ship secrets via
-      // process env (no `.env.local` checked in), so without an explicit
-      // `define` the production bundle inlines `""` for these keys and the
-      // popup throws "Missing Wallet Hub API key" at onboarding.
-      //
-      // We only inject when the value is actually present in process env so
-      // local dev keeps using `.env.local` (WXT's auto-load) untouched.
-      ...(process.env.WXT_HUB_API_KEY
-        ? {
-            "import.meta.env.WXT_HUB_API_KEY": JSON.stringify(
-              process.env.WXT_HUB_API_KEY,
-            ),
-          }
-        : {}),
-      ...(process.env.WXT_INDEXER_API_KEY
-        ? {
-            "import.meta.env.WXT_INDEXER_API_KEY": JSON.stringify(
-              process.env.WXT_INDEXER_API_KEY,
-            ),
-          }
-        : {}),
     },
     plugins: [
       // bitcoinjs-lib (and its CJS deps) call `require('buffer'|'events'|'stream')`

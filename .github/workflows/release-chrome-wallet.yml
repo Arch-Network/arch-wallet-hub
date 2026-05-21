@@ -73,12 +73,35 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           npm pkg set version="$VERSION"
 
-      - name: Build extension
+      - name: Write build-time env file
+        # WXT/Vite only autoloads `WXT_*` env vars from `.env*` files (via
+        # Vite's dotenv pipeline), never from `process.env`. We materialize
+        # the GH secrets into `.env.production.local` so the same code path
+        # that works in local dev (via developer-supplied `.env.local`)
+        # works in CI. The file is git-ignored and removed after build.
         working-directory: apps/chrome-wallet
         env:
           WXT_HUB_API_KEY: ${{ secrets.WXT_HUB_API_KEY }}
           WXT_INDEXER_API_KEY: ${{ secrets.WXT_INDEXER_API_KEY }}
+        run: |
+          if [ -z "$WXT_HUB_API_KEY" ]; then
+            echo "::error::WXT_HUB_API_KEY secret is empty. End users will hit 'Missing Wallet Hub API key' at onboarding."
+            exit 1
+          fi
+          {
+            printf 'WXT_HUB_API_KEY=%s\n' "$WXT_HUB_API_KEY"
+            printf 'WXT_INDEXER_API_KEY=%s\n' "$WXT_INDEXER_API_KEY"
+          } > .env.production.local
+          chmod 600 .env.production.local
+
+      - name: Build extension
+        working-directory: apps/chrome-wallet
         run: npm run build
+
+      - name: Remove build-time env file
+        if: always()
+        working-directory: apps/chrome-wallet
+        run: rm -f .env.production.local
 
       - name: Create zip archive
         working-directory: apps/chrome-wallet
