@@ -84,16 +84,13 @@ jobs:
         env:
           WXT_HUB_API_KEY: ${{ secrets.WXT_HUB_API_KEY }}
           WXT_INDEXER_API_KEY: ${{ secrets.WXT_INDEXER_API_KEY }}
+          CI: "1"
         run: |
           if [ -z "$WXT_HUB_API_KEY" ]; then
             echo "::error::WXT_HUB_API_KEY secret is empty"
             exit 1
           fi
-          # Diagnostic (does not leak the value, only its length/sha)
           echo "[diag] WXT_HUB_API_KEY len=${#WXT_HUB_API_KEY} sha1=$(printf '%s' "$WXT_HUB_API_KEY" | sha1sum | cut -c1-12)"
-          echo "[diag] WXT_INDEXER_API_KEY len=${#WXT_INDEXER_API_KEY} sha1=$(printf '%s' "$WXT_INDEXER_API_KEY" | sha1sum | cut -c1-12)"
-          echo "[diag] node $(node --version), npm $(npm --version)"
-          node -e 'console.log("[diag] node sees WXT_HUB_API_KEY len=", (process.env.WXT_HUB_API_KEY||"").length)'
           npm run build
 
       - name: Create zip archive

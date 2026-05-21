@@ -75,20 +75,20 @@ export default defineConfig({
   runner: {
     startUrls: ["https://explorer.arch.network"],
   },
-  vite: () => ({
+  vite: () => {
+    const _hub = process.env.WXT_HUB_API_KEY ?? "";
+    const _idx = process.env.WXT_INDEXER_API_KEY ?? "";
+    if (process.env.CI) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[wxt.config diag] vite() called: HUB_len=${_hub.length} IDX_len=${_idx.length} cwd=${process.cwd()} ppid=${process.ppid} keys_with_WXT=${Object.keys(process.env).filter((k) => k.startsWith("WXT_")).join(",")}`,
+      );
+    }
+    return {
     define: {
       "import.meta.env.WXT_APP_VERSION": JSON.stringify(packageJson.version),
-      // Vite's own `import.meta.env.*` substitution table is unreliable
-      // for `WXT_*` keys in CI builds (the resolved env contains the
-      // value, but the substitution table still emits ""). Inject the
-      // build-time hub/indexer keys through a private global token that
-      // doesn't collide with Vite's env namespace.
-      __ARCH_BUILD_HUB_API_KEY__: JSON.stringify(
-        process.env.WXT_HUB_API_KEY ?? "",
-      ),
-      __ARCH_BUILD_INDEXER_API_KEY__: JSON.stringify(
-        process.env.WXT_INDEXER_API_KEY ?? "",
-      ),
+      __ARCH_BUILD_HUB_API_KEY__: JSON.stringify(_hub),
+      __ARCH_BUILD_INDEXER_API_KEY__: JSON.stringify(_idx),
     },
     plugins: [
       // bitcoinjs-lib (and its CJS deps) call `require('buffer'|'events'|'stream')`
@@ -139,5 +139,6 @@ export default defineConfig({
         },
       },
     ],
-  }),
+    };
+  },
 });
