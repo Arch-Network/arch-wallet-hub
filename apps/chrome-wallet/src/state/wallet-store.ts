@@ -34,6 +34,61 @@ const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
 const LEGACY_HUB_API_KEY = "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog";
 const ROTATED_LEAKED_HUB_API_KEY = "OZfoD0ZJh6kQpd3Lr4TvLbnocS2g_eooZlQ7VEfbE4M";
 const INSTALL_ID_KEY = "arch_wallet_install_id";
+const HAS_RECOVERABLE_ACCOUNT_HINT_KEY = "arch_wallet_has_recoverable_account_hint";
+
+/**
+ * Public hint -- "does the locked keystore contain at least one
+ * Turnkey-backed (passkey / email) wallet?" Stored outside the
+ * keystore in `chrome.storage.local` so the Unlock screen, which
+ * sees only a sealed keystore, can decide whether to render the
+ * "Recover via email" CTA.
+ *
+ * Why this exists: the email-OTP recovery flow only does anything
+ * useful for Turnkey wallets. Linked external wallets (Xverse /
+ * UniSat) have no Hub-side recovery -- their keys live in the
+ * external wallet, not in our sub-org -- so showing them a "Recover
+ * via email" CTA on Unlock just leads to a dead-end "no candidates
+ * for this email" screen.
+ *
+ * Privacy: this leaks one bit ("has the user ever onboarded a
+ * passkey/email wallet on this device"). That's strictly less than
+ * what the install id already discloses to anything with
+ * chrome.storage.local read access, so the trade-off is acceptable.
+ *
+ * Fail-open semantics: missing hint -> assume true (show the CTA).
+ * That preserves the previous behavior for installs that predate
+ * this hint, so we never accidentally strip recovery from someone
+ * who actually needs it.
+ */
+async function writeRecoverableAccountHint(state: AppState | null): Promise<void> {
+  try {
+    if (state === null) {
+      await chrome.storage.local.remove(HAS_RECOVERABLE_ACCOUNT_HINT_KEY);
+      return;
+    }
+    const hasRecoverable = state.accounts.some(
+      (a) => a.kind !== "external",
+    );
+    await chrome.storage.local.set({
+      [HAS_RECOVERABLE_ACCOUNT_HINT_KEY]: hasRecoverable,
+    });
+  } catch {
+    /* best-effort hint; never block the real keystore write on it */
+  }
+}
+
+export async function hasRecoverableAccountHint(): Promise<boolean> {
+  try {
+    const result = await chrome.storage.local.get(HAS_RECOVERABLE_ACCOUNT_HINT_KEY);
+    const value = result?.[HAS_RECOVERABLE_ACCOUNT_HINT_KEY];
+    if (typeof value === "boolean") return value;
+    // No hint yet (legacy install / first run) -> fail open so we
+    // never accidentally hide recovery from a passkey/email user.
+    return true;
+  } catch {
+    return true;
+  }
+}
 
 async function getOrCreateInstallId(): Promise<string> {
   try {
@@ -58,6 +113,11 @@ async function loadPlaintextState(): Promise<AppState | null> {
 
 async function savePlaintextState(state: AppState): Promise<void> {
   await keystore.write(state);
+  // Keep the public recoverable-account hint in sync with every
+  // keystore write so the Unlock screen never gets stale gating
+  // information. Best-effort: hint write failures don't fail the
+  // real save.
+  void writeRecoverableAccountHint(state);
 }
 
 /**
@@ -312,6 +372,7 @@ export const walletStore = {
       activeAccountId: account.id,
     };
     await keystore.seal(password, initial);
+    void writeRecoverableAccountHint(initial);
     return initial;
   },
 
@@ -324,6 +385,7 @@ export const walletStore = {
     const { state } = migrateState(legacyState);
     state.locked = false;
     await keystore.seal(password, state);
+    void writeRecoverableAccountHint(state);
     return state;
   },
 
@@ -393,6 +455,7 @@ export const walletStore = {
       // "forget this wallet on this device" means when no accounts
       // remain, and it routes the next app boot to Onboarding.
       await keystore.wipe();
+      void writeRecoverableAccountHint(null);
       void sessionManager.close().catch(() => {});
       return;
     }
@@ -753,6 +816,7 @@ export const walletStore = {
 
   async reset(): Promise<void> {
     await keystore.wipe();
+    void writeRecoverableAccountHint(null);
   },
 
   /**

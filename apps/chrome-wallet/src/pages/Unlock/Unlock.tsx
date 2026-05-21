@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
+import { hasRecoverableAccountHint } from "../../state/wallet-store";
 
 interface UnlockProps {
   /** Called when the user submits a password. Throws on bad password. */
@@ -11,9 +12,23 @@ export default function Unlock({ onUnlock }: UnlockProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  // `null` while we're still reading the public hint -- we render the
+  // forgot-password footer in a neutral skeleton state during that
+  // tiny window so we don't flash the wrong CTA at the user.
+  const [canRecoverViaEmail, setCanRecoverViaEmail] = useState<boolean | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    hasRecoverableAccountHint().then((value) => {
+      if (!cancelled) setCanRecoverViaEmail(value);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleSubmit = useCallback(
@@ -84,35 +99,60 @@ export default function Unlock({ onUnlock }: UnlockProps) {
           textAlign: "center",
         }}
       >
-        <p
-          style={{
-            fontSize: 12,
-            color: "var(--text-secondary)",
-            margin: 0,
-            marginBottom: 8,
-          }}
-        >
-          Forgot your password?
-        </p>
-        {/* Cold entry -- we don't know which wallet the user is
-            trying to recover yet, so no externalUserId pin. The
-            Recover screen will pick by email. */}
-        <RecoverViaEmailCta
-          pinToActiveAccount={false}
-          title="Forgot your password? Recover with the email you set during onboarding."
-        />
-        <p
-          style={{
-            fontSize: 10,
-            color: "var(--text-muted)",
-            marginTop: 8,
-            marginBottom: 0,
-            lineHeight: 1.5,
-          }}
-        >
-          Requires the recovery email you set during onboarding. We'll send
-          you a one-time code.
-        </p>
+        {/* Footer branches on whether this keystore has any Turnkey
+            (passkey / email) wallet. Linked external wallets have no
+            Hub-side recovery -- the keys live in Xverse / UniSat, not
+            in our sub-org -- so showing them "Recover via email" just
+            funnels into a dead-end "no candidates for this email"
+            screen. The honest path there is a local reset + re-link. */}
+        {canRecoverViaEmail === null ? null : canRecoverViaEmail ? (
+          <>
+            <p
+              style={{
+                fontSize: 12,
+                color: "var(--text-secondary)",
+                margin: 0,
+                marginBottom: 8,
+              }}
+            >
+              Forgot your password?
+            </p>
+            {/* Cold entry -- we don't know which wallet the user is
+                trying to recover yet, so no externalUserId pin. The
+                Recover screen will pick by email. */}
+            <RecoverViaEmailCta
+              pinToActiveAccount={false}
+              title="Forgot your password? Recover with the email you set during onboarding."
+            />
+            <p
+              style={{
+                fontSize: 10,
+                color: "var(--text-muted)",
+                marginTop: 8,
+                marginBottom: 0,
+                lineHeight: 1.5,
+              }}
+            >
+              Requires the recovery email you set during onboarding. We'll
+              send you a one-time code.
+            </p>
+          </>
+        ) : (
+          <p
+            style={{
+              fontSize: 11,
+              color: "var(--text-muted)",
+              margin: 0,
+              lineHeight: 1.5,
+            }}
+          >
+            Forgot your password? Linked external wallets (Xverse / UniSat)
+            can't be recovered from here — your wallet and funds stay safe in
+            the external wallet itself. Reset Arch Wallet from{" "}
+            <em>chrome://extensions → Remove</em> and re-link from onboarding
+            to regain access on this device.
+          </p>
+        )}
       </div>
     </div>
   );
