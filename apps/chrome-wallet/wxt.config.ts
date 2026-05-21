@@ -75,11 +75,45 @@ export default defineConfig({
   runner: {
     startUrls: ["https://explorer.arch.network"],
   },
-  vite: () => ({
+  vite: () => {
+    if (process.env.CI) {
+      const hub = process.env.WXT_HUB_API_KEY;
+      const idx = process.env.WXT_INDEXER_API_KEY;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[wxt.config diag] CI=${!!process.env.CI} HUB_set=${!!hub} HUB_len=${hub?.length ?? 0} IDX_set=${!!idx} IDX_len=${idx?.length ?? 0} cwd=${process.cwd()}`,
+      );
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require("node:fs");
+        for (const f of [".env", ".env.local", ".env.production", ".env.production.local"]) {
+          // eslint-disable-next-line no-console
+          console.log(`[wxt.config diag] ${f} exists=${fs.existsSync(f)}`);
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.log(`[wxt.config diag] fs probe error: ${String(e)}`);
+      }
+    }
+    return {
     define: {
       "import.meta.env.WXT_APP_VERSION": JSON.stringify(packageJson.version),
     },
     plugins: [
+      {
+        name: "diag:env-snapshot",
+        enforce: "pre",
+        configResolved(resolved) {
+          if (!process.env.CI) return;
+          const env = (resolved as unknown as { env: Record<string, unknown> }).env || {};
+          const hub = env.WXT_HUB_API_KEY as string | undefined;
+          const idx = env.WXT_INDEXER_API_KEY as string | undefined;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[wxt.config diag] configResolved mode=${resolved.mode} root=${resolved.root} envDir=${resolved.envDir} envPrefix=${JSON.stringify(resolved.envPrefix)} HUB_set=${!!hub} HUB_len=${hub?.length ?? 0} IDX_set=${!!idx} IDX_len=${idx?.length ?? 0}`,
+          );
+        },
+      },
       // bitcoinjs-lib (and its CJS deps) call `require('buffer'|'events'|'stream')`
       // at module-init time -- e.g. `var t = require('buffer'); var n = t.Buffer.alloc(32, 0);`
       // in `bitcoinjs-lib/src/types.js`. Vite's default browser build resolves
@@ -128,5 +162,6 @@ export default defineConfig({
         },
       },
     ],
-  }),
+    };
+  },
 });

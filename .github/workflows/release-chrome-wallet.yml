@@ -96,6 +96,10 @@ jobs:
 
       - name: Build extension
         working-directory: apps/chrome-wallet
+        env:
+          WXT_HUB_API_KEY: ${{ secrets.WXT_HUB_API_KEY }}
+          WXT_INDEXER_API_KEY: ${{ secrets.WXT_INDEXER_API_KEY }}
+          CI: "1"
         run: npm run build
 
       - name: Remove build-time env file
