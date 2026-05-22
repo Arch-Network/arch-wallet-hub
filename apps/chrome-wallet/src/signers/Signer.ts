@@ -90,7 +90,16 @@ function archMessageHashToSighashHex(
   return bytesToHex(sighash);
 }
 
-class SessionLockedError extends Error {
+/**
+ * Thrown by `SessionStampedSigner.client()` when no Turnkey IndexedDB
+ * session is open for the active account.
+ *
+ * Exported so consumers (notably the Approve popup) can catch it and run
+ * recovery flows — for passkey wallets that's a lazy `openPasskeySession()`
+ * triggered by the user's existing Approve activation. Email wallets fall
+ * through to the SessionBootstrapper UI, which has its own OTP gate.
+ */
+export class SessionLockedError extends Error {
   constructor(accountId: string) {
     super(
       `No active Turnkey session for account ${accountId}. Unlock the wallet to open one.`,

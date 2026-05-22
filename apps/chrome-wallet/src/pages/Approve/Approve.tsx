@@ -19,7 +19,7 @@ import { truncateAddress, formatArch } from "../../utils/format";
 import DappHeader from "../../components/Approve/DappHeader";
 import { interpretMessage } from "../../utils/sign-message";
 import { summarizePsbt, formatSats, type PsbtSummary } from "../../utils/psbt-summary";
-import { signerForAccount } from "../../signers/Signer";
+import { signerForAccount, SessionLockedError } from "../../signers/Signer";
 import { isExternalAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 
@@ -30,6 +30,43 @@ interface RequestDetails {
   dappName?: string;
   dappIconUrl?: string;
   autoApproveAllowed?: boolean;
+}
+
+/**
+ * Run a signing op with lazy session bootstrap for passkey wallets.
+ *
+ * The session-stamped signer requires an IndexedDB-stamped key registered
+ * with Turnkey, which today is only minted inside `useWallet.unlock(password)`
+ * (via `openPasskeySession`). That path doesn't run during onboarding —
+ * the keystore is implicitly unlocked the moment the user sets it up — so a
+ * freshly-created passkey wallet has a valid Turnkey resourceId but no
+ * IndexedDB session, and the first sign attempt throws SessionLockedError.
+ *
+ * The Approve click gives us user activation, which is what WebAuthn
+ * requires. We catch the error, fire a passkey ceremony via
+ * `walletStore.openPasskeySession()`, and retry the op exactly once. The
+ * retry uses the same signer instance — `signerForAccount` returns a value
+ * object, and `SessionStampedSigner.client()` re-reads `sessionManager` on
+ * every call, so the freshly-opened session is picked up automatically.
+ *
+ * Email wallets fall through unchanged: OTP delivery can't be triggered
+ * inside the Approve popup, so they rely on the SessionBootstrapper UI in
+ * the main wallet surface to open a session before signing. External
+ * wallets never enter this path; they sign in their source wallet.
+ */
+async function withLazyPasskeySession<T>(
+  account: WalletAccount,
+  op: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await op();
+  } catch (err) {
+    if (err instanceof SessionLockedError && account.authMethod === "passkey") {
+      await walletStore.openPasskeySession();
+      return await op();
+    }
+    throw err;
+  }
 }
 
 // Returns the raw `result` object from the Hub so callers can pick the field they need
@@ -66,10 +103,9 @@ async function signAndSubmitRequest(
   // session (WebAuthn vs OTP) is invisible at this layer. The Hub
   // is informed via /submit but never sees signing material.
   const signer = signerForAccount(activeAccount);
-  const { signature64Hex } = await signer.signArchPayload({
-    signingRequestId,
-    payloadHex,
-  });
+  const { signature64Hex } = await withLazyPasskeySession(activeAccount, () =>
+    signer.signArchPayload({ signingRequestId, payloadHex }),
+  );
   const submitRes = await client.submitSigningRequest(signingRequestId, {
     externalUserId,
     signature64Hex,
@@ -324,8 +360,12 @@ export default function Approve() {
       // The session-stamped signer covers both passkey and email
       // wallets transparently -- it uses whichever IndexedDB key was
       // registered at unlock-time. No Hub round-trip for signing.
-      const { signedPsbtHex } = await signerForAccount(selectedAccount).signPsbt(
-        { psbtHex },
+      //
+      // `withLazyPasskeySession` retries once after firing a WebAuthn
+      // ceremony if the passkey wallet's session was never opened (or
+      // expired). See its definition above for the full rationale.
+      const { signedPsbtHex } = await withLazyPasskeySession(selectedAccount, () =>
+        signerForAccount(selectedAccount).signPsbt({ psbtHex }),
       );
       return signedPsbtHex;
     },
