@@ -149,6 +149,43 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
   );
 }
 
+/**
+ * Render the approval card for SIGN_ARCH_MESSAGE_HASH.
+ *
+ * This is always a blind-sign from the wallet's perspective: we hold
+ * a 32-byte transaction-message hash with no decoded instructions to
+ * preview. The dapp is responsible for showing a human-readable
+ * preview in its own UI; the user's job here is to confirm (a) the
+ * dapp origin in the header above and (b) that the hash shown here
+ * matches what the dapp claims to be signing.
+ */
+function ArchMessageHashSummary({ payload }: { payload: any }) {
+  const messageHashHex: string = payload?.messageHashHex ?? "";
+  return (
+    <div className="card">
+      <div style={{ marginBottom: 8 }}>
+        <div className="input-label">Action</div>
+        <div style={{ fontWeight: 600 }}>Sign Arch transaction</div>
+      </div>
+
+      <div className="approve-risk approve-risk-warn" style={{ marginBottom: 8 }}>
+        Blind sign — the wallet cannot decode this transaction's effects.
+        Verify the hash matches the preview shown by the dapp before approving.
+      </div>
+
+      <div>
+        <div className="input-label">Transaction message hash</div>
+        <div
+          className="mono"
+          style={{ wordBreak: "break-all", fontSize: 11, lineHeight: 1.4 }}
+        >
+          {messageHashHex}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PsbtSummaryCard({ payload, myAddresses }: { payload: any; myAddresses: string[] }) {
   const [summary, setSummary] = useState<PsbtSummary | null>(null);
   const [decodeError, setDecodeError] = useState<string | null>(null);
@@ -413,6 +450,30 @@ export default function Approve() {
         return;
       }
 
+      if (request.type === "SIGN_ARCH_MESSAGE_HASH") {
+        const messageHashHex: string = request.payload?.messageHashHex;
+        if (!messageHashHex) {
+          throw new Error("SIGN_ARCH_MESSAGE_HASH missing payload.messageHashHex");
+        }
+        if (isExternalAccount(selectedAccount)) {
+          // Linked external wallets (Xverse / UniSat) don't expose a
+          // raw-hash signing path -- they'd have to BIP-322-sign the
+          // hash as a message string, which would produce a different
+          // sighash than the to-sign-taproot wrapper our session
+          // signer uses. Refuse cleanly rather than silently produce
+          // an invalid signature.
+          throw new Error(
+            "Raw Arch message-hash signing is not yet supported for linked external wallets. Use a Turnkey account.",
+          );
+        }
+        const signer = signerForAccount(selectedAccount);
+        const { signature64Hex } = await signer.signArchMessageHash({
+          messageHashHex,
+        });
+        sendApproved({ signature64Hex });
+        return;
+      }
+
       if (request.type === "SIGN_PSBT") {
         const psbtPayload: string = request.payload?.psbt;
         if (!psbtPayload) throw new Error("SIGN_PSBT missing payload.psbt");
@@ -538,6 +599,10 @@ export default function Approve() {
 
         {request.type === "SIGN_MESSAGE" && request.payload && (
           <MessageSummary payload={request.payload} origin={request.origin} />
+        )}
+
+        {request.type === "SIGN_ARCH_MESSAGE_HASH" && request.payload && (
+          <ArchMessageHashSummary payload={request.payload} />
         )}
 
         {request.type === "SIGN_PSBT" && request.payload && (

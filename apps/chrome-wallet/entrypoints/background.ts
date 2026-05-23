@@ -593,10 +593,28 @@ export default defineBackground(() => {
       case "SEND_TRANSFER":
       case "SEND_TOKEN_TRANSFER":
       case "SIGN_MESSAGE":
+      case "SIGN_ARCH_MESSAGE_HASH":
       case "SIGN_PSBT": {
         if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
         const connected = await walletStore.isSiteConnected(origin);
         if (!connected) return { id: msg.id, success: false, error: "Site not connected" };
+
+        // Sanity-check the SIGN_ARCH_MESSAGE_HASH payload BEFORE opening
+        // the popup so a malformed dapp request fails fast and the user
+        // never sees a useless prompt. We require exactly 64 lowercase
+        // hex chars (32-byte SanitizedMessage hash). Anything else --
+        // wrong length, non-hex, mixed case -- is dapp programmer error.
+        if (msg.type === "SIGN_ARCH_MESSAGE_HASH") {
+          const hex = (msg as any).payload?.messageHashHex;
+          if (typeof hex !== "string" || !/^[0-9a-f]{64}$/.test(hex)) {
+            return {
+              id: msg.id,
+              success: false,
+              error:
+                "SIGN_ARCH_MESSAGE_HASH requires payload.messageHashHex = 64 lowercase hex chars (32-byte hash)",
+            };
+          }
+        }
 
         // Per-origin permissions.
         //
@@ -618,6 +636,8 @@ export default defineBackground(() => {
         const allowsAuto =
           permissions &&
           ((msg.type === "SIGN_MESSAGE" && permissions.signMessage) ||
+            (msg.type === "SIGN_ARCH_MESSAGE_HASH" &&
+              permissions.signArchMessageHash) ||
             (msg.type === "SIGN_PSBT" && permissions.signPsbt) ||
             ((msg.type === "SEND_TRANSFER" || msg.type === "SEND_TOKEN_TRANSFER") &&
               permissions.sendTransfer));

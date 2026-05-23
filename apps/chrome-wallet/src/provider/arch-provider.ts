@@ -41,6 +41,39 @@ export const archProvider = {
     return channel.request<{ signature: string }>("SIGN_MESSAGE", { message: hex });
   },
 
+  /**
+   * Sign an Arch SanitizedMessage hash (the 32-byte digest produced
+   * by `SanitizedMessageUtil.hash(message)` in `@saturnbtcio/arch-sdk`)
+   * and return the 64-byte (r||s) Schnorr signature as hex.
+   *
+   * The signer wraps the hash in the BIP-322 to-sign taproot sighash
+   * for the connected account's BTC address and signs that digest
+   * locally via the in-extension Turnkey session -- no Wallet Hub
+   * round-trip. The returned signature is what arch-sdk's
+   * `SignatureUtil.adjustSignature` accepts directly (length === 64
+   * branch), so dapps can build their own `RuntimeTransaction` and
+   * submit via any Arch RPC.
+   *
+   * Designed for dapps with custom Arch programs whose instructions
+   * are not covered by Wallet Hub's canonical `arch.*` action types.
+   * Always gated by the same approval popup as the other signing
+   * methods.
+   */
+  async signArchMessageHash(messageHash: Uint8Array) {
+    if (messageHash.length !== 32) {
+      throw new Error(
+        `signArchMessageHash expects a 32-byte hash; got ${messageHash.length} bytes`,
+      );
+    }
+    const messageHashHex = Array.from(messageHash)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return channel.request<{ signature64Hex: string }>(
+      "SIGN_ARCH_MESSAGE_HASH",
+      { messageHashHex },
+    );
+  },
+
   on(event: string, cb: (...args: unknown[]) => void) {
     emitter.on(event, cb);
   },
