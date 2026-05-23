@@ -129,6 +129,13 @@ export interface SitePermissions {
   readState: boolean;
   /** Auto-approve message signing (still asks for fresh user gesture). */
   signMessage: boolean;
+  /**
+   * Auto-approve raw Arch transaction-message-hash signing. Optional
+   * so legacy stored permissions (before this field existed) read as
+   * undefined and fall through to "prompt". Same UI-hint-only posture
+   * as the other auto-approve flags today.
+   */
+  signArchMessageHash?: boolean;
   /** Auto-approve transfer/token-transfer. */
   sendTransfer: boolean;
   /** Auto-approve PSBT signing. */
@@ -140,6 +147,7 @@ export interface SitePermissions {
 export const DEFAULT_SITE_PERMISSIONS: SitePermissions = {
   readState: true,
   signMessage: false,
+  signArchMessageHash: false,
   sendTransfer: false,
   signPsbt: false,
 };

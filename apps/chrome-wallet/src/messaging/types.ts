@@ -8,6 +8,7 @@ export type MessageType =
   | "SEND_TRANSFER"
   | "SEND_TOKEN_TRANSFER"
   | "SIGN_MESSAGE"
+  | "SIGN_ARCH_MESSAGE_HASH"
   | "SIGN_PSBT"
   | "APPROVE_REQUEST"
   | "REJECT_REQUEST"
@@ -51,6 +52,29 @@ export interface SignMessageMessage extends BaseMessage {
   payload: { message: string };
 }
 
+/**
+ * Sign an Arch SanitizedMessage hash locally and return a 64-byte
+ * (r||s) Schnorr signature. Unlike SIGN_MESSAGE, this path does NOT
+ * round-trip through Wallet Hub: the signer wraps the 32-byte hash
+ * in the BIP-322 to-sign taproot sighash for the connected account's
+ * btcAddress and Schnorr-signs that digest directly. Designed for
+ * dapps that craft their own Arch transactions client-side (custom
+ * programs the Hub's canonical action types don't cover).
+ *
+ * Always gated by the same approval popup as the other signing
+ * methods; the dapp can never get a signature without explicit user
+ * consent for this exact hash.
+ */
+export interface SignArchMessageHashMessage extends BaseMessage {
+  type: "SIGN_ARCH_MESSAGE_HASH";
+  /**
+   * 64-char hex of the 32-byte SanitizedMessageUtil.hash output.
+   * Validated server-side; non-hex / wrong-length rejects before the
+   * popup opens.
+   */
+  payload: { messageHashHex: string };
+}
+
 export interface SignPsbtMessage extends BaseMessage {
   type: "SIGN_PSBT";
   payload: { psbt: string; signInputs?: Record<string, number[]> };
@@ -74,6 +98,7 @@ export type ProviderMessage =
   | SendTransferMessage
   | SendTokenTransferMessage
   | SignMessageMessage
+  | SignArchMessageHashMessage
   | SignPsbtMessage
   | ApproveRequestMessage
   | RejectRequestMessage;
