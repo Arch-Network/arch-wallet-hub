@@ -156,3 +156,70 @@ export function formatSats(value: number): string {
   if (Math.abs(btc) >= 0.001) return `${btc.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")} BTC`;
   return `${value.toLocaleString()} sats`;
 }
+
+/**
+ * Approve-popup safety rails for SIGN_PSBT requests.
+ *
+ * Policy (from the 2026-05 audit, items M5 + M6):
+ *
+ *   - `block` is set when `exactFee === false` AND the user's net
+ *     outflow is above `PSBT_UNKNOWN_FEE_BLOCK_OUTFLOW_SATS`. Below
+ *     that threshold we allow signing through with the existing
+ *     "fee unknown" warning -- legitimate multi-sig / partial-PSBT
+ *     protocols intentionally pass incomplete prevout data and
+ *     fill fees in later. Above it, the wallet refuses outright so
+ *     "fee unknown" can't hide an unbounded miner-fee drain on a
+ *     real send.
+ *
+ *   - `requireConfirm` is set on plain large outflows above
+ *     `PSBT_HIGH_OUTFLOW_REQUIRE_CONFIRM_SATS`. The Approve button
+ *     stays interactive but only after the user ticks a "I
+ *     reviewed every input and output" checkbox. Goal is to break
+ *     muscle-memory approvals on transactions that materially move
+ *     funds.
+ *
+ * The thresholds are intentionally conservative defaults; once the
+ * dApp Permission Center work lands they'll become per-origin
+ * settings. Until then, this module is the single source of
+ * truth -- both Approve.tsx and any future "simulate before sign"
+ * flow should consume `evaluatePsbtGate` instead of re-implementing
+ * its heuristics.
+ */
+export const PSBT_UNKNOWN_FEE_BLOCK_OUTFLOW_SATS = 10_000;
+export const PSBT_HIGH_OUTFLOW_REQUIRE_CONFIRM_SATS = 1_000_000;
+
+export interface PsbtGate {
+  /** When set, sign is refused outright. */
+  block: { reason: string } | null;
+  /** When set, sign requires the user to tick an explicit checkbox. */
+  requireConfirm: { reason: string } | null;
+}
+
+export function evaluatePsbtGate(summary: PsbtSummary): PsbtGate {
+  const outflowSats = summary.netUserSats < 0 ? -summary.netUserSats : 0;
+
+  if (!summary.exactFee && outflowSats > PSBT_UNKNOWN_FEE_BLOCK_OUTFLOW_SATS) {
+    return {
+      block: {
+        reason:
+          `This PSBT is missing prevout amounts for some inputs, so the network fee is unknown. ` +
+          `The wallet refuses to sign outflows over ${formatSats(PSBT_UNKNOWN_FEE_BLOCK_OUTFLOW_SATS)} ` +
+          `without complete fee accounting. Ask the dapp to supply a fully-funded PSBT.`,
+      },
+      requireConfirm: null,
+    };
+  }
+
+  if (outflowSats >= PSBT_HIGH_OUTFLOW_REQUIRE_CONFIRM_SATS) {
+    return {
+      block: null,
+      requireConfirm: {
+        reason:
+          `Large outflow (${formatSats(outflowSats)}). ` +
+          `Confirm you trust this site and reviewed every input and output above.`,
+      },
+    };
+  }
+
+  return { block: null, requireConfirm: null };
+}
