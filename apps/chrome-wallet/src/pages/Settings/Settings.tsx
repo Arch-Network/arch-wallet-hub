@@ -9,7 +9,7 @@ import CopyButton from "../../components/CopyButton";
 import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
 import TestRecoveryEmailButton from "../../components/TestRecoveryEmailButton";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
-import { DEFAULT_HUB_BASE_URL, isExternalAccount } from "../../state/types";
+import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "../../state/types";
 import { INDEXER_BASE_URL } from "../../utils/explorer-config";
 import { APP_VERSION } from "../../utils/version";
 
@@ -95,11 +95,23 @@ export default function Settings() {
 
   const handleSaveHubConfig = useCallback(async () => {
     setHubError(null);
-    if (state.network === "mainnet" && !isHttpsUrl(hubBaseUrl.trim())) {
+    const trimmed = hubBaseUrl.trim();
+    if (state.network === "mainnet" && !isHttpsUrl(trimmed)) {
       setHubError("Mainnet requires an HTTPS Hub URL");
       return;
     }
-    await walletStore.setHubConfig(hubBaseUrl.trim(), hubApiKey.trim());
+    if (!isAllowedHubBaseUrl(trimmed)) {
+      setHubError(
+        "Hub URL not allowed. Use hub.arch.network or a vetted *.arch.network host.",
+      );
+      return;
+    }
+    try {
+      await walletStore.setHubConfig(trimmed, hubApiKey.trim());
+    } catch (err: any) {
+      setHubError(err?.message || "Failed to save Hub config");
+      return;
+    }
     invalidateClientCache();
     setHubSaved(true);
     setTimeout(() => setHubSaved(false), 2000);
@@ -640,6 +652,11 @@ export default function Settings() {
                 {state.network === "mainnet" && !isHttpsUrl(hubBaseUrl) && (
                   <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
                     Mainnet requires HTTPS.
+                  </div>
+                )}
+                {hubBaseUrl.trim() !== "" && !isAllowedHubBaseUrl(hubBaseUrl.trim()) && (
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                    Host not in allowlist. Use hub.arch.network or a *.arch.network host.
                   </div>
                 )}
               </div>

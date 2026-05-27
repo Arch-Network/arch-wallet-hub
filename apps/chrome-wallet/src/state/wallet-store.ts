@@ -14,6 +14,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_HUB_BASE_URL,
   DEFAULT_HUB_API_KEY,
+  isAllowedHubBaseUrl,
   isExternalAccount,
 } from "./types";
 import { deriveArchAccountAddress } from "../utils/sdk";
@@ -141,6 +142,14 @@ function migrateApiConfig(state: any): boolean {
     state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
     migrated = true;
   } else if (state.hubBaseUrl === LEGACY_EC2_HUB_BASE_URL) {
+    state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
+    migrated = true;
+  } else if (!isAllowedHubBaseUrl(state.hubBaseUrl)) {
+    // Defence-in-depth: a pre-allowlist build may have persisted an
+    // arbitrary Hub URL the user typed into Settings. Snap it back
+    // on read so any subsequent Hub call goes to a vetted host.
+    // This covers both legacy installs and the "user pasted a
+    // phishing URL between releases" case.
     state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
     migrated = true;
   }
@@ -688,6 +697,14 @@ export const walletStore = {
   },
 
   async setHubConfig(hubBaseUrl: string, hubApiKey: string): Promise<void> {
+    if (!isAllowedHubBaseUrl(hubBaseUrl)) {
+      // Fail closed in the store, not just the UI. Anything that
+      // reaches `setHubConfig` directly (e.g. a future deep-link or
+      // background-message-driven write path) must also be gated.
+      throw new Error(
+        "Refusing to save Hub URL: host not in allowlist. Use the default hub.arch.network or a vetted *.arch.network host.",
+      );
+    }
     const state = await this.requireUnlockedState();
     state.hubBaseUrl = hubBaseUrl;
     state.hubApiKey = hubApiKey;
