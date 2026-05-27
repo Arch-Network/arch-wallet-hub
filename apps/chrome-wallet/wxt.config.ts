@@ -136,6 +136,50 @@ export default defineConfig({
           return null;
         },
       },
+      // Rewrite the plugin's auto-injected `Buffer` import from default
+      // to named form, so the polyfill's `Buffer` class survives Rolldown's
+      // CJS-interop wrap.
+      //
+      // The plugin emits `transform.inject = { Buffer: "<shim>" }` which
+      // Rolldown reads as a *default-import* directive and inlines
+      // `import Buffer from "<shim>"` into every module that references
+      // `Buffer`. The shim is treated as CJS (because its IIFE wrapper
+      // hides static ESM markers), so Rolldown wraps the resolved module
+      // through `_interopRequireDefault(mod, /*forceDefault*/ 1)`:
+      //
+      //   var i = e(t(), 1);
+      //   // ...
+      //   c.write(i.default.from(content));   // <-- throws
+      //
+      // The helper unconditionally clobbers the polyfill's real `default`
+      // (the Buffer *class*) with the whole namespace object, leaving
+      // `i.default.from === undefined`. (Confirmed by reading the bundled
+      // chunk; see ./node_modules/vite-plugin-node-polyfills/dist/index.js
+      // line 178 and the helper `d` in the emitted `dist-*.js` chunk.)
+      //
+      // Switching to tuple form `Buffer: ["<shim>", "Buffer"]` makes
+      // Rolldown emit a *named* import (`import { Buffer } from "<shim>"`)
+      // which goes through a straight named-export lookup, no default
+      // synthesis, no interop double-wrap, no clobber. `Buffer.from(...)`
+      // lands on the class directly.
+      //
+      // `process` and `global` go through the same default-form inject but
+      // their consumers happen to use them in shapes (`process.versions.x`,
+      // `typeof global`) that the interop wrap leaves intact, so we only
+      // need to fix `Buffer`. Doing the same for the other two would be
+      // defensible but expanding scope is not free here.
+      {
+        name: "arch-wallet:buffer-inject-named",
+        enforce: "post",
+        configResolved(config) {
+          const transform = (config.build?.rollupOptions as { transform?: { inject?: Record<string, unknown> } } | undefined)?.transform;
+          const inject = transform?.inject;
+          if (!inject) return;
+          if (typeof inject.Buffer === "string") {
+            inject.Buffer = [inject.Buffer, "Buffer"];
+          }
+        },
+      },
     ],
   }),
 });

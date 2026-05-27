@@ -203,6 +203,49 @@ export const DEFAULT_HUB_BASE_URL =
   "https://hub.arch.network";
 
 /**
+ * Pinned Hub-host allowlist.
+ *
+ * Background: `setHubConfig` previously accepted any URL the user
+ * typed in Settings. A phished user could be socially engineered
+ * into pasting a look-alike Hub host that proxies the real Hub but
+ * captures wallet-link challenges, signing-request payloads, and
+ * (post-session-token rollout) per-user bearer tokens. The Hub URL
+ * is high-leverage because every signing path round-trips through
+ * it.
+ *
+ * Allowlist is intentionally tight. Adding a new production Hub
+ * host is a code change, not a Settings change.
+ *
+ * What's allowed:
+ *   1. The exact build-time default's host (today `hub.arch.network`).
+ *   2. Any `*.arch.network` subdomain (staging / canary / preview).
+ *   3. Localhost / loopback (dev). Mirrors the SDK's `validateBaseUrl`
+ *      so the extension and SDK agree on what counts as "dev".
+ */
+const HUB_DEV_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1"]);
+
+export function isAllowedHubBaseUrl(rawUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  if (HUB_DEV_HOSTS.has(host)) return true;
+  try {
+    const defaultHost = new URL(DEFAULT_HUB_BASE_URL).hostname.toLowerCase();
+    if (host === defaultHost) return true;
+  } catch {
+    /* DEFAULT_HUB_BASE_URL is a static constant; this catch only
+       defends against a future refactor where it could become
+       user-supplied. */
+  }
+  if (host === "arch.network" || host.endsWith(".arch.network")) return true;
+  return false;
+}
+
+/**
  * Default Wallet Hub API key baked into the build.
  *
  * Every Hub request must carry an `X-API-Key`; the value here belongs

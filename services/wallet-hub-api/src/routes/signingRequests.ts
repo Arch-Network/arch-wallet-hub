@@ -5,6 +5,7 @@ import { withDbTransaction } from "../db/tx.js";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
 import { insertSigningRequest, getSigningRequestForApp, markSigningRequestSubmitted, markSigningRequestSucceeded, markSigningRequestFailed } from "../db/signingRequests.js";
 import { auditEvent } from "../audit/audit.js";
+import { computeDisplayHash } from "../signingRequests/displayHash.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
 import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
@@ -66,6 +67,13 @@ const CreateSigningRequestResponse = Type.Object({
   actionType: Type.String(),
   payloadToSign: Type.Unknown(),
   display: Type.Unknown(),
+  /**
+   * sha256 hex digest of the canonical-JSON `display` payload.
+   * Clients verify this matches a fresh computeDisplayHash(display)
+   * before rendering the preview, to detect tampering between the
+   * server and any intermediate caching layer.
+   */
+  displayHash: Type.String(),
   expiresAt: Type.Union([Type.String(), Type.Null()]),
   result: Type.Optional(Type.Unknown())
 });
@@ -110,6 +118,8 @@ const GetSigningRequestResponse = Type.Object({
   actionType: Type.String(),
   payloadToSign: Type.Unknown(),
   display: Type.Unknown(),
+  /** See `CreateSigningRequestResponse.displayHash`. */
+  displayHash: Type.String(),
   result: Type.Union([Type.Unknown(), Type.Null()]),
   error: Type.Union([Type.Unknown(), Type.Null()]),
   expiresAt: Type.Union([Type.String(), Type.Null()]),
@@ -456,12 +466,23 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         readiness = { status: "unknown", reason: `ReadinessError: ${String(err?.message ?? err)}` };
       }
 
+      // Pre-migration rows have display_hash = NULL. Compute on the
+      // fly so clients can rely on `displayHash` always being a
+      // string. A future migration may backfill + tighten this to
+      // NOT NULL; until then this branch keeps the wire contract
+      // uniform across legacy and new rows.
+      const displayHash =
+        typeof row.display_hash === "string" && row.display_hash.length > 0
+          ? row.display_hash
+          : computeDisplayHash(row.display_json);
+
       return {
         signingRequestId: row.id,
         status: row.status,
         actionType: row.action_type,
         payloadToSign: row.payload_to_sign,
         display: row.display_json,
+        displayHash,
         result: row.result_json,
         error: row.error_json,
         expiresAt: row.expires_at,
@@ -652,6 +673,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           }
         };
 
+        const displayHash = computeDisplayHash(display);
         const row = await withDbTransaction(db, async (client) => {
           const created = await insertSigningRequest(client, {
             appId,
@@ -663,6 +685,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             actionType: "arch.sign_message",
             payloadToSign,
             display,
+            displayHash,
             expiresAt
           });
 
@@ -689,6 +712,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           actionType: row.action_type,
           payloadToSign,
           display,
+          displayHash,
           expiresAt
         };
       }
@@ -956,6 +980,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       };
 
       // Persist request row now (pending). Non-custodial: client must submit signature.
+      const displayHash = computeDisplayHash(display);
       const row = await withDbTransaction(db, async (client) => {
         const created = await insertSigningRequest(client, {
           appId,
@@ -967,6 +992,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           actionType,
           payloadToSign,
           display,
+          displayHash,
           expiresAt
         });
 
@@ -994,6 +1020,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         actionType: row.action_type,
         payloadToSign,
         display,
+        displayHash,
         expiresAt
       };
     }
@@ -1514,6 +1541,12 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/signing-requests/:id/sign-with-turnkey",
     {
+      // Hard requirement post-013: a session bearer matching this
+      // user must be present. Closes audit findings X1 / M7 / C1
+      // for the highest-leverage route. Body still accepts
+      // `externalUserId` for back-compat but we cross-check it
+      // against the session principal and reject any mismatch.
+      preHandler: server.requireSession,
       schema: {
         summary: "Sign a signing request using Turnkey (server-side)",
         tags: ["signing-requests"],
@@ -1527,14 +1560,21 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
     async (request, reply) => {
       const appId = request.app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
+      const session = request.session;
+      if (!session) return reply.unauthorized("Missing session context");
       const db = getDbPool();
       const { id } = request.params as any;
       const body = request.body as any;
 
       const externalUserId: string = body.externalUserId;
-      const user = await withDbTransaction(db, (client) =>
-        getOrCreateUserByExternalId(client, { appId, externalUserId })
-      );
+      if (externalUserId !== session.externalUserId) {
+        // Cross-tenant attempt: caller's session is for user X but
+        // they passed user Y in the body. Refuse rather than
+        // silently using one or the other.
+        return reply.forbidden("Body externalUserId does not match session principal");
+      }
+      // We already know the user from the session; no need to upsert.
+      const user = { id: session.userId };
 
       const row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
       if (!row) return reply.notFound("Unknown signingRequestId");

@@ -56,6 +56,35 @@ export interface OpenSessionArgs {
   bootstrap: SessionBootstrap;
 }
 
+/**
+ * Key under `chrome.storage.session` where we record the liveness
+ * pointer for the current Turnkey session. Two fields, both already
+ * non-secret: which account the session belongs to, and when it
+ * expires. The actual signing material stays in IndexedDB (origin-
+ * shared, never leaves the extension origin); this is purely the
+ * "yes there is a session, here's whose" hand-off between document
+ * contexts.
+ */
+const SHARED_SESSION_KEY = "arch-wallet:session-snapshot";
+
+interface SessionSnapshot {
+  accountId: string;
+  expiresAt: number;
+}
+
+/**
+ * `chrome.storage.session` shim. Returns `null` when the API isn't
+ * available (e.g. vitest, plain browser tabs) so the rest of this
+ * file can stay synchronous-by-default and not pretend it has
+ * storage when it doesn't. Within the wallet extension itself the
+ * API is always present.
+ */
+function sessionStorage(): chrome.storage.StorageArea | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c: any = typeof chrome !== "undefined" ? chrome : undefined;
+  return c?.storage?.session ?? null;
+}
+
 export class SessionManager {
   private stamper: IndexedDbStamper | null = null;
   private currentAccountId: string | null = null;
@@ -65,6 +94,15 @@ export class SessionManager {
    * so concurrent callers don't race to register two API keys.
    */
   private pendingOpen: Promise<TurnkeyClient> | null = null;
+  /**
+   * Per-context "rehydration gate" -- set while a cross-context
+   * `ensureClient()` is in flight, so concurrent signers in this
+   * document don't each spin up their own redundant stamper. Distinct
+   * from `pendingOpen` because this path never registers a new
+   * Turnkey API key -- it only loads the existing IndexedDB private
+   * half that another document already minted.
+   */
+  private pendingEnsure: Promise<TurnkeyClient | null> | null = null;
 
   /**
    * Cheap pub/sub for React. We never carry data across the boundary
@@ -163,6 +201,10 @@ export class SessionManager {
     this.stamper = stamper;
     this.currentAccountId = account.id;
     this.expiresAt = Date.now() + ttlSeconds * 1000;
+    await this.writeSharedSnapshot({
+      accountId: account.id,
+      expiresAt: this.expiresAt,
+    });
     this.notify();
     return this.buildClient(stamper);
   }
@@ -172,6 +214,9 @@ export class SessionManager {
    * (or the active one, when accountId is omitted) is alive and
    * not within the expiry slack. Returns null otherwise; callers
    * must then `open()` a fresh session.
+   *
+   * Synchronous and in-memory-only. Use `ensureClient()` for the
+   * cross-context lazy-load path that signing code needs.
    */
   getClient(accountId?: string): TurnkeyClient | null {
     if (!this.stamper) return null;
@@ -180,6 +225,75 @@ export class SessionManager {
     }
     if (accountId && this.currentAccountId !== accountId) return null;
     return this.buildClient(this.stamper);
+  }
+
+  /**
+   * Cross-context safe accessor for signing paths.
+   *
+   * Each Chrome extension document (main popup, sidepanel, dapp-
+   * triggered Approve popup, service worker) gets its own JS realm
+   * and its own SessionManager singleton. The IndexedDB private key
+   * is shared across contexts because it's keyed off the extension
+   * origin, but the in-memory `stamper`/`currentAccountId`/
+   * `expiresAt` triple is not -- a session opened in the main popup
+   * is invisible to the Approve popup that subsequently mounts.
+   *
+   * This method bridges that gap: if our in-memory state already
+   * has a live session for `accountId`, fast-path; otherwise read
+   * the shared snapshot from `chrome.storage.session` and -- if it
+   * shows a live session for the requested account -- rehydrate by
+   * pointing a fresh `IndexedDbStamper` at the already-on-disk key.
+   *
+   * Returns `null` (rather than throwing) when no session is open
+   * anywhere; callers throw the user-facing `SessionLockedError`.
+   */
+  async ensureClient(accountId: string): Promise<TurnkeyClient | null> {
+    const inMemory = this.getClient(accountId);
+    if (inMemory) return inMemory;
+
+    if (this.pendingEnsure) return this.pendingEnsure;
+
+    this.pendingEnsure = this.doEnsureClient(accountId);
+    try {
+      return await this.pendingEnsure;
+    } finally {
+      this.pendingEnsure = null;
+    }
+  }
+
+  private async doEnsureClient(accountId: string): Promise<TurnkeyClient | null> {
+    const snapshot = await this.readSharedSnapshot();
+    if (!snapshot) return null;
+    if (snapshot.accountId !== accountId) return null;
+    if (snapshot.expiresAt - SESSION_EXPIRY_SLACK_SECONDS * 1000 <= Date.now()) {
+      // Another context's session has expired; clean up so we don't
+      // keep handing out stale rehydration attempts.
+      await this.clearSharedSnapshot();
+      return null;
+    }
+
+    // Mint a stamper bound to the existing IndexedDB key. `init()`
+    // is keyed on the extension origin's DB; if a key is already
+    // there (and there will be, given the snapshot exists) it's
+    // adopted as-is. We deliberately do NOT call `resetKeyPair()`
+    // here -- the snapshot we trust is for the *current* key, and
+    // rotating it would invalidate the Turnkey-side registration
+    // the opening context paid a user gesture (passkey / OTP) for.
+    const stamper = new IndexedDbStamper();
+    await stamper.init();
+    const pub = stamper.getPublicKey();
+    if (!pub) {
+      // No on-disk key found: the snapshot is lying. Treat it as a
+      // stale session that needs a fresh `open()`.
+      await this.clearSharedSnapshot();
+      return null;
+    }
+
+    this.stamper = stamper;
+    this.currentAccountId = snapshot.accountId;
+    this.expiresAt = snapshot.expiresAt;
+    this.notify();
+    return this.buildClient(stamper);
   }
 
   status(): SessionStatus {
@@ -207,6 +321,11 @@ export class SessionManager {
     this.stamper = null;
     this.currentAccountId = null;
     this.expiresAt = 0;
+    // Drop the shared snapshot unconditionally: even if *this*
+    // context didn't hold an in-memory stamper, another document
+    // might still observe the snapshot and try to rehydrate. The
+    // call is cheap and idempotent.
+    await this.clearSharedSnapshot();
     if (wasActive) this.notify();
     if (stamper) {
       try {
@@ -229,6 +348,47 @@ export class SessionManager {
 
   private buildClient(stamper: IndexedDbStamper): TurnkeyClient {
     return new TurnkeyClient({ baseUrl: TURNKEY_API_BASE_URL }, stamper);
+  }
+
+  private async readSharedSnapshot(): Promise<SessionSnapshot | null> {
+    const storage = sessionStorage();
+    if (!storage) return null;
+    try {
+      const result = await storage.get(SHARED_SESSION_KEY);
+      const raw = result?.[SHARED_SESSION_KEY];
+      if (!raw || typeof raw !== "object") return null;
+      const accountId = (raw as { accountId?: unknown }).accountId;
+      const expiresAt = (raw as { expiresAt?: unknown }).expiresAt;
+      if (typeof accountId !== "string" || typeof expiresAt !== "number") {
+        return null;
+      }
+      return { accountId, expiresAt };
+    } catch {
+      // chrome.storage.session can be evicted; treat any read error
+      // as "no session" rather than failing the sign attempt.
+      return null;
+    }
+  }
+
+  private async writeSharedSnapshot(snapshot: SessionSnapshot): Promise<void> {
+    const storage = sessionStorage();
+    if (!storage) return;
+    try {
+      await storage.set({ [SHARED_SESSION_KEY]: snapshot });
+    } catch {
+      // Best effort -- the in-memory state remains the source of
+      // truth in this context; we'll fail closed in others.
+    }
+  }
+
+  private async clearSharedSnapshot(): Promise<void> {
+    const storage = sessionStorage();
+    if (!storage) return;
+    try {
+      await storage.remove(SHARED_SESSION_KEY);
+    } catch {
+      // Same rationale as writeSharedSnapshot.
+    }
   }
 }
 

@@ -29,8 +29,9 @@ import {
   assertActivityCompleted,
   getSignatureFromActivity,
   getSignedTransactionFromActivity,
+  type TurnkeyClient,
 } from "@turnkey/http";
-import { bytesToHex, computeBip322ToSignTaprootSighash, hexToBytes } from "../utils/bip322";
+import { bytesToHex, computeBip322ToSignTaprootSighash } from "../utils/bip322";
 import { isExternalAccount, type WalletAccount } from "../state/types";
 import { sessionManager } from "../session/SessionManager";
 
@@ -60,14 +61,27 @@ export interface SignPsbtResult {
 }
 
 /**
- * Sign an arbitrary Arch SanitizedMessage hash. The signer wraps the
- * 32-byte hash into the BIP-322 to-sign taproot sighash for the
- * account's BTC address and Schnorr-signs that digest -- returning
- * a 64-byte (r||s) signature that arch-swap's raw-bytes path
- * accepts directly.
+ * Sign an arbitrary Arch SanitizedMessage hash.
+ *
+ * What gets BIP-322'd is the **hex string** form of the hash (its
+ * UTF-8 bytes), not the 32 raw bytes the hex represents. That's the
+ * convention `@saturnbtcio/arch-sdk` and the on-chain Arch validator
+ * agree on: `SanitizedMessageUtil.hash` itself returns
+ * `TextEncoder().encode(hex.encode(finalHash))` -- i.e. the 64-char
+ * lowercase hex string as UTF-8 bytes -- and `bip322-js`'s
+ * `Signer.sign(wif, taprootAddress, hexString)` is what dapps use to
+ * produce a signature the validator accepts. Wrapping the **raw 32
+ * bytes** instead (which is what we used to do here) produced a
+ * different sighash and signatures that Arch rejected at submit
+ * time with "error checking transaction sigs".
+ *
+ * The signer wraps that hex-string-as-bytes into the BIP-322 to-sign
+ * taproot sighash for the account's BTC address and Schnorr-signs
+ * that digest -- returning a 64-byte (r||s) signature Arch (and any
+ * stock BIP-322 verifier) accepts.
  */
 export interface SignArchMessageHashOptions {
-  /** 32-byte hex of the SanitizedMessageUtil.hash output. */
+  /** 64-char lowercase hex of the SanitizedMessageUtil.hash output. */
   messageHashHex: string;
 }
 
@@ -83,9 +97,16 @@ function archMessageHashToSighashHex(
   account: WalletAccount,
   messageHashHex: string,
 ): string {
+  // Pass the hex *string* (not the parsed 32 raw bytes) so
+  // `computeBip322ToSignTaprootSighash` UTF-8-encodes it via
+  // bip322-js's internal `Buffer.from(message)`. That matches what
+  // dapps produce when they call `bip322-js`'s `Signer.sign(wif, addr,
+  // hexString)` on the local-wallet path, which in turn is what Arch
+  // validators verify against. See the SignArchMessageHashOptions
+  // docstring above for the full why.
   const sighash = computeBip322ToSignTaprootSighash({
     signerAddress: account.btcAddress,
-    message: hexToBytes(messageHashHex),
+    message: messageHashHex,
   });
   return bytesToHex(sighash);
 }
@@ -104,8 +125,16 @@ export class SessionStampedSigner implements Signer {
 
   constructor(public account: WalletAccount) {}
 
-  private client() {
-    const c = sessionManager.getClient(this.account.id);
+  /**
+   * Resolve a TurnkeyClient for this account, rehydrating from
+   * `chrome.storage.session` + IndexedDB when our current document
+   * didn't open the session itself (e.g. the dapp-triggered Approve
+   * popup, which is a fresh JS realm relative to the main popup
+   * where the user unlocked the wallet). Throws `SessionLockedError`
+   * only when *no* document has an open session.
+   */
+  private async client(): Promise<TurnkeyClient> {
+    const c = await sessionManager.ensureClient(this.account.id);
     if (!c) throw new SessionLockedError(this.account.id);
     return c;
   }
@@ -114,7 +143,7 @@ export class SessionStampedSigner implements Signer {
     if (!opts.payloadHex) {
       throw new Error("SessionStampedSigner requires payloadHex");
     }
-    const res = await this.client().signRawPayload({
+    const res = await (await this.client()).signRawPayload({
       type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
       timestampMs: String(Date.now()),
       organizationId: this.account.organizationId,
@@ -141,7 +170,7 @@ export class SessionStampedSigner implements Signer {
   }
 
   async signPsbt(opts: SignPsbtOptions): Promise<SignPsbtResult> {
-    const res = await this.client().signTransaction({
+    const res = await (await this.client()).signTransaction({
       type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
       timestampMs: String(Date.now()),
       organizationId: this.account.organizationId,

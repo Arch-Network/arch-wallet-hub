@@ -14,6 +14,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_HUB_BASE_URL,
   DEFAULT_HUB_API_KEY,
+  isAllowedHubBaseUrl,
   isExternalAccount,
 } from "./types";
 import { deriveArchAccountAddress } from "../utils/sdk";
@@ -141,6 +142,14 @@ function migrateApiConfig(state: any): boolean {
     state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
     migrated = true;
   } else if (state.hubBaseUrl === LEGACY_EC2_HUB_BASE_URL) {
+    state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
+    migrated = true;
+  } else if (!isAllowedHubBaseUrl(state.hubBaseUrl)) {
+    // Defence-in-depth: a pre-allowlist build may have persisted an
+    // arbitrary Hub URL the user typed into Settings. Snap it back
+    // on read so any subsequent Hub call goes to a vetted host.
+    // This covers both legacy installs and the "user pasted a
+    // phishing URL between releases" case.
     state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
     migrated = true;
   }
@@ -502,7 +511,23 @@ export const walletStore = {
       const site = state.connectedSites[origin];
       const id = site?.accountId || state.activeAccountId;
       if (!id) return null;
-      return state.accounts.find((a) => a.id === id) ?? null;
+      // Match against the internal WalletAccount.id first. Fall back to
+      // btcAddress to recover older `connectedSites` entries written by
+      // pre-fix builds that mistakenly stored the btcAddress in the
+      // `accountId` slot -- without this fallback, every page refresh
+      // on those origins would re-prompt the connect popup. When we
+      // find the account that way, rewrite the entry so subsequent
+      // lookups go through the fast path and forget this ever happened.
+      const byId = state.accounts.find((a) => a.id === id);
+      if (byId) return byId;
+      const byBtc = state.accounts.find((a) => a.btcAddress === id);
+      if (byBtc && site && site.accountId !== byBtc.id) {
+        site.accountId = byBtc.id;
+        savePlaintextState(state).catch(() => {
+          /* migration is best-effort; the in-memory match still works */
+        });
+      }
+      return byBtc ?? null;
     } catch {
       return null;
     }
@@ -581,14 +606,27 @@ export const walletStore = {
       ? state.accounts.find((a) => a.id === state.activeAccountId)
       : null;
     if (!account) throw new Error("No active account to open a session for");
+    await this.openPasskeySessionForAccount(account);
+  },
+
+  /**
+   * Same as `openPasskeySession`, but for an explicitly-named account
+   * instead of the currently-active one. The Approve popup needs this:
+   * a dapp may have been granted access to account X while the user
+   * has since switched the dashboard's active account to Y. Re-opening
+   * the session for Y when the dapp wants to sign with X would produce
+   * a `SessionLockedError` on the next sign attempt.
+   */
+  async openPasskeySessionForAccount(account: WalletAccount): Promise<void> {
     if (isExternalAccount(account)) {
       throw new Error("External wallets sign in their source wallet; no Turnkey session is available");
     }
     if (account.authMethod !== "passkey") {
       throw new Error(
-        `openPasskeySession called for a ${account.authMethod} wallet; use openEmailSession instead`,
+        `openPasskeySessionForAccount called for a ${account.authMethod} wallet; use openEmailSession instead`,
       );
     }
+    const state = await this.requireUnlockedState();
     await sessionManager.open({
       account,
       ttlSeconds: this.sessionTtlSecondsFromState(state),
@@ -688,6 +726,14 @@ export const walletStore = {
   },
 
   async setHubConfig(hubBaseUrl: string, hubApiKey: string): Promise<void> {
+    if (!isAllowedHubBaseUrl(hubBaseUrl)) {
+      // Fail closed in the store, not just the UI. Anything that
+      // reaches `setHubConfig` directly (e.g. a future deep-link or
+      // background-message-driven write path) must also be gated.
+      throw new Error(
+        "Refusing to save Hub URL: host not in allowlist. Use the default hub.arch.network or a vetted *.arch.network host.",
+      );
+    }
     const state = await this.requireUnlockedState();
     state.hubBaseUrl = hubBaseUrl;
     state.hubApiKey = hubApiKey;

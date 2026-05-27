@@ -8,9 +8,11 @@ import { registerOpenApi } from "./plugins/openapi.js";
 import { registerTurnkey } from "./plugins/turnkey.js";
 import { registerIndexer } from "./plugins/indexer.js";
 import { registerAppAuth } from "./plugins/appAuth.js";
+import { registerSessionAuth } from "./plugins/sessionAuth.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerSecurityHeaders } from "./plugins/securityHeaders.js";
 import { registerRateLimit } from "./plugins/rateLimit.js";
+import { registerAuthSessionRoutes } from "./routes/authSessions.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
@@ -82,9 +84,14 @@ export async function createServer() {
   await server.register(registerIndexer);
   await server.register(registerOpenApi, { basePath: "/v1" });
   await server.register(registerAppAuth);
+  // Register the requireSession preHandler factory before any route
+  // module that opts into it. The plugin only decorates; no
+  // global hook is installed.
+  await server.register(registerSessionAuth);
   // Rate limit AFTER appAuth so the keyGenerator can use the
   // authenticated apiKeyId.
   await server.register(registerRateLimit);
+  await server.register(registerAuthSessionRoutes, { prefix: "/v1" });
   await server.register(registerHealthRoutes, { prefix: "/v1" });
   await server.register(registerPlatformRoutes, { prefix: "/v1" });
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });

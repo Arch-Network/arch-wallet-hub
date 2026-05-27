@@ -469,3 +469,41 @@ export type SubmitSigningResponse = {
   result: unknown;
 };
 
+// ── Auth sessions ────────────────────────────────────────────────────────
+
+/**
+ * Request the server-side scaffolding to issue a one-shot challenge
+ * that the caller can sign as proof-of-control of the user's
+ * Turnkey resource. The signing key is the resource's default
+ * Taproot xOnly key (32 bytes, BIP-340 schnorr).
+ */
+export type CreateSessionChallengeRequest = {
+  externalUserId: string;
+  turnkeyResourceId: string;
+};
+
+export type CreateSessionChallengeResponse = {
+  challengeId: string;
+  /** Human-readable multi-line message kept for audit; not signed directly. */
+  message: string;
+  /** 32-byte sha256 of `message` expressed as 64 lowercase hex chars. Sign this. */
+  payloadHex: string;
+  expiresAt: string;
+};
+
+export type MintSessionRequest = {
+  challengeId: string;
+  /** 64-byte schnorr signature over `payloadHex`, lowercase hex. */
+  signatureHex: string;
+};
+
+export type MintSessionResponse = {
+  /** Opaque bearer (prefix `whs_v1_`). Returned exactly once. */
+  sessionToken: string;
+  expiresAt: string;
+};
+
+export type RevokeSessionResponse = {
+  revoked: boolean;
+};
+
