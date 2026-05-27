@@ -31,7 +31,12 @@ import type {
   VerifyRecoveryEmailResponse,
   EstimateBtcFeeRequest,
   EstimateBtcFeeResponse,
-  PortfolioResponse
+  PortfolioResponse,
+  CreateSessionChallengeRequest,
+  CreateSessionChallengeResponse,
+  MintSessionRequest,
+  MintSessionResponse,
+  RevokeSessionResponse
 } from "./types.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -161,6 +166,54 @@ export class WalletHubClient {
       );
     }
     return (await res.json()) as T;
+  }
+
+  // ── Auth sessions (per-user proof-of-control bearer) ────────────────────
+
+  /**
+   * Step 1 of the session-token handshake. Server returns a
+   * short-lived challenge identified by `challengeId`; the wallet
+   * must sign `payloadHex` (32 bytes, schnorr/BIP-340) with the
+   * Turnkey resource's default Taproot key.
+   */
+  async createSessionChallenge(
+    body: CreateSessionChallengeRequest,
+  ): Promise<CreateSessionChallengeResponse> {
+    return await this.requestJson(`/auth/session/challenge`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Step 2: submit the 64-byte schnorr signature over the
+   * challenge's `payloadHex`. On success the server returns an
+   * opaque `sessionToken` the caller should then pass to
+   * `setSessionToken()`. The plaintext token is only ever returned
+   * here -- the server stores its sha256 hash.
+   */
+  async mintSessionToken(body: MintSessionRequest): Promise<MintSessionResponse> {
+    return await this.requestJson(`/auth/session`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Revoke the currently-attached session token. Must have a token
+   * set via `setSessionToken()` first; after a successful call the
+   * client clears its own copy so subsequent requests no longer
+   * carry it.
+   */
+  async revokeSession(): Promise<RevokeSessionResponse> {
+    if (!this.sessionToken) {
+      throw new Error("revokeSession requires an active session token");
+    }
+    const result = await this.requestJson<RevokeSessionResponse>(`/auth/session/revoke`, {
+      method: "POST",
+    });
+    this.sessionToken = undefined;
+    return result;
   }
 
   // ── Wallet linking (dapp connect challenge / verify) ─────────────────────

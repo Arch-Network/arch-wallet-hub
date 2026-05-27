@@ -1541,6 +1541,12 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/signing-requests/:id/sign-with-turnkey",
     {
+      // Hard requirement post-013: a session bearer matching this
+      // user must be present. Closes audit findings X1 / M7 / C1
+      // for the highest-leverage route. Body still accepts
+      // `externalUserId` for back-compat but we cross-check it
+      // against the session principal and reject any mismatch.
+      preHandler: server.requireSession,
       schema: {
         summary: "Sign a signing request using Turnkey (server-side)",
         tags: ["signing-requests"],
@@ -1554,14 +1560,21 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
     async (request, reply) => {
       const appId = request.app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
+      const session = request.session;
+      if (!session) return reply.unauthorized("Missing session context");
       const db = getDbPool();
       const { id } = request.params as any;
       const body = request.body as any;
 
       const externalUserId: string = body.externalUserId;
-      const user = await withDbTransaction(db, (client) =>
-        getOrCreateUserByExternalId(client, { appId, externalUserId })
-      );
+      if (externalUserId !== session.externalUserId) {
+        // Cross-tenant attempt: caller's session is for user X but
+        // they passed user Y in the body. Refuse rather than
+        // silently using one or the other.
+        return reply.forbidden("Body externalUserId does not match session principal");
+      }
+      // We already know the user from the session; no need to upsert.
+      const user = { id: session.userId };
 
       const row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
       if (!row) return reply.notFound("Unknown signingRequestId");
