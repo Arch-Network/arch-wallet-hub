@@ -58,6 +58,50 @@ async function readAccountInfo(
   }
 }
 
+/**
+ * Best-effort lookup of an Arch account's current lamport balance,
+ * used by the Approve modal's pre-flight balance check.
+ *
+ * Discriminates three outcomes the UI needs to render differently:
+ *
+ *   { kind: "found", lamports }     The account exists; render
+ *                                   current/post balance, gate Approve
+ *                                   on (lamports >= requestedAmount).
+ *
+ *   { kind: "not_found" }           Account doesn't exist on chain yet
+ *                                   (fresh wallet, never received).
+ *                                   UI shows "balance unknown"; we do
+ *                                   NOT block the user since a 0
+ *                                   balance is materially different
+ *                                   from "we couldn't tell".
+ *
+ *   { kind: "error", reason }       Indexer call failed (network,
+ *                                   timeout, auth). Same UI treatment
+ *                                   as not_found: warn but don't
+ *                                   block, since a transient indexer
+ *                                   outage shouldn't strand the user.
+ */
+export type ArchBalanceSnapshot =
+  | { kind: "found"; lamports: bigint }
+  | { kind: "not_found" }
+  | { kind: "error"; reason: string };
+
+export async function fetchArchAccountBalance(
+  indexer: ArchIndexerClient,
+  addressBase58: string,
+): Promise<ArchBalanceSnapshot> {
+  const pubkeyBytes = Array.from(bs58.decode(addressBase58));
+  try {
+    const result = await indexer.rpc<AccountInfo | null>("read_account_info", pubkeyBytes);
+    if (!result || typeof result.lamports !== "number") {
+      return { kind: "not_found" };
+    }
+    return { kind: "found", lamports: BigInt(result.lamports) };
+  } catch (e: any) {
+    return { kind: "error", reason: e?.message || "Unknown indexer error" };
+  }
+}
+
 export interface MintInfo {
   decimals: number;
   supply: bigint;

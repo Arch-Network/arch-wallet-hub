@@ -12,16 +12,29 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams } from "react-router-dom";
+import { computeDisplayHash } from "@arch-network/wallet-hub-sdk";
 import { useWallet } from "../../hooks/useWallet";
 import { walletStore } from "../../state/wallet-store";
 import { getClient, getExternalUserId, formatWalletHubError } from "../../utils/sdk";
 import { truncateAddress, formatArch } from "../../utils/format";
+import { fetchArchAccountBalance, type ArchBalanceSnapshot } from "../../utils/arch-rpc";
+import { getIndexer } from "../../utils/indexer";
 import DappHeader from "../../components/Approve/DappHeader";
 import { interpretMessage } from "../../utils/sign-message";
-import { summarizePsbt, formatSats, type PsbtSummary } from "../../utils/psbt-summary";
+import {
+  summarizePsbt,
+  formatSats,
+  evaluatePsbtGate,
+  type PsbtGate,
+  type PsbtSummary,
+} from "../../utils/psbt-summary";
 import { signerForAccount } from "../../signers/Signer";
 import { isExternalAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import {
+  ensureSigningSessionForAccount,
+  EmailSessionNeededError,
+} from "../../session/ensure-signing-session";
 
 interface RequestDetails {
   type: string;
@@ -30,6 +43,38 @@ interface RequestDetails {
   dappName?: string;
   dappIconUrl?: string;
   autoApproveAllowed?: boolean;
+}
+
+/**
+ * Defence against display-vs-sign drift: recompute the canonical
+ * hash of the server-returned `display` object and refuse to sign
+ * if it doesn't match the `displayHash` field the server claims to
+ * have stored.
+ *
+ * Mirrors the verification in `packages/wallet-hub-ui`'s
+ * `TransactionPreview` so the chrome-wallet doesn't silently accept
+ * tampered responses just because it uses its own approve UI.
+ *
+ * Pre-displayHash builds may have legacy rows without the field;
+ * the server now computes on-the-fly during GET, so a missing field
+ * here means *create* response specifically, which is always
+ * fresh-row -- treat as an error rather than a soft warning.
+ */
+async function assertDisplayHashMatches(sr: {
+  display: unknown;
+  displayHash?: string;
+}): Promise<void> {
+  if (!sr.displayHash) {
+    throw new Error(
+      "Hub response missing displayHash. Refusing to sign without display-integrity binding.",
+    );
+  }
+  const computed = await computeDisplayHash(sr.display);
+  if (computed !== sr.displayHash) {
+    throw new Error(
+      `Display tamper detected: hub reported ${sr.displayHash}, local recompute ${computed}. Refusing to sign.`,
+    );
+  }
 }
 
 // Returns the raw `result` object from the Hub so callers can pick the field they need
@@ -186,21 +231,174 @@ function ArchMessageHashSummary({ payload }: { payload: any }) {
   );
 }
 
-function PsbtSummaryCard({ payload, myAddresses }: { payload: any; myAddresses: string[] }) {
-  const [summary, setSummary] = useState<PsbtSummary | null>(null);
-  const [decodeError, setDecodeError] = useState<string | null>(null);
+// TODO: enforce `SitePermissions.spendingLimitSatsPerDay` once a
+// daily counter lives in the wallet store. Today the field is
+// typed (state/types.ts) but unread; surfacing it from here will
+// be cleaner once the Permission Center work lands.
 
-  useEffect(() => {
+/**
+ * Pre-flight balance check for `arch.transfer` (the SEND_TRANSFER
+ * dapp request type).
+ *
+ * Why static analysis instead of true simulation: the Arch SDK
+ * (v0.0.26) exposes no `simulateTransaction` RPC; the available
+ * methods (`read_account_info`, `send_transaction`, ...) don't let
+ * us dry-run state changes. The closest meaningful pre-flight is
+ * to fetch the sender's current lamport balance and predict the
+ * post-balance by simple subtraction. Arch transfers don't deduct
+ * a lamport fee (anchoring happens via the user's BTC UTXO), so
+ * the prediction is exact when the indexer returned a value.
+ *
+ * SEND_TOKEN_TRANSFER (APL tokens) is intentionally NOT covered
+ * here -- token balances live in an associated-token account that
+ * needs ATA derivation plus token-account data parsing. Tracked
+ * as a follow-up.
+ */
+type ArchBalanceGate =
+  | { state: "loading" }
+  | { state: "ok"; snapshot: ArchBalanceSnapshot; postLamports: bigint | null }
+  | {
+      state: "blocked";
+      snapshot: ArchBalanceSnapshot;
+      requestedLamports: bigint;
+      availableLamports: bigint;
+    };
+
+function parseLamportsToBigInt(raw: unknown): bigint | null {
+  // Dapps send lamports as either number or string. BigInt parses
+  // both; an empty / non-numeric string returns null so we
+  // gracefully fail open rather than crashing the modal.
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw)) return null;
+    return BigInt(Math.trunc(raw));
+  }
+  if (typeof raw === "string") {
+    if (!/^-?\d+$/.test(raw.trim())) return null;
     try {
-      const psbtPayload: string = payload?.psbt;
-      if (!psbtPayload) throw new Error("Missing PSBT payload");
-      setSummary(summarizePsbt(psbtPayload, myAddresses));
-      setDecodeError(null);
-    } catch (e: any) {
-      setDecodeError(e?.message || "Could not decode PSBT");
+      return BigInt(raw.trim());
+    } catch {
+      return null;
     }
-  }, [payload, myAddresses]);
+  }
+  return null;
+}
 
+function computeArchTransferGate(
+  snapshot: ArchBalanceSnapshot | null,
+  requestedLamports: bigint | null,
+): ArchBalanceGate {
+  if (!snapshot) return { state: "loading" };
+  if (snapshot.kind !== "found") {
+    // not_found / error: surface to the user but don't block.
+    // Blocking on a transient indexer outage would brick the
+    // wallet for legitimate users.
+    return { state: "ok", snapshot, postLamports: null };
+  }
+  if (requestedLamports === null) {
+    // Malformed amount upstream -- the existing render path will
+    // also surface this; we don't block here.
+    return { state: "ok", snapshot, postLamports: snapshot.lamports };
+  }
+  if (requestedLamports > snapshot.lamports) {
+    return {
+      state: "blocked",
+      snapshot,
+      requestedLamports,
+      availableLamports: snapshot.lamports,
+    };
+  }
+  return {
+    state: "ok",
+    snapshot,
+    postLamports: snapshot.lamports - requestedLamports,
+  };
+}
+
+function ArchBalanceCard({
+  gate,
+  requestedLamports,
+}: {
+  gate: ArchBalanceGate;
+  requestedLamports: bigint | null;
+}) {
+  if (gate.state === "loading") {
+    return (
+      <div className="card" style={{ marginTop: 8 }}>
+        <div className="input-label">Pre-flight balance</div>
+        <div style={{ fontSize: 12, opacity: 0.7 }}>Checking on-chain balance...</div>
+      </div>
+    );
+  }
+  if (gate.snapshot.kind === "not_found") {
+    return (
+      <div className="card" style={{ marginTop: 8 }}>
+        <div className="input-label">Pre-flight balance</div>
+        <div style={{ fontSize: 12, opacity: 0.85 }}>
+          No on-chain balance found for this account yet. If it&apos;s a fresh
+          wallet, the transfer may fail until it&apos;s funded.
+        </div>
+      </div>
+    );
+  }
+  if (gate.snapshot.kind === "error") {
+    return (
+      <div className="card" style={{ marginTop: 8 }}>
+        <div className="input-label">Pre-flight balance</div>
+        <div className="approve-risk approve-risk-warn">
+          Could not check current balance ({gate.snapshot.reason}). Proceed
+          with caution.
+        </div>
+      </div>
+    );
+  }
+  const current = gate.snapshot.lamports;
+  return (
+    <div className="card" style={{ marginTop: 8 }}>
+      <div className="input-label">Pre-flight balance</div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 4 }}>
+        <span>Current</span>
+        <span className="mono">{formatArch(current.toString())}</span>
+      </div>
+      {requestedLamports !== null && (
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 2 }}>
+          <span>This transfer</span>
+          <span className="mono">- {formatArch(requestedLamports.toString())}</span>
+        </div>
+      )}
+      {gate.state === "ok" && gate.postLamports !== null && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            fontSize: 13,
+            marginTop: 4,
+            paddingTop: 4,
+            borderTop: "1px solid var(--border)",
+            fontWeight: 600,
+          }}
+        >
+          <span>After</span>
+          <span className="mono">{formatArch(gate.postLamports.toString())}</span>
+        </div>
+      )}
+      {gate.state === "blocked" && (
+        <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+          Insufficient balance: requested {formatArch(gate.requestedLamports.toString())}, available{" "}
+          {formatArch(gate.availableLamports.toString())}. Refusing to sign.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PsbtSummaryCard({
+  summary,
+  decodeError,
+}: {
+  summary: PsbtSummary | null;
+  decodeError: string | null;
+}) {
   if (decodeError) {
     return (
       <div className="card">
@@ -317,6 +515,8 @@ export default function Approve() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [psbtLargeOutflowAck, setPsbtLargeOutflowAck] = useState(false);
+  const [archBalance, setArchBalance] = useState<ArchBalanceSnapshot | null>(null);
 
   const myAddresses = useMemo(
     () => state.accounts.map((a) => a.btcAddress).filter(Boolean),
@@ -327,6 +527,79 @@ export default function Approve() {
     () => state.accounts.find((a) => a.id === selectedAccountId) ?? activeAccount,
     [state.accounts, selectedAccountId, activeAccount],
   );
+
+  // Decode SIGN_PSBT payloads once at the Approve level so the same
+  // summary feeds both the body card and the footer gating logic
+  // (block / require-confirm). `summarizePsbt` is synchronous so a
+  // useMemo is the right primitive; the previous implementation in
+  // PsbtSummaryCard used useState+useEffect, which decoded the PSBT
+  // twice (once for display, once when we'd need it for gating).
+  const psbtDecode = useMemo<{
+    summary: PsbtSummary | null;
+    error: string | null;
+  }>(() => {
+    if (request?.type !== "SIGN_PSBT") return { summary: null, error: null };
+    const psbtPayload: string = (request.payload as any)?.psbt;
+    if (!psbtPayload) return { summary: null, error: "Missing PSBT payload" };
+    try {
+      return { summary: summarizePsbt(psbtPayload, myAddresses), error: null };
+    } catch (e: any) {
+      return { summary: null, error: e?.message || "Could not decode PSBT" };
+    }
+  }, [request, myAddresses]);
+
+  const psbtGate = useMemo<PsbtGate | null>(
+    () => (psbtDecode.summary ? evaluatePsbtGate(psbtDecode.summary) : null),
+    [psbtDecode.summary],
+  );
+
+  // Switching account or request type invalidates a stale "I
+  // acknowledged the large outflow" tick -- the user is now looking
+  // at a different transaction.
+  useEffect(() => {
+    setPsbtLargeOutflowAck(false);
+  }, [requestId, selectedAccountId, psbtDecode.summary?.netUserSats]);
+
+  // Pre-flight Arch balance check for SEND_TRANSFER. Re-fetches
+  // whenever the active account changes; cancellation guard avoids
+  // a slow first request overwriting a faster second one.
+  const requestedArchLamports = useMemo<bigint | null>(() => {
+    if (request?.type !== "SEND_TRANSFER") return null;
+    return parseLamportsToBigInt((request.payload as any)?.lamports);
+  }, [request]);
+
+  useEffect(() => {
+    if (request?.type !== "SEND_TRANSFER") {
+      setArchBalance(null);
+      return;
+    }
+    const archAddress = selectedAccount?.archAddress;
+    if (!archAddress) {
+      setArchBalance({ kind: "error", reason: "Selected account has no Arch address" });
+      return;
+    }
+    let cancelled = false;
+    setArchBalance(null);
+    (async () => {
+      try {
+        const indexer = await getIndexer();
+        const snap = await fetchArchAccountBalance(indexer, archAddress);
+        if (!cancelled) setArchBalance(snap);
+      } catch (e: any) {
+        if (!cancelled) {
+          setArchBalance({ kind: "error", reason: e?.message || "Failed to read balance" });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [request, selectedAccount?.archAddress]);
+
+  const archTransferGate = useMemo<ArchBalanceGate | null>(() => {
+    if (request?.type !== "SEND_TRANSFER") return null;
+    return computeArchTransferGate(archBalance, requestedArchLamports);
+  }, [request, archBalance, requestedArchLamports]);
 
   useEffect(() => {
     if (!requestId) return;
@@ -374,6 +647,18 @@ export default function Approve() {
     setLoading(true);
     setError(null);
     try {
+      // Re-open the Turnkey signing session at the point of signing.
+      // Otherwise an idle-locked wallet (or a wallet whose session TTL
+      // elapsed in the background) bounces the dapp with
+      // `SessionLockedError`, which the dapp surfaces as "your wallet
+      // is locked" -- when in fact the user just needs to satisfy one
+      // WebAuthn prompt. CONNECT skipped: it neither signs nor needs
+      // a session, and we don't want to prompt for a passkey on a
+      // first-touch site that may end up being rejected.
+      if (request.type !== "CONNECT") {
+        await ensureSigningSessionForAccount(selectedAccount);
+      }
+
       const client = await getClient();
       const externalUserId = await getExternalUserId();
 
@@ -384,6 +669,14 @@ export default function Approve() {
           origin: request.origin,
           dappName: request.dappName,
           iconUrl: request.dappIconUrl,
+          // Internal WalletAccount id (UUID-shaped). The background's
+          // APPROVE_CONNECT handler must store this -- not btcAddress --
+          // as the site's `accountId`, because `getAccountForOrigin`
+          // matches against WalletAccount.id when GET_ACCOUNT runs on a
+          // subsequent page load. Storing the btcAddress instead breaks
+          // session resume: the dapp's tryResume call returns null, the
+          // user is forced through the approval popup on every refresh.
+          accountId: selectedAccount.id,
           account: {
             address: selectedAccount.btcAddress,
             publicKey: selectedAccount.publicKeyHex,
@@ -423,6 +716,7 @@ export default function Approve() {
             : { kind: "turnkey", resourceId: selectedAccount.turnkeyResourceId },
           action,
         });
+        await assertDisplayHashMatches(sr);
         const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const txid = extractTxid(submitResult, sr.signingRequestId);
         sendApproved({ txid });
@@ -443,6 +737,7 @@ export default function Approve() {
             : { kind: "turnkey", resourceId: selectedAccount.turnkeyResourceId },
           action: { type: "arch.sign_message", messageHex },
         });
+        await assertDisplayHashMatches(sr);
         const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const signature = submitResult?.signature64Hex || submitResult?.signature;
         if (!signature) throw new Error("Hub did not return a signature");
@@ -491,7 +786,11 @@ export default function Approve() {
 
       throw new Error(`Unsupported request type: ${request.type}`);
     } catch (e: any) {
-      setError(formatWalletHubError(e, "Failed to process request"));
+      if (e instanceof EmailSessionNeededError) {
+        setError(e.message);
+      } else {
+        setError(formatWalletHubError(e, "Failed to process request"));
+      }
     } finally {
       setLoading(false);
     }
@@ -560,20 +859,25 @@ export default function Approve() {
         )}
 
         {request.type === "SEND_TRANSFER" && request.payload && (
-          <div className="card">
-            <div style={{ marginBottom: 8 }}>
-              <div className="input-label">Action</div>
-              <div style={{ fontWeight: 600 }}>Send ARCH</div>
+          <>
+            <div className="card">
+              <div style={{ marginBottom: 8 }}>
+                <div className="input-label">Action</div>
+                <div style={{ fontWeight: 600 }}>Send ARCH</div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div className="input-label">To</div>
+                <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
+              </div>
+              <div>
+                <div className="input-label">Amount</div>
+                <div style={{ fontWeight: 600 }}>{formatArch(request.payload.lamports)}</div>
+              </div>
             </div>
-            <div style={{ marginBottom: 8 }}>
-              <div className="input-label">To</div>
-              <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
-            </div>
-            <div>
-              <div className="input-label">Amount</div>
-              <div style={{ fontWeight: 600 }}>{formatArch(request.payload.lamports)}</div>
-            </div>
-          </div>
+            {archTransferGate && (
+              <ArchBalanceCard gate={archTransferGate} requestedLamports={requestedArchLamports} />
+            )}
+          </>
         )}
 
         {request.type === "SEND_TOKEN_TRANSFER" && request.payload && (
@@ -606,7 +910,29 @@ export default function Approve() {
         )}
 
         {request.type === "SIGN_PSBT" && request.payload && (
-          <PsbtSummaryCard payload={request.payload} myAddresses={myAddresses} />
+          <>
+            <PsbtSummaryCard summary={psbtDecode.summary} decodeError={psbtDecode.error} />
+            {psbtGate?.block && (
+              <div className="approve-risk approve-risk-danger" style={{ marginTop: 8 }}>
+                {psbtGate.block.reason}
+              </div>
+            )}
+            {psbtGate?.requireConfirm && (
+              <div className="approve-risk approve-risk-warn" style={{ marginTop: 8 }}>
+                <label
+                  style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer" }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={psbtLargeOutflowAck}
+                    onChange={(e) => setPsbtLargeOutflowAck(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>{psbtGate.requireConfirm.reason}</span>
+                </label>
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -614,7 +940,26 @@ export default function Approve() {
         <button className="btn btn-secondary" onClick={handleReject} disabled={loading}>
           Reject
         </button>
-        <button className="btn btn-primary" onClick={handleApprove} disabled={loading || !selectedAccount}>
+        <button
+          className="btn btn-primary"
+          onClick={handleApprove}
+          disabled={
+            loading ||
+            !selectedAccount ||
+            // SIGN_PSBT: decode must have succeeded; gate must not be
+            // blocking; if a confirm checkbox is required it must be ticked.
+            (request.type === "SIGN_PSBT" &&
+              (!!psbtDecode.error ||
+                !psbtDecode.summary ||
+                !!psbtGate?.block ||
+                (!!psbtGate?.requireConfirm && !psbtLargeOutflowAck))) ||
+            // SEND_TRANSFER: refuse when the pre-flight balance gate
+            // confirmed insufficient funds. We do NOT block while the
+            // gate is still loading or on indexer error -- only on a
+            // positively-known insufficient balance.
+            (request.type === "SEND_TRANSFER" && archTransferGate?.state === "blocked")
+          }
+        >
           {loading ? "Processing..." : "Approve"}
         </button>
       </div>
