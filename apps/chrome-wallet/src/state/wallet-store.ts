@@ -511,7 +511,23 @@ export const walletStore = {
       const site = state.connectedSites[origin];
       const id = site?.accountId || state.activeAccountId;
       if (!id) return null;
-      return state.accounts.find((a) => a.id === id) ?? null;
+      // Match against the internal WalletAccount.id first. Fall back to
+      // btcAddress to recover older `connectedSites` entries written by
+      // pre-fix builds that mistakenly stored the btcAddress in the
+      // `accountId` slot -- without this fallback, every page refresh
+      // on those origins would re-prompt the connect popup. When we
+      // find the account that way, rewrite the entry so subsequent
+      // lookups go through the fast path and forget this ever happened.
+      const byId = state.accounts.find((a) => a.id === id);
+      if (byId) return byId;
+      const byBtc = state.accounts.find((a) => a.btcAddress === id);
+      if (byBtc && site && site.accountId !== byBtc.id) {
+        site.accountId = byBtc.id;
+        savePlaintextState(state).catch(() => {
+          /* migration is best-effort; the in-memory match still works */
+        });
+      }
+      return byBtc ?? null;
     } catch {
       return null;
     }
@@ -590,14 +606,27 @@ export const walletStore = {
       ? state.accounts.find((a) => a.id === state.activeAccountId)
       : null;
     if (!account) throw new Error("No active account to open a session for");
+    await this.openPasskeySessionForAccount(account);
+  },
+
+  /**
+   * Same as `openPasskeySession`, but for an explicitly-named account
+   * instead of the currently-active one. The Approve popup needs this:
+   * a dapp may have been granted access to account X while the user
+   * has since switched the dashboard's active account to Y. Re-opening
+   * the session for Y when the dapp wants to sign with X would produce
+   * a `SessionLockedError` on the next sign attempt.
+   */
+  async openPasskeySessionForAccount(account: WalletAccount): Promise<void> {
     if (isExternalAccount(account)) {
       throw new Error("External wallets sign in their source wallet; no Turnkey session is available");
     }
     if (account.authMethod !== "passkey") {
       throw new Error(
-        `openPasskeySession called for a ${account.authMethod} wallet; use openEmailSession instead`,
+        `openPasskeySessionForAccount called for a ${account.authMethod} wallet; use openEmailSession instead`,
       );
     }
+    const state = await this.requireUnlockedState();
     await sessionManager.open({
       account,
       ttlSeconds: this.sessionTtlSecondsFromState(state),
