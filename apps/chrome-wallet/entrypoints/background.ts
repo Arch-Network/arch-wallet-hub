@@ -424,7 +424,20 @@ export default defineBackground(() => {
           return false;
         }
         (async () => {
-          const accountId = message.account?.address ?? "";
+          // Prefer the explicit internal WalletAccount id sent by the
+          // approval popup. Older popup builds (pre-fix) only sent the
+          // btcAddress under `account.address`, which would silently
+          // mis-store as the site's accountId and break GET_ACCOUNT on
+          // every subsequent page load -- so we accept the legacy field
+          // as a fallback and self-heal it below.
+          const explicitId: string | undefined = message.accountId;
+          const legacyAddress: string | undefined = message.account?.address;
+          let accountId = explicitId || "";
+          if (!accountId && legacyAddress) {
+            const state = await walletStore.getState();
+            const match = state.accounts.find((a) => a.btcAddress === legacyAddress);
+            accountId = match?.id ?? "";
+          }
           await walletStore.connectSite(message.origin, {
             origin: message.origin,
             name: message.dappName,
