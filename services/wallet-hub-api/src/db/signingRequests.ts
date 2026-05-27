@@ -11,6 +11,13 @@ export type SigningRequestRow = {
   action_type: string;
   payload_to_sign: unknown;
   display_json: unknown;
+  /**
+   * sha256 hex digest of the canonical-JSON `display_json` value at
+   * insert time. NULL for rows inserted before migration 012; the
+   * GET handler computes it on the fly in that case so the wire
+   * contract stays uniform.
+   */
+  display_hash: string | null;
   submitted_signature_json: unknown | null;
   result_json: unknown | null;
   error_json: unknown | null;
@@ -29,15 +36,16 @@ export async function insertSigningRequest(client: PoolClient, params: {
   actionType: string;
   payloadToSign: unknown;
   display: unknown;
+  displayHash: string;
   expiresAt: string | null;
 }): Promise<SigningRequestRow> {
   const res = await client.query<SigningRequestRow>(
     `
       INSERT INTO signing_requests (
         app_id, user_id, status, signer_kind, signer_address, turnkey_resource_id,
-        action_type, payload_to_sign, display_json, expires_at
+        action_type, payload_to_sign, display_json, display_hash, expires_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10,$11)
       RETURNING *
     `,
     [
@@ -50,6 +58,7 @@ export async function insertSigningRequest(client: PoolClient, params: {
       params.actionType,
       JSON.stringify(params.payloadToSign),
       JSON.stringify(params.display),
+      params.displayHash,
       params.expiresAt
     ]
   );
