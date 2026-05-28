@@ -19,6 +19,11 @@ import { reEncodeTaprootAddress, isWrongNetworkAddress, detectBtcNetwork } from 
 import QrScanner from "../../components/QrScanner";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
 import {
+  buildExplorerUrl,
+  notifyTxBroadcast,
+  notifyTxFailed,
+} from "../../utils/notifications";
+import {
   buildFeeTiers,
   DEFAULT_FEE_TIER_ID,
   tierById,
@@ -441,14 +446,27 @@ export default function Send({ networkStatus }: SendProps) {
       setTxResult({ txid, rawTxid: txid });
       void addRecentRecipient({ address: recipient.trim(), asset: "btc", network: state.network });
 
+      // Fire a system notification so users see the outcome even
+      // after closing the popup. Click opens the mempool.space
+      // explorer for this tx. Amount-only message; no recipient.
+      void notifyTxBroadcast({
+        title: "Bitcoin transfer broadcast",
+        message: `${formatBtc(Math.round((Number(amount) || 0) * 1e8))} BTC sent`,
+        explorerUrl: buildExplorerUrl({ kind: "btc", txid, network: state.network }),
+      });
+
       setStep(4);
     } catch (err: any) {
       setError(err.message || "Transaction signing failed");
+      void notifyTxFailed({
+        title: "Bitcoin transfer failed",
+        message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
+      });
     } finally {
       setLoading(false);
       setSignStatus(null);
     }
-  }, [activeAccount, btcPrepare, state.network, recipient, addRecentRecipient]);
+  }, [activeAccount, btcPrepare, state.network, recipient, amount, addRecentRecipient]);
 
   const handleSubmit = useCallback(async () => {
     if (!activeAccount) return;
@@ -560,9 +578,28 @@ export default function Send({ networkStatus }: SendProps) {
           mint: asset === "apl" ? selectedToken?.mint : undefined,
         });
       }
+
+      // Amount-formatting matches the on-screen success card: ARCH
+      // amounts use formatArch on the raw lamports we just submitted,
+      // and APL amounts reuse the token's display formatter so the
+      // notification matches what History will show on next sync.
+      const notifMessage =
+        asset === "apl" && selectedToken
+          ? `${formatTokenAmount(Number(aplRawAmount!), selectedToken.decimals)} ${selectedToken.symbol || "APL"} sent`
+          : `${formatArch(archLamports)} ARCH sent`;
+      void notifyTxBroadcast({
+        title: asset === "apl" ? "Token transfer broadcast" : "ARCH transfer broadcast",
+        message: notifMessage,
+        explorerUrl: buildExplorerUrl({ kind: "arch", txid, network: state.network }),
+      });
+
       setStep(4);
     } catch (err: any) {
       setError(formatWalletHubError(err, "Transaction failed"));
+      void notifyTxFailed({
+        title: asset === "apl" ? "Token transfer failed" : "ARCH transfer failed",
+        message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
+      });
     } finally {
       setLoading(false);
       setSignStatus(null);
@@ -777,14 +814,13 @@ export default function Send({ networkStatus }: SendProps) {
               <span className="form-field-meta">{recentMatches.length} recent</span>
             )}
           </div>
-          <div className="form-field-input" style={{ display: "flex", gap: 4, alignItems: "stretch" }}>
+          <div className="form-field-input">
             <input
               placeholder={asset === "btc" ? "tb1p…" : "Base58 address"}
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
               spellCheck={false}
               autoComplete="off"
-              style={{ flex: 1 }}
             />
             <button
               type="button"

@@ -12,6 +12,7 @@ import {
   applyDiagnosticsRuntime,
   installGlobalErrorHandlers,
 } from "../src/utils/log";
+import { installNotificationClickHandler } from "../src/utils/notifications";
 
 const AUTO_LOCK_ALARM = "arch-wallet-auto-lock";
 const PENDING_GC_ALARM = "arch-wallet-pending-gc";
@@ -332,6 +333,11 @@ export default defineBackground(() => {
   // here via the storage-onChanged listener below.
   installGlobalErrorHandlers(self as unknown as EventTarget);
   syncDiagnosticsFromStorage();
+
+  // Open the explorer for a broadcast tx when the user taps its
+  // notification. Failure-mode notifications have no click entry,
+  // so this is a no-op for those.
+  installNotificationClickHandler();
 
   chrome.alarms.create(PENDING_GC_ALARM, { periodInMinutes: 1 });
 

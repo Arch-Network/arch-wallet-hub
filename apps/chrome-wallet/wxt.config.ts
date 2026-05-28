@@ -39,15 +39,17 @@ export default defineConfig({
       128: "icon/128.png",
     },
     // Permissions are deliberately narrow:
-    //   storage     -> wallet state (encrypted keystore)
-    //   alarms      -> auto-lock + pending-request GC
-    //   idle        -> auto-lock when user steps away
-    //   activeTab   -> read the active tab title/favicon during dapp connect
-    //   sidePanel   -> optional side panel UI
+    //   storage       -> wallet state (encrypted keystore)
+    //   alarms        -> auto-lock + pending-request GC
+    //   idle          -> auto-lock when user steps away
+    //   activeTab     -> read the active tab title/favicon during dapp connect
+    //   sidePanel     -> optional side panel UI
+    //   notifications -> tx-broadcast / tx-failure popups so the user
+    //                    sees the outcome even after closing the popup
     // Note: `tabs` is intentionally NOT requested. The background uses
     // tabs.query + tabs.sendMessage which are gated by host_permissions
     // <all_urls> below (required to talk to the content script).
-    permissions: ["storage", "alarms", "idle", "activeTab", "sidePanel", "scripting"],
+    permissions: ["storage", "alarms", "idle", "activeTab", "sidePanel", "scripting", "notifications"],
     host_permissions: ["<all_urls>"],
     // Defense-in-depth on top of MV3 defaults. MV3 already forbids
     // `unsafe-eval` and remote scripts; we restate the intent and
