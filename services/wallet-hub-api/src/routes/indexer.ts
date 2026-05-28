@@ -49,6 +49,88 @@ import { Type } from "@sinclair/typebox";
 import { indexerForRequest } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
 
+/**
+ * Extract + validate the wallet's installation id.
+ *
+ * The chrome extension persists a UUID v4 in chrome.storage.local
+ * (key `arch_wallet_install_id`) and sends it on every Hub call.
+ * It's NOT a secret -- it's a stable rate-limit dimension, the
+ * same role MetaMask's per-install header plays at Infura.
+ *
+ * Validation rules:
+ *   - Must look like a UUID. Anything else is rejected and treated
+ *     as "no install id" (falls back to app-key-only rate limit).
+ *   - We deliberately don't enforce v4 specifics: a future client
+ *     migration to v7 or random-128 shouldn't require a Hub deploy.
+ *
+ * Why the format check: without one, a misbehaving client could
+ * randomize the header per request and effectively bypass the
+ * per-install rate limit. UUIDs are stable per install by
+ * construction; random strings that happen to LOOK like UUIDs are
+ * exactly as bypass-able, so we don't try to defend against that
+ * here -- abuse beyond the format check belongs in a higher tier
+ * (WAF / behavioral detection on traffic patterns).
+ */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function getInstallId(req: FastifyRequest): string | null {
+  const raw = req.headers["x-arch-install-id"];
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  if (!UUID_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+/**
+ * Compose the rate-limit key for indexer-proxy routes.
+ *
+ *   `app:<apiKeyId>:install:<installId>`  — preferred
+ *   `app:<apiKeyId>:install:none`         — when no/invalid install id
+ *   `ip:<ip>`                             — completely unauthenticated
+ *                                           (shouldn't happen here
+ *                                           because requireAppAuth
+ *                                           rejects first, but the
+ *                                           fallback keeps
+ *                                           keyGenerator total)
+ *
+ * We do NOT differentiate the cap by install-id presence in v1.
+ * Production wallet builds always send the id; a one-tier cap is
+ * simpler and avoids weird edge cases with local-dev builds.
+ */
+function rateLimitKey(req: FastifyRequest): string {
+  const apiKeyId = req.app?.apiKeyId;
+  if (!apiKeyId) return `ip:${req.ip}`;
+  const installId = getInstallId(req);
+  return `app:${apiKeyId}:install:${installId ?? "none"}`;
+}
+
+/**
+ * Per-installation rate limit applied to every route registered by
+ * this plugin. Replaces the global 300/min/key cap on these
+ * routes: a popular app with 100 active wallet installs each doing
+ * one Dashboard refresh per minute (~15 reads) would otherwise
+ * blow past 300/min/key in seconds. With the per-install
+ * dimension, 100 installs * 15 reads = 1500 reads/min are 100
+ * separate buckets of 15 -- well under the 120/min cap.
+ *
+ * 120/min/install picked from:
+ *   - Dashboard refresh ~10-15 reads.
+ *   - Typical UI: 1-2 refreshes/min during normal use.
+ *   - Heavy use (e.g. swap flows polling fee estimates):
+ *     ~30-60 reads/min.
+ *
+ * Tuning knob if telemetry says otherwise: raise on the route
+ * config in a follow-up.
+ */
+const INDEXER_RATE_LIMIT = {
+  rateLimit: {
+    max: 120,
+    timeWindow: "1 minute",
+    keyGenerator: rateLimitKey,
+  },
+};
+
 /** Pull the per-request indexer client or short-circuit with a 501. */
 function indexerOr501(
   request: FastifyRequest,
@@ -131,6 +213,20 @@ const BroadcastBody = Type.Object({
 const BroadcastResponse = Type.Object({ txid: Type.String() });
 
 export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
+  // Apply the per-installation rate-limit config to EVERY route
+  // registered in this plugin scope. onRoute is mutate-in-place
+  // and runs at registration time, so the per-route config
+  // overrides the global rate-limit defaults for these routes
+  // only. Encapsulated via fastify-plugin's default scoping --
+  // other route modules (signing-requests, turnkey, etc.) are
+  // unaffected.
+  server.addHook("onRoute", (routeOptions) => {
+    routeOptions.config = {
+      ...(routeOptions.config ?? {}),
+      ...INDEXER_RATE_LIMIT,
+    };
+  });
+
   // ── Arch Accounts ──────────────────────────────────────────────
   server.get(
     "/indexer/arch/accounts/:address",
