@@ -455,6 +455,23 @@ export default function Settings() {
           >
             + Add Wallet
           </button>
+          <button
+            onClick={() => navigate("/add-watch")}
+            style={{
+              display: "block",
+              width: "100%",
+              padding: "6px 12px 10px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--text-muted)",
+              fontWeight: 500,
+              fontSize: 12,
+              textAlign: "center",
+            }}
+          >
+            + Add Watch-Only Address
+          </button>
         </div>
       </div>
 
