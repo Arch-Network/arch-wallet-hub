@@ -19,6 +19,7 @@ import {
 } from "./types";
 import { deriveArchAccountAddress } from "../utils/sdk";
 import { INDEXER_BASE_URL, DEFAULT_INDEXER_API_KEY } from "../utils/explorer-config";
+import { applyDiagnosticsRuntime } from "../utils/log";
 import { keystore, KeystoreLockedError } from "../crypto/keystore";
 import { sessionManager } from "../session/SessionManager";
 import { passkeyBootstrap } from "../session/bootstrap-passkey";
@@ -549,12 +550,23 @@ export const walletStore = {
     const state = await this.requireUnlockedState();
     state.sentryOptIn = enabled;
     await savePlaintextState(state);
+    // Take effect immediately in this realm. Other realms (popup vs.
+    // background SW) pick this up via their own storage-onChanged
+    // listener calling applyDiagnosticsRuntime with the fresh state.
+    applyDiagnosticsRuntime({
+      debugMode: !!state.debugMode,
+      sentryOptIn: enabled,
+    });
   },
 
   async setDebugMode(enabled: boolean): Promise<void> {
     const state = await this.requireUnlockedState();
     state.debugMode = enabled;
     await savePlaintextState(state);
+    applyDiagnosticsRuntime({
+      debugMode: enabled,
+      sentryOptIn: !!state.sentryOptIn,
+    });
   },
 
   async lock(): Promise<void> {
