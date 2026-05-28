@@ -156,15 +156,105 @@ export type InsertAuditLogParams = {
   turnkeyRequestId: string | null;
   payloadJson: unknown | null;
   outcome: "requested" | "succeeded" | "failed";
+  /** HMAC key for the per-app chain. See audit/chain.ts. */
+  chainSecret: string;
 };
 
+/**
+ * Insert an audit row AND compute its position in the per-app HMAC
+ * chain. Concurrency strategy:
+ *
+ *   1. `pg_advisory_xact_lock(hashtextextended(app_id::text, 0))`
+ *      serializes inserts for the SAME app without blocking other
+ *      apps or any read traffic. The lock auto-releases at xact end.
+ *   2. SELECT the chain tip (hash + chain_seq) within the lock so
+ *      no other inserter can race past us.
+ *   3. INSERT with prev_hash = tip.hash, chain_seq = tip.seq + 1,
+ *      hash = HMAC(secret, prev || canonical(row)).
+ *
+ * The row id is generated client-side (uuid.v4) so we can include
+ * it in the hash input -- otherwise we'd need a two-step INSERT...
+ * RETURNING id; UPDATE ... SET hash dance. With a client-side id we
+ * compute the hash up-front and write the full row in one statement.
+ *
+ * The function must be called within an existing transaction (the
+ * caller's PoolClient should already be in a BEGIN). The advisory
+ * lock keyword `_xact_` enforces this by silently doing nothing
+ * outside a transaction, which would corrupt the chain. We don't
+ * BEGIN here because callers compose multiple writes atomically.
+ */
 export async function insertAuditLog(
   client: PoolClient,
   params: InsertAuditLogParams
 ) {
+  const { computeRowHash, canonicalPayloadHash } = await import(
+    "../audit/chain.js"
+  );
+  const { randomUUID } = await import("node:crypto");
+
+  // Serialize per-app chain writes. We hash the app_id to a bigint
+  // because pg_advisory_xact_lock takes integer args; hashtextextended
+  // is deterministic + collision-resistant enough for keyspace
+  // partitioning. Different apps hash to different keys with high
+  // probability so cross-app inserts never wait on each other.
+  await client.query(
+    `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
+    [params.appId]
+  );
+
+  const tipRes = await client.query<{
+    hash: string | null;
+    chain_seq: string | null;
+  }>(
+    `SELECT hash, chain_seq
+       FROM audit_logs
+      WHERE app_id = $1 AND chain_seq IS NOT NULL
+      ORDER BY chain_seq DESC
+      LIMIT 1`,
+    [params.appId]
+  );
+  const tip = tipRes.rows[0] ?? null;
+  const prevHash = tip?.hash ?? null;
+  // chain_seq is a bigint in Postgres; node-pg returns it as a string
+  // to avoid silent precision loss. We parseInt with safety in mind:
+  // an audit chain that exceeds 2^53 events is implausible (10 years
+  // at 1B events/year is < 1e10), so Number is fine. Belt-and-
+  // suspenders: cap at MAX_SAFE_INTEGER and throw if we'd overflow.
+  let nextSeq: number;
+  if (tip?.chain_seq === null || tip?.chain_seq === undefined) {
+    nextSeq = 1;
+  } else {
+    const tipSeq = Number(tip.chain_seq);
+    if (!Number.isSafeInteger(tipSeq)) {
+      throw new Error(`audit chain_seq overflow for app ${params.appId}`);
+    }
+    nextSeq = tipSeq + 1;
+  }
+
+  const id = randomUUID();
+  const createdAtIso = new Date().toISOString();
+  const payloadHashHex = canonicalPayloadHash(params.payloadJson ?? null);
+
+  const hash = computeRowHash(params.chainSecret, prevHash, {
+    id,
+    createdAt: createdAtIso,
+    appId: params.appId,
+    requestId: params.requestId,
+    userId: params.userId,
+    eventType: params.eventType,
+    entityType: params.entityType,
+    entityId: params.entityId,
+    turnkeyActivityId: params.turnkeyActivityId,
+    turnkeyRequestId: params.turnkeyRequestId,
+    payloadHashHex,
+    outcome: params.outcome
+  });
+
   await client.query(
     `
       INSERT INTO audit_logs (
+        id,
+        created_at,
         app_id,
         request_id,
         user_id,
@@ -174,11 +264,16 @@ export async function insertAuditLog(
         turnkey_activity_id,
         turnkey_request_id,
         payload_json,
-        outcome
+        outcome,
+        prev_hash,
+        hash,
+        chain_seq
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15)
     `,
     [
+      id,
+      createdAtIso,
       params.appId,
       params.requestId,
       params.userId,
@@ -188,7 +283,10 @@ export async function insertAuditLog(
       params.turnkeyActivityId,
       params.turnkeyRequestId,
       params.payloadJson ? JSON.stringify(params.payloadJson) : null,
-      params.outcome
+      params.outcome,
+      prevHash,
+      hash,
+      nextSeq
     ]
   );
 }

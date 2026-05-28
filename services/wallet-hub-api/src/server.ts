@@ -24,6 +24,8 @@ import { registerSigningRequestRoutes } from "./routes/signingRequests.js";
 import { registerBtcTransactionRoutes } from "./routes/btcTransactions.js";
 import { registerRecoveryRoutes } from "./routes/recovery.js";
 import { registerExtensionRoutes } from "./routes/extension.js";
+import { configureAudit } from "./audit/audit.js";
+import { resolveAuditSecret, DEV_AUDIT_SECRET_SENTINEL } from "./audit/chain.js";
 
 declare module "fastify" {
   interface FastifyInstance {
@@ -71,6 +73,20 @@ export async function createServer() {
     { ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: (config as any).ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO },
     "arch.transfer policy"
   );
+
+  // Initialize the audit-chain HMAC secret BEFORE any plugin or
+  // route that could touch audit_logs. resolveAuditSecret throws in
+  // production if AUDIT_HMAC_SECRET is missing (env.ts also asserts
+  // this -- belt-and-suspenders against a misconfigured embedding).
+  // In dev/test the sentinel kicks in and we log loudly so the
+  // operator notices.
+  const auditSecret = resolveAuditSecret(config);
+  configureAudit(auditSecret);
+  if (auditSecret === DEV_AUDIT_SECRET_SENTINEL) {
+    server.log.warn(
+      "AUDIT_HMAC_SECRET unset — using dev-only sentinel. Audit chain is NOT tamper-evident.",
+    );
+  }
 
   await server.register(sensible);
   // Security headers run before everything so even error responses
