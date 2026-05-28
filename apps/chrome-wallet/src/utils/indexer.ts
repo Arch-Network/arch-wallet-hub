@@ -356,6 +356,26 @@ export function isIndexerNotFoundError(err: unknown): boolean {
   return message.includes("404") || message.toLowerCase().includes("not found");
 }
 
+/**
+ * Detect indexer rate-limit responses (HTTP 429). The error strings
+ * thrown by getJson / postJson embed the status code, so a substring
+ * match is the lowest-noise way to recognize the case across both
+ * "Too Many Requests" and the indexer's own free-form bodies.
+ *
+ * Why callers care: rate-limit errors are not failures of the user's
+ * setup -- the API key is valid, the network is up, the indexer just
+ * said "slow down". UI should hint at the cause (often a shared /
+ * leaked key) instead of silently rendering an empty list.
+ */
+export function isIndexerRateLimitError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return (
+    message.includes("429") ||
+    message.toLowerCase().includes("too many requests") ||
+    message.toLowerCase().includes("rate limit")
+  );
+}
+
 function networkIdToIndexer(n: NetworkId): IndexerNetwork {
   return n === "mainnet" ? "mainnet" : "testnet";
 }
