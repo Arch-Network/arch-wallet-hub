@@ -21,7 +21,7 @@
  */
 import { sessionManager } from "./SessionManager";
 import { walletStore } from "../state/wallet-store";
-import { isExternalAccount, type WalletAccount } from "../state/types";
+import { isExternalAccount, isWatchAccount, type WalletAccount } from "../state/types";
 
 export class EmailSessionNeededError extends Error {
   constructor(public readonly account: WalletAccount) {
@@ -32,9 +32,25 @@ export class EmailSessionNeededError extends Error {
   }
 }
 
+export class WatchOnlyAccountError extends Error {
+  constructor(public readonly account: WalletAccount) {
+    super(
+      `Watch-only account "${account.label}" cannot sign. Switch to a signing wallet first.`,
+    );
+    this.name = "WatchOnlyAccountError";
+  }
+}
+
 export async function ensureSigningSessionForAccount(
   account: WalletAccount,
 ): Promise<void> {
+  // Watch-only is checked first: the UI gates should prevent reaching
+  // this function with a watch account, but the throw guarantees that
+  // a code path slipping past a gate produces a clear error rather
+  // than a confusing "session not found" lower down the stack.
+  if (isWatchAccount(account)) {
+    throw new WatchOnlyAccountError(account);
+  }
   if (isExternalAccount(account)) return;
 
   const existing = await sessionManager.ensureClient(account.id);

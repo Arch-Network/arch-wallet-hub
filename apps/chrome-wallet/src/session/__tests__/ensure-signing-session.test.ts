@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { EmailSessionNeededError } from "../ensure-signing-session";
+import {
+  EmailSessionNeededError,
+  WatchOnlyAccountError,
+  ensureSigningSessionForAccount,
+} from "../ensure-signing-session";
 import type { WalletAccount } from "../../state/types";
 
 /**
@@ -44,6 +48,53 @@ describe("EmailSessionNeededError", () => {
       throw new EmailSessionNeededError(sampleAccount);
     } catch (e) {
       expect(e instanceof EmailSessionNeededError).toBe(true);
+    }
+  });
+});
+
+/**
+ * Contract test for the watch-only refusal path.
+ *
+ * `ensureSigningSessionForAccount` is the chokepoint every signing
+ * flow goes through. If a watch account ever slipped past the UI
+ * gates, this is the wall it would hit. Lock the behaviour:
+ *
+ *   - throws synchronously (no await needed at call sites that
+ *     just want to fail-fast)
+ *   - throws our typed error, not a generic one, so the catch in
+ *     Approve.tsx can render a wallet-specific banner if we ever
+ *     wire one
+ *   - carries the offending account on the error
+ */
+describe("ensureSigningSessionForAccount > watch-only refusal", () => {
+  const watchAccount: WalletAccount = {
+    id: "watch-abc",
+    label: "Cold storage",
+    kind: "watch",
+    authMethod: "watch",
+    btcAddress: "bc1pwatch",
+    archAddress: "arch1watch",
+    publicKeyHex: "0".repeat(64),
+    organizationId: "",
+    turnkeyResourceId: "",
+    createdAt: 0,
+  };
+
+  it("rejects with WatchOnlyAccountError", async () => {
+    await expect(ensureSigningSessionForAccount(watchAccount)).rejects.toBeInstanceOf(
+      WatchOnlyAccountError,
+    );
+  });
+
+  it("carries the offending account on the error", async () => {
+    try {
+      await ensureSigningSessionForAccount(watchAccount);
+      throw new Error("should have thrown");
+    } catch (e) {
+      expect(e instanceof WatchOnlyAccountError).toBe(true);
+      if (e instanceof WatchOnlyAccountError) {
+        expect(e.account).toBe(watchAccount);
+      }
     }
   });
 });
