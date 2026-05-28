@@ -89,6 +89,18 @@ export default defineConfig({
       __ARCH_BUILD_INDEXER_API_KEY__: JSON.stringify(
         process.env.WXT_INDEXER_API_KEY ?? "",
       ),
+      // Direct-vs-Hub indexer routing toggle. Default `false` =>
+      // route every indexer read/write through the Wallet Hub
+      // proxy (no key ships in the wallet bundle). Build-time
+      // override only -- no runtime UI -- so we can flip the
+      // boolean and re-release without app-state migrations.
+      // Escape hatch for emergency rollback if the Hub proxy
+      // regresses: set `WXT_USE_DIRECT_INDEXER=true` and rebuild;
+      // the wallet falls back to its legacy ArchIndexerClient
+      // path which still works against `state.indexerApiKey`.
+      __ARCH_USE_DIRECT_INDEXER__: JSON.stringify(
+        process.env.WXT_USE_DIRECT_INDEXER === "true",
+      ),
     },
     plugins: [
       // bitcoinjs-lib (and its CJS deps) call `require('buffer'|'events'|'stream')`

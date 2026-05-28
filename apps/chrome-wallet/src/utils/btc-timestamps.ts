@@ -1,4 +1,4 @@
-import type { ArchIndexerClient } from "./indexer";
+import type { IndexerClient } from "./indexer";
 import { btcTxTimestampMs, timestampToMs } from "./format";
 
 const blockTimeCache = new Map<string, number | null>();
@@ -46,7 +46,7 @@ function blockTimestampMs(block: unknown): number | null {
  * the Indexer's block endpoints instead of displaying "Just now".
  */
 export async function resolveBtcTxTimestampMs(
-  indexer: ArchIndexerClient,
+  indexer: IndexerClient,
   tx: Record<string, unknown>
 ): Promise<number | null> {
   const direct = btcTxTimestampMs(tx);

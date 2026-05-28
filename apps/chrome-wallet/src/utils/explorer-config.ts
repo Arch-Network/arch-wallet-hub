@@ -27,3 +27,33 @@ const isProd =
     .env?.MODE as string | undefined) === "production";
 
 export const DEFAULT_INDEXER_API_KEY = isProd ? prodKey : devKey || prodKey;
+
+/**
+ * Whether to talk to the Arch indexer DIRECTLY (legacy path) or
+ * via the Wallet Hub's `/v1/indexer/*` proxy (default).
+ *
+ * Set at build time only:
+ *   `WXT_USE_DIRECT_INDEXER=true npm run build:chrome`
+ *
+ * Default `false` -- new wallet releases route every indexer
+ * call through the Hub, so the privileged indexer API key
+ * never ships in the bundle. Flipping to `true` is the
+ * emergency-rollback escape hatch: the legacy ArchIndexerClient
+ * path (using `state.indexerApiKey || DEFAULT_INDEXER_API_KEY`)
+ * still works and a re-released build gets users back to a
+ * known-good direct path while we fix the Hub.
+ *
+ * Why build-time only (no runtime toggle):
+ *   - Direct vs Hub is an internal wiring concern, not a user
+ *     preference. Exposing it in Settings would invite users to
+ *     footgun themselves into the 25-rps quota on the leaked
+ *     key they have persisted.
+ *   - Build-flag-only keeps the rollback path a one-line
+ *     re-release, which is the cleanest possible operational
+ *     story.
+ */
+declare const __ARCH_USE_DIRECT_INDEXER__: boolean;
+export const USE_DIRECT_INDEXER: boolean =
+  typeof __ARCH_USE_DIRECT_INDEXER__ === "boolean"
+    ? __ARCH_USE_DIRECT_INDEXER__
+    : false;

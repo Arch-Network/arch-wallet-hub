@@ -24,7 +24,7 @@
  * can hand straight to a row component.
  */
 
-import type { ArchIndexerClient } from "./indexer";
+import type { IndexerClient } from "./indexer";
 import { enrichTokenFromRpc } from "./arch-rpc";
 import { formatTokenAmount, truncateAddress } from "./format";
 import { lookupKnownToken } from "./known-tokens";
@@ -73,7 +73,7 @@ export interface EnrichedToken {
 export async function enrichIndexerToken(
   raw: RawIndexerToken,
   network: NetworkId,
-  indexer?: ArchIndexerClient,
+  indexer?: IndexerClient,
 ): Promise<EnrichedToken> {
   const mint = raw.mint_address;
   const rawAmount = Number(raw.amount) || 0;
@@ -170,7 +170,7 @@ export async function enrichIndexerToken(
 export async function enrichIndexerTokens(
   rows: RawIndexerToken[],
   network: NetworkId,
-  indexer?: ArchIndexerClient,
+  indexer?: IndexerClient,
 ): Promise<EnrichedToken[]> {
   return Promise.all(rows.map((r) => enrichIndexerToken(r, network, indexer)));
 }

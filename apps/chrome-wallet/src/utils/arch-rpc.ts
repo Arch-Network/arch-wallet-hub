@@ -1,7 +1,7 @@
 import bs58 from "bs58";
 import { sha256 } from "@noble/hashes/sha256";
 import { ed25519 } from "@noble/curves/ed25519";
-import type { ArchIndexerClient } from "./indexer";
+import type { IndexerClient } from "./indexer";
 
 const METADATA_PROGRAM_ID = "MetaLUJnthcRKvy3ayXTnVcxaXqca1fbaQox8ChQqAk";
 const METADATA_SEED = new TextEncoder().encode("metadata");
@@ -46,7 +46,7 @@ export function deriveMetadataPda(mintBase58: string): string | null {
 }
 
 async function readAccountInfo(
-  indexer: ArchIndexerClient,
+  indexer: IndexerClient,
   addressBase58: string,
 ): Promise<AccountInfo | null> {
   const pubkeyBytes = Array.from(bs58.decode(addressBase58));
@@ -87,7 +87,7 @@ export type ArchBalanceSnapshot =
   | { kind: "error"; reason: string };
 
 export async function fetchArchAccountBalance(
-  indexer: ArchIndexerClient,
+  indexer: IndexerClient,
   addressBase58: string,
 ): Promise<ArchBalanceSnapshot> {
   const pubkeyBytes = Array.from(bs58.decode(addressBase58));
@@ -185,7 +185,7 @@ function parseMetadataData(data: number[]): TokenMetadataInfo | null {
 }
 
 export async function fetchMintInfo(
-  indexer: ArchIndexerClient,
+  indexer: IndexerClient,
   mintBase58: string,
 ): Promise<MintInfo | null> {
   const acct = await readAccountInfo(indexer, mintBase58);
@@ -194,7 +194,7 @@ export async function fetchMintInfo(
 }
 
 export async function fetchTokenMetadata(
-  indexer: ArchIndexerClient,
+  indexer: IndexerClient,
   mintBase58: string,
 ): Promise<TokenMetadataInfo | null> {
   const pda = deriveMetadataPda(mintBase58);
@@ -218,7 +218,7 @@ export interface EnrichedTokenData {
  * or metadata. Uses the indexer's legacy /rpc compat for `read_account_info`.
  */
 export async function enrichTokenFromRpc(
-  indexer: ArchIndexerClient,
+  indexer: IndexerClient,
   token: {
     mint_address: string;
     amount?: string | number;
