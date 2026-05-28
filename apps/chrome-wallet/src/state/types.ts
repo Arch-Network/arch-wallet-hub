@@ -31,8 +31,16 @@ export const CURRENT_SCHEMA_VERSION = 5;
  * that wallet class was removed in the move to "fully user-controlled"
  * sub-org wallets per Turnkey's embedded-wallet production checklist.
  */
-export type WalletAuthMethod = "passkey" | "email" | "external";
-export type WalletAccountKind = "turnkey" | "external";
+export type WalletAuthMethod = "passkey" | "email" | "external" | "watch";
+/**
+ * `watch` accounts are read-only address imports for cold-storage
+ * monitoring. The wallet stores the taproot address (and derives the
+ * Arch identity from its x-only public key) but never holds or
+ * requests a signing capability for it. Every signing chokepoint
+ * refuses to operate on watch accounts and the Send / Approve /
+ * Swap surfaces hide their action buttons.
+ */
+export type WalletAccountKind = "turnkey" | "external" | "watch";
 /**
  * External Bitcoin wallets the extension can link.
  *
@@ -118,6 +126,17 @@ export function isTurnkeyAccount(account: WalletAccount | null | undefined): acc
   kind: "turnkey";
 } {
   return account?.kind === "turnkey";
+}
+
+/**
+ * Watch-only accounts have no signing key material. Every signing
+ * path (`signerForAccount`, `ensureSigningSessionForAccount`) throws
+ * for them; the Send / Approve / Swap UIs hide action buttons.
+ */
+export function isWatchAccount(account: WalletAccount | null | undefined): account is WalletAccount & {
+  kind: "watch";
+} {
+  return account?.kind === "watch";
 }
 
 /**

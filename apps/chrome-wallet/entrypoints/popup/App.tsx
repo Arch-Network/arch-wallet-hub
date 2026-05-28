@@ -12,6 +12,7 @@ import NavBar from "../../src/components/NavBar";
 import SideNav from "../../src/components/SideNav";
 import { useApiStatus } from "../../src/hooks/useApiStatus";
 import Onboarding from "../../src/pages/Onboarding/Onboarding";
+import AddWatch from "../../src/pages/AddWatch/AddWatch";
 import Unlock from "../../src/pages/Unlock/Unlock";
 import Dashboard from "../../src/pages/Dashboard/Dashboard";
 import Send from "../../src/pages/Send/Send";
@@ -172,7 +173,12 @@ function bodyClassForPath(pathname: string): string {
   if (pathname === "/receive") return "app-body app-body-narrow";
   if (pathname.startsWith("/tokens/")) return "app-body app-body-wide";
   if (pathname === "/swap") return "app-body app-body-medium";
-  if (pathname === "/settings" || pathname === "/add-wallet" || pathname === "/tokens") {
+  if (
+    pathname === "/settings" ||
+    pathname === "/add-wallet" ||
+    pathname === "/add-watch" ||
+    pathname === "/tokens"
+  ) {
     return "app-body app-body-medium";
   }
   if (pathname === "/dashboard" || pathname === "/") return "app-body app-body-full";
@@ -297,6 +303,7 @@ function AppRoutes() {
             <Route path="/approve/:requestId" element={<Approve />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/add-wallet" element={<Onboarding onComplete={refresh} addMode />} />
+            <Route path="/add-watch" element={<AddWatch />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </div>

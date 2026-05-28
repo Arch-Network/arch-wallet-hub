@@ -36,7 +36,7 @@ import {
 
 import { useWallet } from "../../hooks/useWallet";
 import { useArchOnboarding } from "../../hooks/useArchOnboarding";
-import { isExternalAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount } from "../../state/types";
 import { getIndexer } from "../../utils/indexer";
 import { formatSwapAmount } from "../../utils/format";
 import { applyDisplayOverridesByMintHex, lookupKnownToken } from "../../utils/known-tokens";
@@ -369,6 +369,7 @@ export default function Swap() {
   const buyBalance = balances[pair.buy] ?? 0;
   const validation: SwapValidation = useMemo(() => {
     if (!activeAccount) return { kind: "no-account" };
+    if (isWatchAccount(activeAccount)) return { kind: "watch-only" };
     if (isExternalAccount(activeAccount)) return { kind: "external-unsupported" };
     // Block swap submission until the on-chain account + ATAs exist.
     // The OnboardingPanel above gives the user the path to fix this; the

@@ -32,7 +32,7 @@ import {
   type TurnkeyClient,
 } from "@turnkey/http";
 import { bytesToHex, computeBip322ToSignTaprootSighash } from "../utils/bip322";
-import { isExternalAccount, type WalletAccount } from "../state/types";
+import { isExternalAccount, isWatchAccount, type WalletAccount } from "../state/types";
 import { sessionManager } from "../session/SessionManager";
 
 export interface SignArchOptions {
@@ -186,7 +186,23 @@ export class SessionStampedSigner implements Signer {
   }
 }
 
+export class WatchOnlyAccountError extends Error {
+  constructor(public readonly account: WalletAccount) {
+    super(
+      `Watch-only account "${account.label}" cannot sign. Import a signing wallet first.`,
+    );
+    this.name = "WatchOnlyAccountError";
+  }
+}
+
 export function signerForAccount(account: WalletAccount): Signer {
+  if (isWatchAccount(account)) {
+    // Refuse before we even instantiate a session-stamped signer. The
+    // wallet UI gates the action paths so we don't expect to land here
+    // in practice; throwing rather than returning a null signer keeps
+    // the call sites' types tight (Signer | never thrown vs. nullable).
+    throw new WatchOnlyAccountError(account);
+  }
   if (isExternalAccount(account)) {
     throw new Error("External wallets must sign in their source wallet");
   }

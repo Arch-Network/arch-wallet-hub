@@ -35,7 +35,7 @@ import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, t
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { walletStore } from "../../state/wallet-store";
-import { isExternalAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
@@ -624,6 +624,37 @@ export default function Send({ networkStatus }: SendProps) {
   const btcExplorerBase = isTestnet
     ? "https://mempool.space/testnet4/tx/"
     : "https://mempool.space/tx/";
+
+  // Watch-only accounts cannot sign or broadcast. Refuse at the
+  // page level so the user never gets a partially-filled form they
+  // can't actually submit.
+  if (activeAccount && isWatchAccount(activeAccount)) {
+    return (
+      <>
+        <div className="page-header" style={{ marginBottom: 18 }}>
+          <h2 className="page-title">Send</h2>
+          <div className="page-subtitle">This wallet is read-only.</div>
+        </div>
+        <div className="card">
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+            <strong>{activeAccount.label}</strong> is a watch-only address. The
+            wallet can see its balance and history but cannot sign transactions.
+            <br />
+            <br />
+            To send funds from this address, switch to a wallet that holds the
+            signing key (a passkey, email, or linked external wallet).
+          </div>
+        </div>
+        <button
+          className="btn btn-secondary btn-full"
+          style={{ marginTop: 16 }}
+          onClick={() => navigate("/dashboard")}
+        >
+          Back to dashboard
+        </button>
+      </>
+    );
+  }
 
   // Step 1: Choose asset
   if (step === 1) {
