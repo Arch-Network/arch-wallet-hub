@@ -24,6 +24,7 @@ import { registerSigningRequestRoutes } from "./routes/signingRequests.js";
 import { registerBtcTransactionRoutes } from "./routes/btcTransactions.js";
 import { registerRecoveryRoutes } from "./routes/recovery.js";
 import { registerExtensionRoutes } from "./routes/extension.js";
+import { registerIndexerRoutes } from "./routes/indexer.js";
 import { configureAudit } from "./audit/audit.js";
 import { resolveAuditSecret, DEV_AUDIT_SECRET_SENTINEL } from "./audit/chain.js";
 
@@ -119,6 +120,7 @@ export async function createServer() {
   await server.register(registerBtcTransactionRoutes, { prefix: "/v1" });
   await server.register(registerRecoveryRoutes, { prefix: "/v1" });
   await server.register(registerExtensionRoutes, { prefix: "/v1" });
+  await server.register(registerIndexerRoutes, { prefix: "/v1" });
 
   return server;
 }
