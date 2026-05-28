@@ -35,6 +35,7 @@ import {
   ensureSigningSessionForAccount,
   EmailSessionNeededError,
 } from "../../session/ensure-signing-session";
+import SessionBootstrapper from "../../session/SessionBootstrapper";
 
 interface RequestDetails {
   type: string;
@@ -517,6 +518,14 @@ export default function Approve() {
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [psbtLargeOutflowAck, setPsbtLargeOutflowAck] = useState(false);
   const [archBalance, setArchBalance] = useState<ArchBalanceSnapshot | null>(null);
+  // When an email-wallet user clicks Approve without a live Turnkey
+  // session, `ensureSigningSessionForAccount` throws
+  // `EmailSessionNeededError`. Previously we surfaced that as a text
+  // banner that bounced the user to the dashboard to enter their OTP.
+  // Now we mount `SessionBootstrapper` inline so they can complete
+  // OTP without leaving the approve flow; on success we re-run the
+  // approve handler.
+  const [otpAccount, setOtpAccount] = useState<WalletAccount | null>(null);
 
   const myAddresses = useMemo(
     () => state.accounts.map((a) => a.btcAddress).filter(Boolean),
@@ -787,7 +796,9 @@ export default function Approve() {
       throw new Error(`Unsupported request type: ${request.type}`);
     } catch (e: any) {
       if (e instanceof EmailSessionNeededError) {
-        setError(e.message);
+        // Don't bounce the user out of the approve flow. Mount the
+        // OTP gate inline; `onReady` re-runs this handler.
+        setOtpAccount(e.account);
       } else {
         setError(formatWalletHubError(e, "Failed to process request"));
       }
@@ -795,6 +806,24 @@ export default function Approve() {
       setLoading(false);
     }
   }, [request, selectedAccount, requestId, sendApproved, signPsbtLocally, state.network]);
+
+  const handleOtpReady = useCallback(() => {
+    // Session is now open. Drop the bootstrapper and re-attempt the
+    // approval; the next `ensureSigningSessionForAccount` call will
+    // hit its fast path and proceed to sign + submit.
+    setOtpAccount(null);
+    setError(null);
+    void handleApprove();
+  }, [handleApprove]);
+
+  const handleOtpCancel = useCallback(() => {
+    // User backed out of OTP. Keep them on the Approve view so they
+    // can pick a different account, edit the request, or Reject
+    // explicitly. We don't auto-reject -- silently rejecting on a
+    // mis-tap would surprise users; the explicit Reject button below
+    // already exists.
+    setOtpAccount(null);
+  }, []);
 
   const handleReject = useCallback(() => {
     chrome.runtime.sendMessage({ type: "REJECT_REQUEST", requestId });
@@ -818,6 +847,25 @@ export default function Approve() {
     return (
       <div className="approve-page">
         <div className="spinner-center"><div className="spinner" /></div>
+      </div>
+    );
+  }
+
+  // Inline OTP gate: only ever rendered for email wallets that hit
+  // `EmailSessionNeededError` during approve. We omit the switch /
+  // forget affordances the dashboard variant offers -- the dapp
+  // asked to sign with *this* account, and switching wallets mid-
+  // approve would change the requested signer in a way the dapp
+  // didn't consent to. If the user truly can't complete OTP, they
+  // can Cancel (drops back to the approve view) and then Reject.
+  if (otpAccount) {
+    return (
+      <div className="approve-page">
+        <SessionBootstrapper
+          account={otpAccount}
+          onReady={handleOtpReady}
+          onCancel={handleOtpCancel}
+        />
       </div>
     );
   }
