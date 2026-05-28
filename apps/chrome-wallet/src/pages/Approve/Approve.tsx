@@ -176,6 +176,87 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
         </>
       )}
 
+      {summary.kind === "siwa" && (
+        <>
+          {summary.domainMismatch && (
+            <div className="approve-risk approve-risk-danger" style={{ marginBottom: 8 }}>
+              Domain mismatch: this site is hosted at{" "}
+              <strong>{summary.domainMismatch.expected}</strong> but the
+              sign-in message claims to be from{" "}
+              <strong>{summary.domainMismatch.got}</strong>. Refuse this
+              signature unless you are certain it is intentional.
+            </div>
+          )}
+          {summary.timingIssue && (
+            <div className="approve-risk approve-risk-warn" style={{ marginBottom: 8 }}>
+              {summary.timingIssue.reason === "expired"
+                ? `This sign-in message expired at ${summary.timingIssue.at}. The site should refresh the challenge before you sign.`
+                : `This sign-in message isn't valid until ${summary.timingIssue.at}.`}
+            </div>
+          )}
+          <div style={{ marginBottom: 8 }}>
+            <div className="input-label">Sign in to</div>
+            <div style={{ fontWeight: 600 }}>{summary.siwa.domain}</div>
+          </div>
+          {summary.siwa.statement && (
+            <div style={{ marginBottom: 8 }}>
+              <div className="input-label">Statement</div>
+              <div style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>
+                {summary.siwa.statement}
+              </div>
+            </div>
+          )}
+          <div style={{ marginBottom: 8 }}>
+            <div className="input-label">With wallet</div>
+            <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>
+              {summary.siwa.address}
+            </div>
+          </div>
+          <div style={{ marginBottom: 8 }}>
+            <div className="input-label">URI</div>
+            <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>
+              {summary.siwa.uri}
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            Chain: {summary.siwa.chainId} · Issued {summary.siwa.issuedAt}
+            {summary.siwa.expirationTime ? ` · Expires ${summary.siwa.expirationTime}` : ""}
+            {" · Nonce "}
+            {summary.siwa.nonce}
+          </div>
+          <button
+            className="btn-link"
+            onClick={() => setShowHex((v) => !v)}
+            style={{
+              background: "none",
+              border: "none",
+              padding: 0,
+              color: "var(--text-muted)",
+              fontSize: 11,
+              textDecoration: "underline",
+              marginTop: 8,
+            }}
+          >
+            {showHex ? "Hide raw message" : "Show raw message"}
+          </button>
+          {showHex && (
+            <pre
+              style={{
+                background: "var(--bg-secondary)",
+                padding: 8,
+                borderRadius: 6,
+                fontSize: 11,
+                overflowX: "auto",
+                marginTop: 6,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {summary.text}
+            </pre>
+          )}
+        </>
+      )}
+
       {summary.kind === "structured" && (
         <>
           {summary.domainMismatch && (
