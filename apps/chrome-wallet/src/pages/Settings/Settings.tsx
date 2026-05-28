@@ -8,6 +8,7 @@ import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import CopyButton from "../../components/CopyButton";
 import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
 import TestRecoveryEmailButton from "../../components/TestRecoveryEmailButton";
+import { ConnectedSiteRow } from "../../components/ConnectedSiteRow";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
 import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "../../state/types";
 import { INDEXER_BASE_URL } from "../../utils/explorer-config";
@@ -568,22 +569,12 @@ export default function Settings() {
         ) : (
           <div className="card">
             {siteEntries.map(([origin, site]) => (
-              <div key={origin} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid var(--border-primary)" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <a
-                    href={origin}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ fontSize: 13, fontWeight: 500, color: "var(--accent)", textDecoration: "none" }}
-                  >
-                    {site.name || origin} {"\u2197"}
-                  </a>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{origin}</div>
-                </div>
-                <button className="btn btn-sm btn-danger" onClick={() => handleDisconnect(origin)}>
-                  Disconnect
-                </button>
-              </div>
+              <ConnectedSiteRow
+                key={origin}
+                origin={origin}
+                site={site}
+                onDisconnect={handleDisconnect}
+              />
             ))}
           </div>
         )}
