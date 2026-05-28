@@ -42,6 +42,11 @@ import {
   notifyTxBroadcast,
   notifyTxFailed,
 } from "../../utils/notifications";
+import {
+  exceedsCap,
+  getRecentSpend,
+  recordSpend,
+} from "../../utils/spend-tracker";
 
 interface RequestDetails {
   type: string;
@@ -697,6 +702,69 @@ export default function Approve() {
     return computeArchTransferGate(archBalance, requestedArchLamports);
   }, [request, archBalance, requestedArchLamports]);
 
+  // Per-origin daily spend cap. State is { state: "loading" | "ok"
+  // | "cap-blocked" }; the gate refuses ARCH transfers whose
+  // recent24h + pending exceeds the user-configured cap stored in
+  // SitePermissions.spendingLimitSatsPerDay (in lamports). Reads
+  // are async (chrome.storage.local lookup) so we materialize the
+  // result via a useEffect rather than a useMemo.
+  const [archSpendCapGate, setArchSpendCapGate] = useState<
+    | { state: "n/a" }
+    | { state: "loading" }
+    | { state: "ok" }
+    | { state: "cap-blocked"; capLamports: bigint; recentLamports: bigint }
+  >({ state: "n/a" });
+
+  useEffect(() => {
+    if (request?.type !== "SEND_TRANSFER") {
+      setArchSpendCapGate({ state: "n/a" });
+      return;
+    }
+    if (!request.origin || requestedArchLamports === null) {
+      setArchSpendCapGate({ state: "n/a" });
+      return;
+    }
+    let cancelled = false;
+    setArchSpendCapGate({ state: "loading" });
+    (async () => {
+      // Cap lives in the site's permissions; absent permissions or
+      // an undefined cap mean "no enforcement". We do an explicit
+      // lookup rather than relying on a hook because the popup may
+      // be opened with no connectedSites entry for this origin yet
+      // (first-touch SEND_TRANSFER from a brand-new site).
+      const perms = await walletStore.getSitePermissions(request.origin);
+      const capRaw = perms?.spendingLimitSatsPerDay;
+      if (capRaw === undefined || capRaw === null) {
+        if (!cancelled) setArchSpendCapGate({ state: "ok" });
+        return;
+      }
+      const cap = BigInt(capRaw);
+      const recent = await getRecentSpend({
+        origin: request.origin,
+        asset: "arch",
+        network: state.network,
+      });
+      if (cancelled) return;
+      if (exceedsCap({ pending: requestedArchLamports, recent, cap })) {
+        setArchSpendCapGate({
+          state: "cap-blocked",
+          capLamports: cap,
+          recentLamports: recent,
+        });
+      } else {
+        setArchSpendCapGate({ state: "ok" });
+      }
+    })().catch(() => {
+      // Fail open: a storage-read error shouldn't brick all dapp
+      // transfers. The user already opted into the cap; a transient
+      // read failure simply skips enforcement for this request.
+      if (!cancelled) setArchSpendCapGate({ state: "ok" });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [request, requestedArchLamports, state.network]);
+
   useEffect(() => {
     if (!requestId) return;
     chrome.runtime.sendMessage({ type: "GET_PENDING_REQUEST", requestId }, (response) => {
@@ -824,6 +892,23 @@ export default function Approve() {
         const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const txid = extractTxid(submitResult, sr.signingRequestId);
         sendApproved({ txid });
+
+        // Permission Center: record the spend so the per-origin
+        // daily cap is honored on subsequent requests. We do this
+        // BEFORE the notification call because failing to record
+        // would silently widen the cap on the next request -- the
+        // notification is a UI nicety, recording is correctness.
+        // SEND_TOKEN_TRANSFER skips this for now: APL amounts are
+        // mint-specific (different decimals) and need ATA-level
+        // accounting to be comparable to the ARCH cap.
+        if (request.type === "SEND_TRANSFER") {
+          void recordSpend({
+            origin: request.origin,
+            asset: "arch",
+            network: state.network,
+            amount: String(request.payload.lamports),
+          });
+        }
 
         // Fire a system notification for dapp-initiated transfers
         // too: the popup closes immediately after `sendApproved`,
@@ -1068,6 +1153,15 @@ export default function Approve() {
             {archTransferGate && (
               <ArchBalanceCard gate={archTransferGate} requestedLamports={requestedArchLamports} />
             )}
+            {archSpendCapGate.state === "cap-blocked" && (
+              <div className="approve-risk approve-risk-danger" style={{ marginTop: 8 }}>
+                Daily spend cap exceeded for this site.{" "}
+                {formatArch(archSpendCapGate.recentLamports.toString())} ARCH already
+                used in the last 24h; this request would push you past the{" "}
+                {formatArch(archSpendCapGate.capLamports.toString())} ARCH cap. Raise
+                or remove the cap in Settings → Connected Sites.
+              </div>
+            )}
           </>
         )}
 
@@ -1152,7 +1246,11 @@ export default function Approve() {
             // confirmed insufficient funds. We do NOT block while the
             // gate is still loading or on indexer error -- only on a
             // positively-known insufficient balance.
-            (request.type === "SEND_TRANSFER" && archTransferGate?.state === "blocked")
+            (request.type === "SEND_TRANSFER" && archTransferGate?.state === "blocked") ||
+            // Per-origin daily spend cap (Permission Center). We
+            // explicitly do NOT block while the gate is loading; the
+            // user can still approve after the lookup resolves.
+            (request.type === "SEND_TRANSFER" && archSpendCapGate.state === "cap-blocked")
           }
         >
           {loading
