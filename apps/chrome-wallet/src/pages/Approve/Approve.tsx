@@ -36,7 +36,12 @@ import {
   EmailSessionNeededError,
 } from "../../session/ensure-signing-session";
 import SessionBootstrapper from "../../session/SessionBootstrapper";
-import { assessOriginRisk } from "../../utils/phishing";
+import { assessOriginRisk, hostnameFromOrigin } from "../../utils/phishing";
+import {
+  buildExplorerUrl,
+  notifyTxBroadcast,
+  notifyTxFailed,
+} from "../../utils/notifications";
 
 interface RequestDetails {
   type: string;
@@ -730,6 +735,24 @@ export default function Approve() {
         const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const txid = extractTxid(submitResult, sr.signingRequestId);
         sendApproved({ txid });
+
+        // Fire a system notification for dapp-initiated transfers
+        // too: the popup closes immediately after `sendApproved`,
+        // so without this the user has no in-wallet confirmation
+        // that the broadcast went through.
+        const notifTitle =
+          request.type === "SEND_TOKEN_TRANSFER"
+            ? "Token transfer broadcast"
+            : "ARCH transfer broadcast";
+        const notifMessage =
+          request.type === "SEND_TOKEN_TRANSFER"
+            ? `Sent via ${hostnameFromOrigin(request.origin) || "dapp"}`
+            : `${formatArch(request.payload.lamports)} ARCH sent via ${hostnameFromOrigin(request.origin) || "dapp"}`;
+        void notifyTxBroadcast({
+          title: notifTitle,
+          message: notifMessage,
+          explorerUrl: buildExplorerUrl({ kind: "arch", txid, network: state.network }),
+        });
         return;
       }
 
@@ -802,6 +825,20 @@ export default function Approve() {
         setOtpAccount(e.account);
       } else {
         setError(formatWalletHubError(e, "Failed to process request"));
+        // Only fire failure notifications for on-chain submission
+        // failures. Sign-only requests (SIGN_MESSAGE / SIGN_PSBT /
+        // SIGN_ARCH_MESSAGE_HASH) hand bytes back to the dapp; the
+        // dapp is the one that surfaces the failure, and a wallet
+        // notification on top would be confusing duplication.
+        if (request?.type === "SEND_TRANSFER" || request?.type === "SEND_TOKEN_TRANSFER") {
+          void notifyTxFailed({
+            title:
+              request.type === "SEND_TOKEN_TRANSFER"
+                ? "Token transfer failed"
+                : "ARCH transfer failed",
+            message: e?.message ? String(e.message).slice(0, 200) : "Broadcast failed",
+          });
+        }
       }
     } finally {
       setLoading(false);
