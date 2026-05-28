@@ -281,6 +281,31 @@ const BroadcastBody = Type.Object({
 
 const BroadcastResponse = Type.Object({ txid: Type.String() });
 
+const BlockHashParam = Type.Object({
+  hash: Type.String({
+    minLength: 64,
+    maxLength: 64,
+    pattern: "^[0-9a-fA-F]{64}$",
+  }),
+});
+
+// Height is a uint32 in Bitcoin (last block ~2026 is ~870_000; cap
+// at 2^31 to leave room and reject obvious garbage early).
+const BlockHeightParam = Type.Object({
+  height: Type.Integer({ minimum: 0, maximum: 2_147_483_647 }),
+});
+
+// JSON-RPC compat body. We accept `method` + `params` only; the
+// envelope (`jsonrpc`, `id`) is constructed server-side. Method
+// names are bounded to avoid pathological / SSRF-via-method-name
+// attempts; the upstream indexer also validates against its own
+// allowlist, but defense-in-depth here keeps obviously-bad
+// requests from ever hitting upstream.
+const ArchRpcBody = Type.Object({
+  method: Type.String({ minLength: 1, maxLength: 128 }),
+  params: Type.Unknown(),
+});
+
 export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
   // Apply the per-installation rate-limit config to EVERY route
   // registered in this plugin scope. onRoute is mutate-in-place
@@ -362,6 +387,34 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
     },
   );
 
+  // Richer v2 transactions endpoint -- returns chip labels,
+  // programs, fee_payer, etc. The wallet History tab prefers
+  // this over the legacy /transactions response.
+  server.get(
+    "/indexer/arch/accounts/:address/transactions/v2",
+    {
+      schema: {
+        summary: "Get Arch account transactions v2 (proxied)",
+        tags: ["indexer"],
+        params: AddressParam,
+        querystring: AccountTransactionsQuery,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { address } = request.params as { address: string };
+      const { limit, page } = request.query as {
+        limit?: number;
+        page?: number;
+      };
+      const result = await forward(reply, () =>
+        indexer.getAccountTransactionsV2(address, limit, page),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
   // ── Arch Transactions ──────────────────────────────────────────
   server.get(
     "/indexer/arch/transactions",
@@ -426,6 +479,53 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
       const { txid } = request.params as { txid: string };
       const result = await forward(reply, () =>
         indexer.getTransactionExecution(txid),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  // Flat list of top-level instructions on a transaction. The
+  // wallet's swap inspector uses this when the instruction tree
+  // doesn't decode an inner Token: Transfer but the top-level
+  // call witnesses the action.
+  server.get(
+    "/indexer/arch/transactions/:txid/instructions",
+    {
+      schema: {
+        summary: "Get Arch transaction instructions (proxied)",
+        tags: ["indexer"],
+        params: TxidParam,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { txid } = request.params as { txid: string };
+      const result = await forward(reply, () =>
+        indexer.getTransactionInstructions(txid),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  // Full instruction tree with CPI children. Primary signal source
+  // for AMM/router swap detection (the actual Token: Transfer
+  // typically lives inside a custom program's top-level call).
+  server.get(
+    "/indexer/arch/transactions/:txid/tree",
+    {
+      schema: {
+        summary: "Get Arch transaction instruction tree (proxied)",
+        tags: ["indexer"],
+        params: TxidParam,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { txid } = request.params as { txid: string };
+      const result = await forward(reply, () =>
+        indexer.getTransactionTree(txid),
       );
       if (result !== undefined) reply.send(result);
     },
@@ -701,6 +801,87 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
       const indexer = indexerOr501(request, reply);
       if (!indexer) return;
       const result = await forward(reply, () => indexer.getBtcChainTip());
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  // Block header lookup by hash. Used by the wallet to resolve
+  // confirmation timestamps without a second round-trip to a
+  // public BTC API.
+  server.get(
+    "/indexer/btc/block/:hash",
+    {
+      schema: {
+        summary: "BTC block detail (proxied)",
+        tags: ["indexer"],
+        params: BlockHashParam,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { hash } = request.params as { hash: string };
+      const result = await forward(reply, () => indexer.getBtcBlock(hash));
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  // Block hash lookup by height. Companion to /block/:hash:
+  // wallet pulls (height -> hash -> header.time) to label
+  // confirmed BTC txns with a wall-clock timestamp.
+  server.get(
+    "/indexer/btc/block-height/:height",
+    {
+      schema: {
+        summary: "BTC block hash at height (proxied)",
+        tags: ["indexer"],
+        params: BlockHeightParam,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { height } = request.params as { height: number };
+      const result = await forward(reply, () =>
+        indexer.getBtcBlockHashAtHeight(height),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  // ── Arch JSON-RPC compat ───────────────────────────────────────
+  // Forwards `{ method, params }` to the upstream indexer's `/rpc`
+  // endpoint. Server-side wraps in the JSON-RPC envelope and
+  // unwraps `.result` -- the wallet sees a plain result on success
+  // or a thrown error on JSON-RPC `.error`, just like every other
+  // method.
+  //
+  // Why POST: matches the upstream's verb. Also lets us reject
+  // oversized `params` bodies via Fastify's bodyLimit instead of
+  // long-URL games on GET.
+  //
+  // Not audited: this is a read path for things like
+  // `read_account_info` -- the audit chain is reserved for
+  // mutating calls (faucet, broadcast).
+  server.post(
+    "/indexer/arch/rpc",
+    {
+      schema: {
+        summary: "Arch JSON-RPC compat (proxied)",
+        tags: ["indexer"],
+        body: ArchRpcBody,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { method, params } = request.body as {
+        method: string;
+        params: unknown;
+      };
+      const result = await forward(reply, () =>
+        indexer.archRpc(method, params),
+      );
       if (result !== undefined) reply.send(result);
     },
   );

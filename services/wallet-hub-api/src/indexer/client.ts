@@ -4,6 +4,7 @@ export type IndexerClient = {
   getAccountSummary(address: string): Promise<unknown>;
   getAccountTokens(address: string): Promise<unknown>;
   getAccountTransactions(address: string, limit?: number, page?: number): Promise<unknown>;
+  getAccountTransactionsV2(address: string, limit?: number, page?: number): Promise<unknown>;
   getTransactions(params: {
     address?: string;
     limit?: number;
@@ -15,6 +16,8 @@ export type IndexerClient = {
   }): Promise<unknown>;
   getTransactionDetail(txid: string): Promise<unknown>;
   getTransactionExecution(txid: string): Promise<unknown>;
+  getTransactionInstructions(txid: string): Promise<unknown>;
+  getTransactionTree(txid: string): Promise<unknown>;
 
   getTokens(params?: { q?: string; sort?: string; limit?: number }): Promise<unknown>;
   getTokenDetail(mint: string): Promise<unknown>;
@@ -34,6 +37,21 @@ export type IndexerClient = {
   broadcastBtcTransaction(rawTxHex: string): Promise<unknown>;
   getBtcFeeEstimates(): Promise<unknown>;
   getBtcChainTip(): Promise<unknown>;
+  getBtcBlock(blockHash: string): Promise<unknown>;
+  getBtcBlockHashAtHeight(height: number): Promise<unknown>;
+
+  /**
+   * Forward a JSON-RPC call to the indexer's `/rpc` compat endpoint
+   * and return ONLY the `.result` field. The wrapper handles the
+   * JSON-RPC envelope (`jsonrpc`, `id`) and turns `.error` responses
+   * into thrown errors -- callers see plain `.result` on success
+   * and a thrown Error on failure, the same shape every other
+   * method on this client uses.
+   *
+   * Used by the wallet today for things like `read_account_info`
+   * (APL token metadata enrichment) that aren't exposed as REST.
+   */
+  archRpc(method: string, params: unknown): Promise<unknown>;
 };
 
 export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: string): IndexerClient | null {
@@ -147,6 +165,8 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
     getAccountTokens: (address) => getJson(`/accounts/${enc(address)}/tokens`),
     getAccountTransactions: (address, limit = 50, page) =>
       getJson(`/accounts/${enc(address)}/transactions${qs({ limit, page })}`),
+    getAccountTransactionsV2: (address, limit = 50, page = 1) =>
+      getJson(`/accounts/${enc(address)}/transactions/v2${qs({ limit, page })}`),
 
     // ── Arch Transactions ──
     getTransactions: (params) =>
@@ -161,6 +181,8 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
       })}`),
     getTransactionDetail: (txid) => getJson(`/transactions/${enc(txid)}`),
     getTransactionExecution: (txid) => getJson(`/transactions/${enc(txid)}/execution`),
+    getTransactionInstructions: (txid) => getJson(`/transactions/${enc(txid)}/instructions`),
+    getTransactionTree: (txid) => getJson(`/transactions/${enc(txid)}/tree`),
 
     // ── Tokens ──
     getTokens: (params) =>
@@ -186,6 +208,27 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
     getBtcTransactionStatus: (txid) => getJson(`/bitcoin/tx/${enc(txid)}/status`),
     broadcastBtcTransaction: (rawTxHex) => postText("/bitcoin/tx", rawTxHex),
     getBtcFeeEstimates: () => getJson("/bitcoin/fee-estimates"),
-    getBtcChainTip: () => getJson("/bitcoin/tip")
+    getBtcChainTip: () => getJson("/bitcoin/tip"),
+    getBtcBlock: (blockHash) => getJson(`/bitcoin/block/${enc(blockHash)}`),
+    getBtcBlockHashAtHeight: (height) => getJson(`/bitcoin/block-height/${enc(String(height))}`),
+
+    // ── Arch JSON-RPC compat ──
+    // Wraps the upstream's `/rpc` envelope so callers can write
+    // `await client.archRpc("read_account_info", [pubkey])` and get
+    // back just the result. On JSON-RPC error responses we throw,
+    // matching the convention every other method uses.
+    archRpc: async (method, params) => {
+      const json: any = await postJson("/rpc", {
+        jsonrpc: "2.0",
+        id: 1,
+        method,
+        params
+      });
+      if (json?.error) {
+        const msg = json.error.message ?? JSON.stringify(json.error);
+        throw new Error(`Indexer RPC ${method} error: ${msg}`);
+      }
+      return json?.result;
+    }
   };
 }
