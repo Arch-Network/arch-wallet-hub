@@ -64,6 +64,16 @@ const EnvSchema = z.object({
   // Platform admin (bootstrap apps + API keys)
   PLATFORM_ADMIN_API_KEY: z.string().optional(),
 
+  // Tamper-evidence HMAC key for the audit-log chain (migration 014).
+  // Every audit row stores hash = HMAC-SHA256(secret, prev_hash || row).
+  // Without this secret, a DB-write attacker can't recompute valid
+  // chain hashes -- the verifier catches their edits.
+  //
+  // Required in production. In dev/test we permit a synthesized
+  // fallback so a fresh checkout works without env wiring; the
+  // boot-time logger should warn loudly when the fallback kicks in.
+  AUDIT_HMAC_SECRET: z.string().min(32).optional(),
+
   // CORS
   // Comma-separated list of allowed origins (e.g. "https://dapp.example.com,https://app.example.com")
   // Use "*" only if you explicitly want to allow all origins.
@@ -134,6 +144,16 @@ export function getEnv(rawEnv: NodeJS.ProcessEnv): Env {
     if (!env.CORS_ALLOW_ORIGINS || env.CORS_ALLOW_ORIGINS.trim() === "*") {
       throw new Error(
         "Invalid environment: CORS_ALLOW_ORIGINS must be an explicit comma-separated list in production (not '*')",
+      );
+    }
+    // AUDIT_HMAC_SECRET is mandatory in prod: missing it would let
+    // a DB-write attacker silently rewrite the audit chain. Dev /
+    // test get a hardcoded dev secret with a warning, but prod has
+    // no useful fallback (the attacker would just use the public
+    // dev secret to rewrite).
+    if (!env.AUDIT_HMAC_SECRET) {
+      throw new Error(
+        "Invalid environment: AUDIT_HMAC_SECRET (>=32 chars) is required in production for audit-log tamper-evidence",
       );
     }
   }
