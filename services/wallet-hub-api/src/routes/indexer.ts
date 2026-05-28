@@ -46,8 +46,12 @@
 
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Type } from "@sinclair/typebox";
-import { indexerForRequest } from "../indexer/forRequest.js";
+import { createHash } from "node:crypto";
+import { indexerForRequest, requestNetwork } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
+import { auditEvent } from "../audit/audit.js";
+import { getDbPool } from "../db/pool.js";
+import { withDbTransaction } from "../db/tx.js";
 
 /**
  * Extract + validate the wallet's installation id.
@@ -130,6 +134,71 @@ const INDEXER_RATE_LIMIT = {
     keyGenerator: rateLimitKey,
   },
 };
+
+/**
+ * Audit a state-mutating proxy call.
+ *
+ * Best-effort: if the audit insert throws (DB blip), we log the
+ * failure and swallow. Reasoning -- the upstream Indexer has
+ * already broadcast the tx / issued the airdrop; rolling back the
+ * caller's response to ROLLBACK the audit would leave the user
+ * with a "failed" response for an action that already happened.
+ * That's a worse outcome than a chain gap; the gap is detectable
+ * by the verifier and explainable from server logs.
+ *
+ * Once PR #15 (HMAC audit chain) merges, this function continues
+ * to work unchanged: the chain wiring lives inside auditEvent /
+ * insertAuditLog, so call sites stay clean.
+ *
+ * payloadJson contracts:
+ *   - Faucet: { address, network }
+ *   - Broadcast: { rawTxHash, network, txid? }   -- NEVER the full
+ *     rawTxHex; that would log transaction details (recipient,
+ *     amount) into the audit log. We log the sha256 hash so the
+ *     verifier can correlate the audit row to a specific broadcast
+ *     attempt without exposing wallet activity.
+ */
+async function auditMutatingCall(
+  server: import("fastify").FastifyInstance,
+  request: FastifyRequest,
+  params: {
+    eventType: string;
+    entityType: string;
+    entityId: string | null;
+    payloadJson: Record<string, unknown>;
+    outcome: "succeeded" | "failed";
+  },
+): Promise<void> {
+  try {
+    const appId = request.app?.appId;
+    if (!appId) return;
+    const db = getDbPool();
+    await withDbTransaction(db, (client) =>
+      auditEvent({
+        client,
+        appId,
+        requestId: request.id ? String(request.id) : null,
+        userId: null, // proxy reads are app-scoped, not user-scoped
+        eventType: params.eventType,
+        entityType: params.entityType,
+        entityId: params.entityId,
+        turnkeyActivityId: null,
+        turnkeyRequestId: null,
+        payloadJson: params.payloadJson,
+        outcome: params.outcome,
+      }),
+    );
+  } catch (err: any) {
+    server.log.error(
+      { err: err?.message, eventType: params.eventType },
+      "indexer proxy audit insert failed",
+    );
+  }
+}
+
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
 
 /** Pull the per-request indexer client or short-circuit with a 501. */
 function indexerOr501(
@@ -459,7 +528,7 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
     },
   );
 
-  // ── Faucet (mutating; audit hookup follows in commit 3) ────────
+  // ── Faucet (mutating; audited) ─────────────────────────────────
   server.post(
     "/indexer/arch/faucet/airdrop",
     {
@@ -473,10 +542,31 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
       const indexer = indexerOr501(request, reply);
       if (!indexer) return;
       const { address } = request.body as { address: string };
-      const result = await forward(reply, () =>
-        indexer.requestFaucetAirdrop(address),
-      );
-      if (result !== undefined) reply.send(result);
+      const network = requestNetwork(request);
+      try {
+        const result = await indexer.requestFaucetAirdrop(address);
+        await auditMutatingCall(server, request, {
+          eventType: "indexer_faucet_airdrop",
+          entityType: "arch_account",
+          entityId: address,
+          payloadJson: { address, network },
+          outcome: "succeeded",
+        });
+        reply.send(result);
+      } catch (err: any) {
+        await auditMutatingCall(server, request, {
+          eventType: "indexer_faucet_airdrop",
+          entityType: "arch_account",
+          entityId: address,
+          payloadJson: { address, network, error: err?.message ?? String(err) },
+          outcome: "failed",
+        });
+        reply.code(502).send({
+          statusCode: 502,
+          error: "BadGateway",
+          message: err?.message ?? "Faucet airdrop failed",
+        });
+      }
     },
   );
 
@@ -615,7 +705,7 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
     },
   );
 
-  // ── Bitcoin (broadcast; audit hookup follows in commit 3) ──────
+  // ── Bitcoin (broadcast; audited) ───────────────────────────────
   server.post(
     "/indexer/btc/tx",
     {
@@ -630,10 +720,37 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
       const indexer = indexerOr501(request, reply);
       if (!indexer) return;
       const { rawTxHex } = request.body as { rawTxHex: string };
-      const txid = await forward(reply, () =>
-        indexer.broadcastBtcTransaction(rawTxHex),
-      );
-      if (txid !== undefined) reply.send({ txid: String(txid).trim() });
+      const network = requestNetwork(request);
+      const rawTxHash = sha256Hex(rawTxHex);
+      try {
+        const txidRaw = await indexer.broadcastBtcTransaction(rawTxHex);
+        const txid = String(txidRaw).trim();
+        await auditMutatingCall(server, request, {
+          eventType: "indexer_btc_broadcast",
+          entityType: "btc_tx",
+          entityId: txid || null,
+          payloadJson: { rawTxHash, network, txid },
+          outcome: "succeeded",
+        });
+        reply.send({ txid });
+      } catch (err: any) {
+        await auditMutatingCall(server, request, {
+          eventType: "indexer_btc_broadcast",
+          entityType: "btc_tx",
+          entityId: null,
+          payloadJson: {
+            rawTxHash,
+            network,
+            error: err?.message ?? String(err),
+          },
+          outcome: "failed",
+        });
+        reply.code(502).send({
+          statusCode: 502,
+          error: "BadGateway",
+          message: err?.message ?? "BTC broadcast failed",
+        });
+      }
     },
   );
 };
