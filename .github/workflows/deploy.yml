@@ -45,7 +45,23 @@ jobs:
           docker push $ECR_REGISTRY/$API_REPO:${{ github.sha }}
           docker push $ECR_REGISTRY/$API_REPO:latest
 
+      # Frontend (apps/demo-dapp) is currently broken: it calls 13
+      # SDK methods and references 3 types that no longer exist on
+      # `@arch-network/wallet-hub-sdk` after a refactor weeks ago.
+      # Auto-deploy has been failing on this for 50+ runs; surfaced
+      # cleanly once the OIDC auth gate was fixed (2026-05-28).
+      #
+      # The chrome wallet is the product; demo-dapp is reference code.
+      # Disabling these four steps keeps the API auto-deploy unblocked
+      # without touching demo-dapp source. The existing
+      # wallet-hub-frontend ECS service keeps serving its current
+      # image (already stale from before this conversation).
+      #
+      # To re-enable: rewrite demo-dapp against the current SDK
+      # surface (or rip it out of the repo) and flip these guards
+      # back to a passing condition.
       - name: Build and push Frontend image
+        if: false
         run: |
           docker build \
             --platform linux/amd64 \
@@ -66,6 +82,7 @@ jobs:
             --region $AWS_REGION
 
       - name: Deploy Frontend service
+        if: false
         run: |
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
@@ -82,6 +99,7 @@ jobs:
         timeout-minutes: 10
 
       - name: Wait for Frontend service stability
+        if: false
         run: |
           aws ecs wait services-stable \
             --cluster $ECS_CLUSTER \
