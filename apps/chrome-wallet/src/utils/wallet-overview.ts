@@ -1,5 +1,5 @@
 import {
-  ArchIndexerClient,
+  type IndexerClient,
   type AccountSummary,
   type AccountTransactionsResponse,
   type BtcAddressSummary,
@@ -36,7 +36,7 @@ interface CacheEntry {
 
 const overviewCache = new Map<string, CacheEntry>();
 
-function cacheKey(client: ArchIndexerClient, archAddress: string, btcAddress: string): string {
+function cacheKey(client: IndexerClient, archAddress: string, btcAddress: string): string {
   return `${client.network}:${archAddress}:${btcAddress}`;
 }
 
@@ -76,7 +76,7 @@ export interface FetchOverviewParams {
  * /wallet/:address/overview route's shape (and caching) but runs in-extension.
  */
 export async function fetchWalletOverview(
-  client: ArchIndexerClient,
+  client: IndexerClient,
   params: FetchOverviewParams
 ): Promise<WalletOverview> {
   const key = cacheKey(client, params.archAccountAddress, params.btcAddress);

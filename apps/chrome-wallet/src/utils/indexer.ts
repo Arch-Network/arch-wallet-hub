@@ -1,8 +1,26 @@
 import type { NetworkId } from "../state/types";
 import { walletStore } from "../state/wallet-store";
-import { INDEXER_BASE_URL, DEFAULT_INDEXER_API_KEY } from "./explorer-config";
+import {
+  INDEXER_BASE_URL,
+  DEFAULT_INDEXER_API_KEY,
+  USE_DIRECT_INDEXER
+} from "./explorer-config";
+import { ArchHubIndexerClient } from "./hub-indexer";
 
 export type IndexerNetwork = "mainnet" | "testnet";
+
+/**
+ * Public-surface type for the wallet's indexer client. Implemented
+ * by both `ArchIndexerClient` (legacy direct path, behind
+ * USE_DIRECT_INDEXER) and `ArchHubIndexerClient` (Hub-proxied path,
+ * the default). Callers should import THIS type, not `ArchIndexerClient`,
+ * so a future flag flip doesn't ripple across file signatures.
+ *
+ * TypeScript's structural typing means we don't need an explicit
+ * `implements` clause on either class; the union of the two class
+ * types gives callers exactly the methods both classes provide.
+ */
+export type IndexerClient = ArchIndexerClient | ArchHubIndexerClient;
 
 export interface ArchIndexerClientOptions {
   baseUrl: string;
@@ -380,20 +398,57 @@ function networkIdToIndexer(n: NetworkId): IndexerNetwork {
   return n === "mainnet" ? "mainnet" : "testnet";
 }
 
-let cachedClient: ArchIndexerClient | null = null;
+let cachedClient: IndexerClient | null = null;
 let cachedKey: string | null = null;
 
-export async function getIndexer(): Promise<ArchIndexerClient> {
+/**
+ * Return a cached indexer client. Routes through the Wallet Hub by
+ * default; falls back to the legacy direct path when
+ * `USE_DIRECT_INDEXER` is set at build time (the rollback escape
+ * hatch; see explorer-config.ts).
+ *
+ * Cache key includes the routing mode so a build flip naturally
+ * invalidates any in-flight cached client.
+ */
+export async function getIndexer(): Promise<IndexerClient> {
   const state = await walletStore.getState();
-  const baseUrl = state.indexerBaseUrl || INDEXER_BASE_URL;
-  const apiKey = state.indexerApiKey || DEFAULT_INDEXER_API_KEY;
-  if (!apiKey) throw new MissingIndexerApiKeyError();
   const network = networkIdToIndexer(state.network);
-  const cacheKey = `${baseUrl}|${apiKey}|${network}`;
-  const blockedUntil = authFailureUntilByCacheKey.get(authCacheKey(baseUrl.replace(/\/+$/, ""), network, apiKey)) ?? 0;
-  if (blockedUntil > Date.now()) throw new IndexerApiKeyRejectedError();
+
+  if (USE_DIRECT_INDEXER) {
+    const baseUrl = state.indexerBaseUrl || INDEXER_BASE_URL;
+    const apiKey = state.indexerApiKey || DEFAULT_INDEXER_API_KEY;
+    if (!apiKey) throw new MissingIndexerApiKeyError();
+    const cacheKey = `direct|${baseUrl}|${apiKey}|${network}`;
+    const blockedUntil = authFailureUntilByCacheKey.get(authCacheKey(baseUrl.replace(/\/+$/, ""), network, apiKey)) ?? 0;
+    if (blockedUntil > Date.now()) throw new IndexerApiKeyRejectedError();
+    if (cachedClient && cachedKey === cacheKey) return cachedClient;
+    cachedClient = new ArchIndexerClient({ baseUrl, network, apiKey });
+    cachedKey = cacheKey;
+    return cachedClient;
+  }
+
+  // Hub-routed path (default). Requires the wallet to have a Hub
+  // base URL + Hub app key already configured -- which the
+  // walletStore migration guarantees on first run, well before any
+  // page can call getIndexer().
+  const hubBaseUrl = state.hubBaseUrl;
+  const hubApiKey = state.hubApiKey;
+  if (!hubBaseUrl || !hubApiKey) {
+    // Belt-and-suspenders: if for some reason hub config is missing
+    // (e.g. user wiped state mid-session), raise the same auth-
+    // missing error as the direct path. Callers already handle it
+    // by sending the user to Settings.
+    throw new MissingIndexerApiKeyError();
+  }
+  const installId = await walletStore.getInstallId();
+  const cacheKey = `hub|${hubBaseUrl}|${hubApiKey}|${installId}|${network}`;
   if (cachedClient && cachedKey === cacheKey) return cachedClient;
-  cachedClient = new ArchIndexerClient({ baseUrl, network, apiKey });
+  cachedClient = new ArchHubIndexerClient({
+    hubBaseUrl,
+    hubApiKey,
+    installId,
+    network
+  });
   cachedKey = cacheKey;
   return cachedClient;
 }

@@ -11,7 +11,6 @@ import TestRecoveryEmailButton from "../../components/TestRecoveryEmailButton";
 import { ConnectedSiteRow } from "../../components/ConnectedSiteRow";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
 import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "../../state/types";
-import { INDEXER_BASE_URL } from "../../utils/explorer-config";
 import { APP_VERSION } from "../../utils/version";
 import DiagnosticsLogView from "../../components/DiagnosticsLogView";
 import { isSentryAvailableForOptIn } from "../../utils/log";
@@ -67,9 +66,6 @@ export default function Settings() {
   const [hubSaved, setHubSaved] = useState(false);
   const [hubError, setHubError] = useState<string | null>(null);
 
-  const [indexerBaseUrl, setIndexerBaseUrl] = useState(state.indexerBaseUrl || INDEXER_BASE_URL);
-  const [indexerApiKey, setIndexerApiKey] = useState(state.indexerApiKey || "");
-  const [indexerSaved, setIndexerSaved] = useState(false);
 
   const [pwOld, setPwOld] = useState("");
   const [pwNew, setPwNew] = useState("");
@@ -91,10 +87,6 @@ export default function Settings() {
     setHubApiKey(state.hubApiKey || "");
   }, [state.hubBaseUrl, state.hubApiKey]);
 
-  useEffect(() => {
-    setIndexerBaseUrl(state.indexerBaseUrl || INDEXER_BASE_URL);
-    setIndexerApiKey(state.indexerApiKey || "");
-  }, [state.indexerBaseUrl, state.indexerApiKey]);
 
   const handleSaveHubConfig = useCallback(async () => {
     setHubError(null);
@@ -120,12 +112,6 @@ export default function Settings() {
     setTimeout(() => setHubSaved(false), 2000);
   }, [hubBaseUrl, hubApiKey, state.network]);
 
-  const handleSaveIndexerConfig = useCallback(async () => {
-    await walletStore.setIndexerConfig(indexerBaseUrl.trim(), indexerApiKey.trim());
-    invalidateClientCache();
-    setIndexerSaved(true);
-    setTimeout(() => setIndexerSaved(false), 2000);
-  }, [indexerBaseUrl, indexerApiKey]);
 
   const handleDisconnect = useCallback(async (origin: string) => {
     await walletStore.disconnectSite(origin);
@@ -598,47 +584,16 @@ export default function Settings() {
 
       {showAdvanced && (
         <>
-          <div className="section">
-            <div className="section-title">Indexer API</div>
-            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
-              Reads, faucet, BTC, and Arch RPC compat.
-            </div>
-            <div className="card">
-              <div style={{ marginBottom: 8 }}>
-                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-                  Base URL
-                </label>
-                <input
-                  className="input"
-                  type="text"
-                  value={indexerBaseUrl}
-                  onChange={(e) => setIndexerBaseUrl(e.target.value)}
-                  placeholder={INDEXER_BASE_URL}
-                  style={{ width: "100%", boxSizing: "border-box" }}
-                />
-              </div>
-              <div style={{ marginBottom: 10 }}>
-                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
-                  API Key
-                </label>
-                <input
-                  className="input"
-                  type="password"
-                  value={indexerApiKey}
-                  onChange={(e) => setIndexerApiKey(e.target.value)}
-                  placeholder="arch_live_..."
-                  style={{ width: "100%", boxSizing: "border-box" }}
-                />
-              </div>
-              <button
-                className={`btn btn-sm ${indexerSaved ? "btn-primary" : "btn-secondary"}`}
-                onClick={handleSaveIndexerConfig}
-                style={{ width: "100%" }}
-              >
-                {indexerSaved ? "Saved" : "Save Indexer Settings"}
-              </button>
-            </div>
-          </div>
+          {/*
+            Indexer config UI was here. Removed in Phase B.2 -- the
+            wallet now routes every indexer read/write through the
+            Wallet Hub proxy (no key ships in the bundle), so the
+            old `indexerBaseUrl` / `indexerApiKey` fields are
+            effectively dead for normal users. The fields remain in
+            wallet state for the rare `WXT_USE_DIRECT_INDEXER=true`
+            rebuild scenario (rollback escape hatch); editing them
+            then requires Chrome DevTools.
+          */}
 
           <div className="section">
             <div className="section-title">Wallet Hub API</div>

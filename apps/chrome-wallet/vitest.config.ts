@@ -8,6 +8,10 @@ export default defineConfig({
   define: {
     __ARCH_BUILD_HUB_API_KEY__: JSON.stringify(""),
     __ARCH_BUILD_INDEXER_API_KEY__: JSON.stringify(""),
+    // Tests run with the legacy direct path off (factory chooses
+    // Hub-routed). Per-test overrides go through dependency
+    // injection on getIndexer() rather than mutating this global.
+    __ARCH_USE_DIRECT_INDEXER__: JSON.stringify(false),
   },
   test: {
     globals: false,

@@ -1,6 +1,6 @@
 import * as bitcoin from "bitcoinjs-lib";
 import * as ecc from "@bitcoinerlab/secp256k1";
-import type { ArchIndexerClient, BtcUtxo } from "./indexer";
+import type { BtcUtxo, IndexerClient } from "./indexer";
 
 // bitcoinjs-lib v6 needs an ECC backend wired in for taproot helpers.
 // `@bitcoinerlab/secp256k1` is a pure-JS implementation that works in
@@ -14,7 +14,7 @@ function ensureEccLib() {
 }
 
 export interface BuildPsbtParams {
-  indexer: ArchIndexerClient;
+  indexer: IndexerClient;
   fromAddress: string;
   toAddress: string;
   amountSats: number;
