@@ -18,6 +18,14 @@ import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress, isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
 import QrScanner from "../../components/QrScanner";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
+import {
+  buildFeeTiers,
+  DEFAULT_FEE_TIER_ID,
+  tierById,
+  type FeeTier,
+  type FeeTierId,
+} from "../../utils/btc-fee-tiers";
+import BtcFeeTierPicker from "../../components/BtcFeeTierPicker";
 import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, truncateAddress } from "../../utils/format";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
@@ -149,6 +157,8 @@ export default function Send({ networkStatus }: SendProps) {
 
   const [btcPrepare, setBtcPrepare] = useState<BtcPrepareResult | null>(null);
   const [preparing, setPreparing] = useState(false);
+  const [feeTiers, setFeeTiers] = useState<FeeTier[]>(() => buildFeeTiers(null));
+  const [feeTierId, setFeeTierId] = useState<FeeTierId>(DEFAULT_FEE_TIER_ID);
 
   useEffect(() => {
     if (!activeAccount) return;
@@ -305,42 +315,84 @@ export default function Send({ networkStatus }: SendProps) {
     [activeAccount, state.network],
   );
 
-  const handlePrepareBtc = useCallback(async () => {
-    if (!activeAccount || !recipient || !amount) return;
-    setPreparing(true);
-    setError("");
-    setBtcPrepare(null);
-    try {
-      const amountSats = Math.round((Number(amount) || 0) * 1e8);
-      if (amountSats < 546) throw new Error("Amount too small (minimum 546 sats)");
+  const handlePrepareBtc = useCallback(
+    async (
+      opts?: {
+        /** Override the fee tier to prepare against. Defaults to the
+         *  picker's current selection. */
+        feeTier?: FeeTierId;
+        /** When true, leaves the existing review screen visible. */
+        keepStep?: boolean;
+      },
+    ) => {
+      if (!activeAccount || !recipient || !amount) return;
+      setPreparing(true);
+      setError("");
+      if (!opts?.keepStep) setBtcPrepare(null);
+      try {
+        const amountSats = Math.round((Number(amount) || 0) * 1e8);
+        if (amountSats < 546) throw new Error("Amount too small (minimum 546 sats)");
 
-      const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
+        const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
 
-      // Build the PSBT locally regardless of auth method -- both
-      // passkey and email wallets sign with the session-stamped
-      // signer now, so there's no asymmetry to model here.
-      const indexer = await getIndexer();
-      const built = await buildUnsignedPsbt({
-        indexer,
-        fromAddress,
-        toAddress: recipient,
-        amountSats,
-      });
-      setBtcPrepare({
-        psbtHex: built.psbt.toHex(),
-        psbtBase64: built.psbt.toBase64(),
-        feeSats: built.feeSats,
-        feeRate: built.feeRate,
-        changeSats: built.changeSats,
-        inputCount: built.inputCount,
-      });
-      setStep(3);
-    } catch (err: any) {
-      setError(err.message || "Failed to prepare transaction");
-    } finally {
-      setPreparing(false);
-    }
-  }, [activeAccount, recipient, amount, state.network]);
+        const indexer = await getIndexer();
+
+        // Refresh the tier model alongside the prepare. The indexer
+        // typically caches fee estimates for a few seconds, so this
+        // is cheap even when called more than once per Send flow. We
+        // use the freshly-fetched tiers to derive the rate so the
+        // picker UI and the actual PSBT never disagree.
+        let nextTiers = feeTiers;
+        try {
+          const estimates = await indexer.getBtcFeeEstimates();
+          nextTiers = buildFeeTiers(estimates);
+          setFeeTiers(nextTiers);
+        } catch {
+          /* fall back to previously-resolved tiers */
+        }
+
+        const activeTierId = opts?.feeTier ?? feeTierId;
+        const feeRate = tierById(nextTiers, activeTierId).satPerVbyte;
+
+        const built = await buildUnsignedPsbt({
+          indexer,
+          fromAddress,
+          toAddress: recipient,
+          amountSats,
+          feeRate,
+        });
+        setBtcPrepare({
+          psbtHex: built.psbt.toHex(),
+          psbtBase64: built.psbt.toBase64(),
+          feeSats: built.feeSats,
+          feeRate: built.feeRate,
+          changeSats: built.changeSats,
+          inputCount: built.inputCount,
+        });
+        if (!opts?.keepStep) setStep(3);
+      } catch (err: any) {
+        setError(err.message || "Failed to prepare transaction");
+      } finally {
+        setPreparing(false);
+      }
+    },
+    [activeAccount, recipient, amount, state.network, feeTiers, feeTierId],
+  );
+
+  /**
+   * User picked a different fee priority on the review screen.
+   * Re-prepare the PSBT at the new rate without flipping the step or
+   * blanking the existing preview, so the user sees the new fee
+   * appear in place. UTXO selection runs again because a higher rate
+   * can require an additional input.
+   */
+  const handleSelectFeeTier = useCallback(
+    (next: FeeTierId) => {
+      setFeeTierId(next);
+      void handlePrepareBtc({ feeTier: next, keepStep: true });
+    },
+    [handlePrepareBtc],
+  );
 
   const handleBtcSign = useCallback(async () => {
     if (!activeAccount || !btcPrepare) return;
@@ -937,6 +989,20 @@ export default function Send({ networkStatus }: SendProps) {
           {asset === "btc" && btcPrepare && (
             <div className="review-section">
               <div className="review-section-label">Network Fee</div>
+              <div style={{ marginBottom: 10 }}>
+                <BtcFeeTierPicker
+                  tiers={feeTiers}
+                  selectedId={feeTierId}
+                  vsize={
+                    btcPrepare.feeRate > 0
+                      ? Math.max(1, Math.round(btcPrepare.feeSats / btcPrepare.feeRate))
+                      : 0
+                  }
+                  btcUsd={btcUsd}
+                  onSelect={handleSelectFeeTier}
+                  disabled={preparing || loading}
+                />
+              </div>
               <div className="review-section-row">
                 <span className="label">Fee</span>
                 <span className="value">
