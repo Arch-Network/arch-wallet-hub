@@ -13,6 +13,29 @@
  *     warning so the user understands they're blind-signing.
  */
 
+export interface SiwaMessage {
+  /** Domain the dapp identified itself as (must match origin). */
+  domain: string;
+  /** Wallet address the dapp expects to sign. */
+  address: string;
+  /** Free-text statement the dapp asks the user to read. May be empty. */
+  statement?: string;
+  /** Canonical URI the dapp resolves to. */
+  uri: string;
+  /** Schema version. Currently always "1". */
+  version: string;
+  /** Numeric chain identifier (we accept any non-empty string for forward-compat). */
+  chainId: string;
+  /** Random per-request nonce; the dapp uses this to bind the signature to a session. */
+  nonce: string;
+  /** ISO-8601 timestamp of message creation. */
+  issuedAt: string;
+  expirationTime?: string;
+  notBefore?: string;
+  requestId?: string;
+  resources?: string[];
+}
+
 export type MessageInterpretation =
   | {
       kind: "text";
@@ -23,6 +46,25 @@ export type MessageInterpretation =
       kind: "json";
       text: string;
       json: unknown;
+      hex: string;
+    }
+  | {
+      kind: "siwa";
+      text: string;
+      siwa: SiwaMessage;
+      /**
+       * Set when the parsed `domain` field doesn't match the caller's
+       * origin host. The wallet still renders the friendly card, but
+       * with a danger banner -- a domain-mismatched SIWA is the
+       * canonical phishing signature.
+       */
+      domainMismatch?: { expected: string; got: string };
+      /**
+       * Set when the message is past `expirationTime` (when present)
+       * or hasn't yet reached `notBefore`. Surfaced to the UI so the
+       * user can refuse a stale challenge.
+       */
+      timingIssue?: { reason: "expired" | "not-yet-valid"; at: string };
       hex: string;
     }
   | {
@@ -94,6 +136,158 @@ function hostFromOrigin(origin: string): string | null {
 }
 
 /**
+ * Strict parser for the "Sign in with Arch" message format. The
+ * format follows the same shape as EIP-4361 (SIWE) so dapp authors
+ * who have already integrated SIWE on Ethereum can reuse most of
+ * their tooling -- only the chain name in the header differs:
+ *
+ *   ${domain} wants you to sign in with your Arch account:
+ *   ${address}
+ *
+ *   ${optional statement}
+ *
+ *   URI: ${uri}
+ *   Version: ${version}
+ *   Chain ID: ${chainId}
+ *   Nonce: ${nonce}
+ *   Issued At: ${issuedAt}
+ *   [Expiration Time: ...]
+ *   [Not Before: ...]
+ *   [Request ID: ...]
+ *   [Resources:
+ *   - ${url1}
+ *   - ${url2}]
+ *
+ * We require ALL of domain / address / URI / Version / Chain ID /
+ * Nonce / Issued At so the Approve UI can render a real card. A
+ * message that *looks* SIWA-shaped but is missing required fields
+ * falls through to the looser `structured` kind so the user still
+ * sees raw text and a domain warning.
+ *
+ * Returns `null` when the input is not a valid SIWA message.
+ */
+export function parseSiwaMessage(text: string): SiwaMessage | null {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (lines.length < 5) return null;
+
+  const headerMatch = lines[0]!.match(
+    /^([A-Za-z0-9.\-:_]+)\s+wants you to sign in with your Arch account:\s*$/,
+  );
+  if (!headerMatch) return null;
+  const domain = headerMatch[1]!;
+
+  const address = lines[1]!.trim();
+  if (!address) return null;
+
+  // After the address line, optionally an empty line, an optional
+  // statement (one or more non-empty lines), an empty line, then the
+  // tagged fields. We scan forward to find the first tagged field
+  // (`URI:`) and treat everything between address+1 and that point
+  // as the statement block (after stripping surrounding blank lines).
+  let cursor = 2;
+  while (cursor < lines.length && lines[cursor]!.trim() === "") cursor++;
+  let statement: string | undefined;
+  const statementStart = cursor;
+  while (
+    cursor < lines.length &&
+    !/^[A-Z][A-Za-z ]+:/.test(lines[cursor]!) &&
+    lines[cursor]!.trim() !== ""
+  ) {
+    cursor++;
+  }
+  if (cursor > statementStart) {
+    statement = lines.slice(statementStart, cursor).join("\n").trim() || undefined;
+  }
+  while (cursor < lines.length && lines[cursor]!.trim() === "") cursor++;
+
+  const fields = new Map<string, string>();
+  let i = cursor;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (line === "Resources:") {
+      const resources: string[] = [];
+      i++;
+      while (i < lines.length && lines[i]!.startsWith("- ")) {
+        resources.push(lines[i]!.slice(2).trim());
+        i++;
+      }
+      fields.set("Resources", resources.join("\n"));
+      continue;
+    }
+    const m = line.match(/^([A-Za-z][A-Za-z ]*?):\s*(.+)$/);
+    if (m) fields.set(m[1]!, m[2]!.trim());
+    i++;
+  }
+
+  const uri = fields.get("URI");
+  const version = fields.get("Version");
+  const chainId = fields.get("Chain ID");
+  const nonce = fields.get("Nonce");
+  const issuedAt = fields.get("Issued At");
+  if (!uri || !version || !chainId || !nonce || !issuedAt) return null;
+
+  const expirationTime = fields.get("Expiration Time") || undefined;
+  const notBefore = fields.get("Not Before") || undefined;
+  const requestId = fields.get("Request ID") || undefined;
+  const resourcesRaw = fields.get("Resources");
+  const resources = resourcesRaw ? resourcesRaw.split("\n").filter(Boolean) : undefined;
+
+  return {
+    domain,
+    address,
+    statement,
+    uri,
+    version,
+    chainId,
+    nonce,
+    issuedAt,
+    expirationTime,
+    notBefore,
+    requestId,
+    resources,
+  };
+}
+
+/**
+ * Compare the parsed SIWA `domain` against the calling origin's
+ * host. Caller wraps the result into the `domainMismatch` field
+ * of the `siwa` interpretation.
+ */
+function checkSiwaDomain(
+  siwaDomain: string,
+  origin: string,
+): { expected: string; got: string } | undefined {
+  const originHost = hostFromOrigin(origin);
+  if (!originHost) return undefined;
+  if (siwaDomain.toLowerCase() === originHost.toLowerCase()) return undefined;
+  return { expected: originHost, got: siwaDomain };
+}
+
+/**
+ * If the SIWA message defines temporal validity, ensure the current
+ * wall-clock time falls within it. Returns `undefined` when the
+ * message has no temporal constraints or they are all satisfied.
+ */
+function checkSiwaTiming(
+  siwa: SiwaMessage,
+  now: Date,
+): { reason: "expired" | "not-yet-valid"; at: string } | undefined {
+  if (siwa.expirationTime) {
+    const t = Date.parse(siwa.expirationTime);
+    if (!Number.isNaN(t) && t < now.getTime()) {
+      return { reason: "expired", at: siwa.expirationTime };
+    }
+  }
+  if (siwa.notBefore) {
+    const t = Date.parse(siwa.notBefore);
+    if (!Number.isNaN(t) && t > now.getTime()) {
+      return { reason: "not-yet-valid", at: siwa.notBefore };
+    }
+  }
+  return undefined;
+}
+
+/**
  * Interpret a hex-encoded message payload coming from a dapp.
  * `origin` is the calling site's origin and is used for domain
  * mismatch detection on structured/SIWE-style payloads.
@@ -121,6 +315,21 @@ export function interpretMessage(hex: string, origin: string): MessageInterpreta
   const json = tryParseJson(text);
   if (json !== null) {
     return { kind: "json", text, json, hex };
+  }
+
+  // Try the strict Sign-in-with-Arch parser first. If it matches we
+  // can render a real card; if it doesn't, fall through to the
+  // looser "structured" kind for anything that *looks* SIWE-ish.
+  const siwa = parseSiwaMessage(text);
+  if (siwa) {
+    return {
+      kind: "siwa",
+      text,
+      siwa,
+      domainMismatch: checkSiwaDomain(siwa.domain, origin),
+      timingIssue: checkSiwaTiming(siwa, new Date()),
+      hex,
+    };
   }
 
   const url = extractUrl(text);
