@@ -8,6 +8,10 @@ import { keystore } from "../src/crypto/keystore";
 import type { PendingRequest } from "../src/messaging/types";
 import type { OpenAsMode } from "../src/state/types";
 import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
+import {
+  applyDiagnosticsRuntime,
+  installGlobalErrorHandlers,
+} from "../src/utils/log";
 
 const AUTO_LOCK_ALARM = "arch-wallet-auto-lock";
 const PENDING_GC_ALARM = "arch-wallet-pending-gc";
@@ -92,6 +96,23 @@ async function syncOpenAsFromStorage(): Promise<void> {
     await applyOpenAsPreference(state.openAs ?? "popup");
   } catch {
     await applyOpenAsPreference("popup");
+  }
+}
+
+/**
+ * Mirror the persisted Diagnostics toggles (debug mode, Sentry
+ * opt-in) into the SW realm's `log` module. Swallows errors so a
+ * malformed state blob can't take the SW down at boot.
+ */
+async function syncDiagnosticsFromStorage(): Promise<void> {
+  try {
+    const state = await walletStore.getState();
+    applyDiagnosticsRuntime({
+      debugMode: !!state.debugMode,
+      sentryOptIn: !!state.sentryOptIn,
+    });
+  } catch {
+    /* boot-time read failure shouldn't block SW startup */
   }
 }
 
@@ -305,13 +326,28 @@ export default defineBackground(() => {
   syncOpenAsFromStorage();
   pendingRequestsStore.clearAll(); // SW boot: drop any stale entries.
 
+  // Install diagnostics in the SW realm. This realm is a different
+  // JS context from the popup, so it needs its own boot-time apply +
+  // its own global error handlers; popup state changes propagate
+  // here via the storage-onChanged listener below.
+  installGlobalErrorHandlers(self as unknown as EventTarget);
+  syncDiagnosticsFromStorage();
+
   chrome.alarms.create(PENDING_GC_ALARM, { periodInMinutes: 1 });
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (!changes.arch_wallet_keystore) return;
-    // Re-sync open-as in case the user toggled it from the UI.
-    syncOpenAsFromStorage();
+    if (changes.arch_wallet_keystore) {
+      // Re-sync open-as in case the user toggled it from the UI.
+      syncOpenAsFromStorage();
+    }
+    if (changes.arch_wallet_state) {
+      // Persisted Diagnostics toggles live in the plaintext state
+      // blob alongside other Settings flags. Re-apply on every write
+      // so a toggle change in the popup is reflected in this realm
+      // by the time the next provider request comes through.
+      syncDiagnosticsFromStorage();
+    }
   });
 
   chrome.alarms.onAlarm.addListener(async (alarm) => {

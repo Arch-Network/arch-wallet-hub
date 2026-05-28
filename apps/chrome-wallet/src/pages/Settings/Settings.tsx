@@ -12,6 +12,8 @@ import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types"
 import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "../../state/types";
 import { INDEXER_BASE_URL } from "../../utils/explorer-config";
 import { APP_VERSION } from "../../utils/version";
+import DiagnosticsLogView from "../../components/DiagnosticsLogView";
+import { isSentryAvailableForOptIn } from "../../utils/log";
 
 const NETWORKS: { id: NetworkId; label: string }[] = [
   { id: "testnet4", label: "Testnet4" },
@@ -686,18 +688,29 @@ export default function Settings() {
           <div className="section">
             <div className="section-title">Diagnostics</div>
             <div className="card">
-              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={state.sentryOptIn ?? false}
-                  onChange={(e) => walletStore.setSentryOptIn(e.target.checked)}
-                />
-                <span style={{ fontSize: 13 }}>Send anonymous error reports</span>
-              </label>
-              <p style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
-                Off by default. We never collect addresses, keys, or transaction contents.
-              </p>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+              {isSentryAvailableForOptIn() ? (
+                <>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={state.sentryOptIn ?? false}
+                      onChange={(e) => walletStore.setSentryOptIn(e.target.checked)}
+                    />
+                    <span style={{ fontSize: 13 }}>Send anonymous error reports</span>
+                  </label>
+                  <p style={{ marginTop: 4, fontSize: 11, color: "var(--text-muted)" }}>
+                    Off by default. We never collect addresses, keys, or transaction contents.
+                  </p>
+                </>
+              ) : null}
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  marginTop: isSentryAvailableForOptIn() ? 12 : 0,
+                }}
+              >
                 <input
                   type="checkbox"
                   checked={state.debugMode ?? false}
@@ -705,6 +718,11 @@ export default function Settings() {
                 />
                 <span style={{ fontSize: 13 }}>Debug mode (verbose logs)</span>
               </label>
+              {state.debugMode ? (
+                <div style={{ marginTop: 12 }}>
+                  <DiagnosticsLogView />
+                </div>
+              ) : null}
             </div>
           </div>
         </>

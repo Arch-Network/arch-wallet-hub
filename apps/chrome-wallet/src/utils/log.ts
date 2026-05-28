@@ -1,19 +1,26 @@
 /**
- * Phase 5.6 - Lightweight log + opt-in Sentry.
+ * Lightweight wallet-side logger + opt-in Sentry.
  *
  * The wallet defaults to *no* error reporting. Users can opt in from
- * Settings (`sentryOptIn` in wallet-store). When enabled, only
- * captured exceptions are sent; we never include addresses, keys,
- * transaction payloads, or raw URLs containing query strings.
+ * Settings -> Diagnostics. When enabled, only captured exceptions are
+ * sent; we never include addresses, keys, transaction payloads, or
+ * raw URLs containing query strings (see `sanitize`).
  *
- * The console wrapper here is also the home for the debug toggle
- * (`debugMode`). When debug mode is on, info/warn are mirrored to a
- * ring buffer the Settings -> Diagnostics view can render.
+ * Verbose mode (`debugMode`) is also wired here: when on, info/debug
+ * are mirrored to a small ring buffer the Settings Diagnostics view
+ * renders, and to `console.*` so the SW DevTools see the same output.
+ *
+ * Boot-time wiring (`applyDiagnosticsRuntime`) lives at the bottom of
+ * this file; every entry point (popup, background SW) calls it once
+ * after loading the persisted wallet state and again whenever the
+ * user flips a Diagnostics toggle. The wallet-store setters call
+ * through too, so a toggle change takes effect immediately in the
+ * same JS realm instead of waiting for a storage round-trip.
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-interface LogEntry {
+export interface LogEntry {
   ts: number;
   level: LogLevel;
   msg: string;
@@ -24,13 +31,26 @@ const RING_SIZE = 100;
 const ring: LogEntry[] = [];
 let debugEnabled = false;
 let sentryInitialized = false;
+let globalHandlersInstalled = false;
 
 export function setDebugMode(enabled: boolean): void {
   debugEnabled = enabled;
 }
 
+export function isDebugModeEnabled(): boolean {
+  return debugEnabled;
+}
+
+export function isSentryActive(): boolean {
+  return sentryInitialized;
+}
+
 export function getRecentLogs(): LogEntry[] {
   return [...ring];
+}
+
+export function clearRecentLogs(): void {
+  ring.length = 0;
 }
 
 function push(entry: LogEntry): void {
@@ -110,7 +130,7 @@ export const log = {
  */
 export async function maybeInitSentry(opts: { enabled: boolean; dsn?: string; release?: string }): Promise<void> {
   if (!opts.enabled || sentryInitialized) return;
-  const dsn = opts.dsn ?? ((import.meta as any)?.env?.WXT_SENTRY_DSN as string | undefined);
+  const dsn = opts.dsn ?? resolveBuildTimeSentryDsn();
   if (!dsn) return;
   try {
     // Loaded dynamically + as a string literal so users who never opt in pay
@@ -136,4 +156,125 @@ export async function maybeInitSentry(opts: { enabled: boolean; dsn?: string; re
   } catch {
     /* offline / blocked -- swallow silently */
   }
+}
+
+/**
+ * Build-time DSN injected via `WXT_SENTRY_DSN`. Resolved at call
+ * time (not module init) so test environments can stub it via
+ * `vitest.config` defines. Returns `undefined` when not configured;
+ * `maybeInitSentry` short-circuits cleanly in that case, and the
+ * Settings UI hides the opt-in toggle entirely.
+ */
+export function resolveBuildTimeSentryDsn(): string | undefined {
+  const env = (import.meta as any)?.env;
+  if (env && typeof env.WXT_SENTRY_DSN === "string" && env.WXT_SENTRY_DSN.length > 0) {
+    return env.WXT_SENTRY_DSN as string;
+  }
+  return undefined;
+}
+
+/**
+ * True iff this build was compiled with a Sentry DSN. Surfaced to
+ * the Settings UI so we can hide the opt-in toggle in builds that
+ * physically cannot ship reports anywhere -- otherwise the toggle
+ * would look broken when it's actually doing exactly what it's told.
+ */
+export function isSentryAvailableForOptIn(): boolean {
+  return typeof resolveBuildTimeSentryDsn() === "string";
+}
+
+/**
+ * Bridge persisted Diagnostics state into the runtime log/Sentry
+ * machinery. Safe to call repeatedly:
+ *
+ *   - Debug-mode flips are a single assignment.
+ *   - Sentry opt-in initializes lazily; subsequent calls with
+ *     `sentryOptIn: true` are no-ops once initialized.
+ *   - Sentry opt-out flips `sentryInitialized = false` so future
+ *     errors stop being forwarded; the loaded SDK module stays in
+ *     memory (we can't unload it cleanly), but no events emit.
+ *
+ * Callers: `wallet-store.setDebugMode/setSentryOptIn` (immediate
+ * effect on the writing realm), popup `App.tsx` boot-time effect,
+ * background SW `syncDiagnosticsFromStorage` at module init + on
+ * storage-onChanged. All paths use the same args shape, so the
+ * contract stays one function.
+ */
+export function applyDiagnosticsRuntime(opts: {
+  debugMode: boolean;
+  sentryOptIn: boolean;
+  release?: string;
+}): void {
+  setDebugMode(!!opts.debugMode);
+
+  if (opts.sentryOptIn && isSentryAvailableForOptIn()) {
+    // Fire-and-forget: opt-in users tolerate a one-tick delay before
+    // captures actually leave the device. We don't await here so
+    // boot paths stay synchronous.
+    void maybeInitSentry({ enabled: true, release: opts.release });
+  } else if (!opts.sentryOptIn) {
+    // The user opted out (or never opted in). Stop forwarding.
+    sentryInitialized = false;
+  }
+}
+
+interface GlobalEventTargetLike {
+  addEventListener: (
+    type: string,
+    listener: (event: any) => void,
+    options?: { capture?: boolean },
+  ) => void;
+  removeEventListener: (
+    type: string,
+    listener: (event: any) => void,
+    options?: { capture?: boolean },
+  ) => void;
+}
+
+/**
+ * Wire `error` + `unhandledrejection` listeners on a global target
+ * (window in the popup, self in the SW) so uncaught exceptions reach
+ * `log.error` -- which is the only path that forwards to Sentry. Most
+ * code in the wallet calls `console.error` directly or just throws;
+ * without this hook, `sentryOptIn = true` would never see those.
+ *
+ * Idempotent across calls. Returns a teardown for tests.
+ */
+export function installGlobalErrorHandlers(target: GlobalEventTargetLike): () => void {
+  if (globalHandlersInstalled) return () => {};
+
+  const onError = (event: any) => {
+    // `ErrorEvent` carries the original Error in `event.error`; some
+    // synthetic events only have `message` + `filename` + `lineno`.
+    const err = event?.error ?? new Error(event?.message ?? "Uncaught error");
+    log.error("uncaught error", err);
+  };
+
+  const onRejection = (event: any) => {
+    const reason = event?.reason;
+    const err = reason instanceof Error ? reason : new Error(String(reason ?? "Unhandled rejection"));
+    log.error("unhandled promise rejection", err);
+  };
+
+  target.addEventListener("error", onError);
+  target.addEventListener("unhandledrejection", onRejection);
+  globalHandlersInstalled = true;
+
+  return () => {
+    target.removeEventListener("error", onError);
+    target.removeEventListener("unhandledrejection", onRejection);
+    globalHandlersInstalled = false;
+  };
+}
+
+/**
+ * Test-only reset. Wired through here rather than via direct module
+ * mutation so the test-private surface stays explicit.
+ */
+export function __resetForTests(): void {
+  ring.length = 0;
+  debugEnabled = false;
+  sentryInitialized = false;
+  globalHandlersInstalled = false;
+  delete (globalThis as any).Sentry;
 }
