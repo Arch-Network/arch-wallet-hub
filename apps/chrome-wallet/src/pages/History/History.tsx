@@ -1,7 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
-import { getIndexer } from "../../utils/indexer";
+import {
+  getIndexer,
+  isIndexerAuthError,
+  isIndexerNotFoundError,
+  isIndexerRateLimitError,
+} from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatArchId, truncateAddress, formatBtc, timestampToMs } from "../../utils/format";
@@ -71,6 +76,12 @@ function isAplTransaction(tx: any): boolean {
   return false;
 }
 
+type FetchBanner =
+  | { kind: "none" }
+  | { kind: "rate-limit"; chain: "btc" | "arch" }
+  | { kind: "auth"; chain: "btc" | "arch" }
+  | { kind: "other"; chain: "btc" | "arch"; message: string };
+
 export default function History() {
   const { activeAccount, state } = useWallet();
   const { price: btcUsd } = useBtcUsdPrice();
@@ -79,6 +90,12 @@ export default function History() {
   const [loading, setLoading] = useState(true);
   const [archPage, setArchPage] = useState(1);
   const [hasMoreArch, setHasMoreArch] = useState(false);
+  // Captured indexer error so we can render an inline banner rather
+  // than the misleading "No transactions yet" empty state when the
+  // fetch actually failed. We prefer BTC errors when both chains
+  // error in the same fetch, because the empty BTC list is the
+  // user-visible outcome and worth explaining.
+  const [banner, setBanner] = useState<FetchBanner>({ kind: "none" });
 
   const isTestnet = state.network === "testnet4";
   const archExplorer = isTestnet ? "https://explorer.arch.network/testnet/tx/" : "https://explorer.arch.network/mainnet/tx/";
@@ -87,9 +104,16 @@ export default function History() {
   const fetchTransactions = useCallback(async () => {
     if (!activeAccount) return;
     setLoading(true);
+    setBanner({ kind: "none" });
     try {
       const indexer = await getIndexer();
       const items: TxItem[] = [];
+      // Track per-chain errors so we can decide on a single banner
+      // at the end. We don't bail on the first failure: an Arch
+      // outage shouldn't hide the user's BTC history, and vice
+      // versa.
+      let archError: unknown = null;
+      let btcError: unknown = null;
       // archAddress may be empty for legacy accounts -- derive from pubkey
       // if needed. Falling back to btcAddress would just query a nonexistent
       // Arch account and silently return empty.
@@ -192,6 +216,7 @@ export default function History() {
           });
         }
       } catch (e: any) {
+        archError = e;
         console.warn("[History] Arch transaction fetch failed:", e?.message);
       }
       }
@@ -252,9 +277,34 @@ export default function History() {
             explorerUrl: `${btcExplorer}${txid}`,
           });
         }
-      } catch {
-        // btc txs may not be available
+      } catch (e: any) {
+        btcError = e;
+        console.warn("[History] BTC transaction fetch failed:", e?.message);
       }
+
+      // Pick one banner. BTC errors win on tie because the empty
+      // BTC list is what the user came here to see (and we already
+      // know from the bug report that silent BTC failures are the
+      // worst UX). 404 from the indexer is "no history yet", which
+      // is not an error -- skip it.
+      const decideBanner = (
+        err: unknown,
+        chain: "btc" | "arch",
+      ): FetchBanner | null => {
+        if (!err) return null;
+        if (isIndexerNotFoundError(err)) return null;
+        if (isIndexerRateLimitError(err)) {
+          return { kind: "rate-limit", chain };
+        }
+        if (isIndexerAuthError(err)) {
+          return { kind: "auth", chain };
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        return { kind: "other", chain, message };
+      };
+      const nextBanner =
+        decideBanner(btcError, "btc") ?? decideBanner(archError, "arch");
+      if (nextBanner) setBanner(nextBanner);
 
       items.sort((a, b) => {
         const aPending = a.status === "pending" || a.status === "unconfirmed";
@@ -267,8 +317,16 @@ export default function History() {
       });
 
       setTransactions(items);
-    } catch {
-      // ignore
+    } catch (e: any) {
+      // Failure here means getIndexer / outer setup threw -- typically
+      // a missing API key. Surface as an auth banner so the user knows
+      // where to look.
+      console.warn("[History] indexer client init failed:", e?.message);
+      setBanner({
+        kind: isIndexerAuthError(e) ? "auth" : "other",
+        chain: "btc",
+        message: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setLoading(false);
     }
@@ -299,6 +357,42 @@ export default function History() {
         </button>
       </div>
 
+      {banner.kind !== "none" && (
+        <div
+          className="card"
+          style={{
+            marginBottom: 10,
+            padding: 10,
+            background: "rgba(255,176,32,0.10)",
+            border: "1px solid rgba(255,176,32,0.30)",
+            fontSize: 12,
+          }}
+        >
+          {banner.kind === "rate-limit" ? (
+            <>
+              <strong>
+                {banner.chain === "btc" ? "Bitcoin" : "Arch"} indexer rate-limited.
+              </strong>{" "}
+              Your API key is sharing quota with too many callers. Update it in{" "}
+              <em>Settings → Show advanced settings → Indexer API</em> and try
+              again.
+            </>
+          ) : banner.kind === "auth" ? (
+            <>
+              <strong>Indexer rejected the API key.</strong> Set a valid key in{" "}
+              <em>Settings → Show advanced settings → Indexer API</em>.
+            </>
+          ) : (
+            <>
+              <strong>
+                Couldn&apos;t load {banner.chain === "btc" ? "Bitcoin" : "Arch"}{" "}
+                history.
+              </strong>{" "}
+              {banner.message}
+            </>
+          )}
+        </div>
+      )}
       {loading ? (
         <div className="spinner-center">
           <div className="spinner" />
@@ -306,7 +400,9 @@ export default function History() {
       ) : filtered.length === 0 ? (
         <div className="empty-state">
           <div className="empty-state-icon">📭</div>
-          <div>No transactions yet</div>
+          <div>
+            {banner.kind === "none" ? "No transactions yet" : "Nothing to show"}
+          </div>
         </div>
       ) : (
         <div className="card">

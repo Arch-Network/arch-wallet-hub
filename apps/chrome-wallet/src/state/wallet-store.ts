@@ -35,6 +35,27 @@ const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
  */
 const LEGACY_HUB_API_KEY = "D3DqTHT1JgTAzyYWiZmZ0KWjKJ-f_Tiilw_VtrW9Wog";
 const ROTATED_LEAKED_HUB_API_KEY = "OZfoD0ZJh6kQpd3Lr4TvLbnocS2g_eooZlQ7VEfbE4M";
+
+/**
+ * The Indexer API key shipped hardcoded in `explorer-config.ts` for
+ * extension builds v0.1.5 – v0.2.0 (commit fa31425 → f060c54). It
+ * was removed from source in May 2026 (f060c54) and rotated at the
+ * Indexer admin, but every install from that era still has the
+ * leaked value sitting in their encrypted wallet state. The
+ * lookup `state.indexerApiKey || DEFAULT_INDEXER_API_KEY` picks
+ * the persisted (leaked) one over the build-time (rotated) one,
+ * so those users now share a quota with every leaked-bundle in
+ * the wild and get rate-limited on basic reads (BTC history,
+ * Arch RPC, fee estimates).
+ *
+ * Mirroring the LEGACY_HUB_API_KEY / ROTATED_LEAKED_HUB_API_KEY
+ * pattern: we keep the literal here so the migration in
+ * migrateApiConfig can recognize and snap it forward to the
+ * current build-time default. Do not use this constant for any
+ * new requests.
+ */
+export const LEAKED_INDEXER_API_KEY =
+  "arch_live_28FvKem4QudQx0uczFunu4plqIo1rwWpiajtkrkj2PVhSllF";
 const INSTALL_ID_KEY = "arch_wallet_install_id";
 const HAS_RECOVERABLE_ACCOUNT_HINT_KEY = "arch_wallet_has_recoverable_account_hint";
 
@@ -128,7 +149,7 @@ async function savePlaintextState(state: AppState): Promise<void> {
  *   - hubBaseUrl/hubApiKey   -> Turnkey + signing-requests + custodial BTC
  *   - indexerBaseUrl/indexerApiKey -> Arch Explorer Indexer (reads, faucet, BTC, RPC)
  */
-function migrateApiConfig(state: any): boolean {
+export function migrateApiConfig(state: any): boolean {
   let migrated = false;
 
   if (state.apiBaseUrl !== undefined || state.apiKey !== undefined) {
@@ -170,6 +191,12 @@ function migrateApiConfig(state: any): boolean {
     migrated = true;
   }
   if (!state.indexerApiKey) {
+    state.indexerApiKey = DEFAULT_INDEXER_API_KEY;
+    migrated = true;
+  } else if (state.indexerApiKey === LEAKED_INDEXER_API_KEY) {
+    // Snap users off the v0.1.5–v0.2.0 hardcoded key that shipped
+    // publicly in the wild. Anyone still on it is sharing quota
+    // with every leaked bundle and seeing rate-limited reads.
     state.indexerApiKey = DEFAULT_INDEXER_API_KEY;
     migrated = true;
   }
