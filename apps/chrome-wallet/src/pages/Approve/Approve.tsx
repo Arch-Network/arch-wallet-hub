@@ -36,6 +36,7 @@ import {
   EmailSessionNeededError,
 } from "../../session/ensure-signing-session";
 import SessionBootstrapper from "../../session/SessionBootstrapper";
+import { assessOriginRisk } from "../../utils/phishing";
 
 interface RequestDetails {
   type: string;
@@ -870,12 +871,17 @@ export default function Approve() {
     );
   }
 
-  // Phase 2.2 risk hint: warn on first-touch sites that are immediately
-  // asking to sign something instead of just connect.
+  // Risk banner composition: phishing assessment first (any
+  // verdict beats the generic "new site" hint), then the original
+  // "new site requesting signature" hint as a softer fallback for
+  // first-touch sign requests that don't look phishy.
+  const phishingRisk = assessOriginRisk(request.origin);
   const risk =
-    request.type !== "CONNECT" && !isReturning
-      ? { level: "warn" as const, label: "New site requesting a signature. Verify the URL above." }
-      : undefined;
+    phishingRisk.reason !== "ok"
+      ? { level: phishingRisk.level, label: phishingRisk.label }
+      : request.type !== "CONNECT" && !isReturning
+        ? { level: "warn" as const, label: "New site requesting a signature. Verify the URL above." }
+        : undefined;
 
   return (
     <div className="approve-page" data-network={state.network}>

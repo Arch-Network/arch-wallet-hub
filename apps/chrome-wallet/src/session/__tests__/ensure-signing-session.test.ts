@@ -16,7 +16,7 @@ describe("EmailSessionNeededError", () => {
   const sampleAccount: WalletAccount = {
     id: "acct-1",
     label: "Mainnet email wallet",
-    kind: "internal",
+    kind: "turnkey",
     authMethod: "email",
     btcAddress: "bc1ptest",
     archAddress: "arch1test",
@@ -24,7 +24,8 @@ describe("EmailSessionNeededError", () => {
     organizationId: "org-1",
     turnkeyResourceId: "res-1",
     recoveryEmail: "user@example.com",
-  } as WalletAccount;
+    createdAt: 0,
+  };
 
   it("carries the account so the inline OTP gate can target it", () => {
     const err = new EmailSessionNeededError(sampleAccount);
