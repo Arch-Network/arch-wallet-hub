@@ -29,7 +29,7 @@ import {
   type PsbtSummary,
 } from "../../utils/psbt-summary";
 import { signerForAccount } from "../../signers/Signer";
-import { isExternalAccount, type NetworkId, type WalletAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import {
   ensureSigningSessionForAccount,
@@ -654,6 +654,14 @@ export default function Approve() {
 
   const handleApprove = useCallback(async () => {
     if (!request || !selectedAccount || !requestId) return;
+    // Defense in depth: the UI hides the Approve button for watch
+    // accounts, but the dapp could conceivably call APPROVE_REQUEST
+    // directly. Refuse here too so a UI bug can't produce a confusing
+    // session error from deeper in the signing path.
+    if (isWatchAccount(selectedAccount)) {
+      setError("Watch-only wallet — cannot sign or send transactions.");
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -876,12 +884,23 @@ export default function Approve() {
   // "new site requesting signature" hint as a softer fallback for
   // first-touch sign requests that don't look phishy.
   const phishingRisk = assessOriginRisk(request.origin);
+  // Watch-only takes precedence over the phishing assessment: the
+  // user can't sign with this account regardless of who's asking, so
+  // surfacing the phishing label on top would be noise.
+  const watchOnlyRisk =
+    selectedAccount && isWatchAccount(selectedAccount)
+      ? {
+          level: "warn" as const,
+          label: "Watch-only wallet — cannot sign or send transactions. Switch accounts to approve.",
+        }
+      : undefined;
   const risk =
-    phishingRisk.reason !== "ok"
+    watchOnlyRisk ??
+    (phishingRisk.reason !== "ok"
       ? { level: phishingRisk.level, label: phishingRisk.label }
       : request.type !== "CONNECT" && !isReturning
         ? { level: "warn" as const, label: "New site requesting a signature. Verify the URL above." }
-        : undefined;
+        : undefined);
 
   return (
     <div className="approve-page" data-network={state.network}>
@@ -992,7 +1011,7 @@ export default function Approve() {
 
       <div className="approve-footer">
         <button className="btn btn-secondary" onClick={handleReject} disabled={loading}>
-          Reject
+          {isWatchAccount(selectedAccount) ? "Close" : "Reject"}
         </button>
         <button
           className="btn btn-primary"
@@ -1000,6 +1019,10 @@ export default function Approve() {
           disabled={
             loading ||
             !selectedAccount ||
+            // Watch-only accounts have no signing key. Disable
+            // Approve outright; the in-card "Watch-only wallet" risk
+            // banner (rendered above) tells the user why.
+            isWatchAccount(selectedAccount) ||
             // SIGN_PSBT: decode must have succeeded; gate must not be
             // blocking; if a confirm checkbox is required it must be ticked.
             (request.type === "SIGN_PSBT" &&
@@ -1014,7 +1037,11 @@ export default function Approve() {
             (request.type === "SEND_TRANSFER" && archTransferGate?.state === "blocked")
           }
         >
-          {loading ? "Processing..." : "Approve"}
+          {loading
+            ? "Processing..."
+            : isWatchAccount(selectedAccount)
+              ? "Watch-only"
+              : "Approve"}
         </button>
       </div>
     </div>
