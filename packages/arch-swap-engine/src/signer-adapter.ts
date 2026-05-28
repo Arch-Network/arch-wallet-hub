@@ -1,39 +1,38 @@
 /**
  * Signer adapter -- bridges a wallet's `signArchMessageHash(messageHashHex)`
- * primitive (which is what we just proved works in the chrome-wallet spike)
- * to the `(challenge: string) => Promise<string>` callback shape arch-swap's
- * `transaction-runner.ts` consumes.
+ * primitive to the `(challenge: string) => Promise<string>` callback shape
+ * arch-swap's `transaction-runner.ts` consumes.
  *
- * The challenge plumbing
- * ----------------------
+ * Where the bytes come from
+ * -------------------------
  * arch-swap's `transaction-runner` does:
  *
- *     const hashBytes = SanitizedMessageUtil.hash(message);   // 32 raw bytes
- *     const challenge = new TextDecoder().decode(hashBytes);   // lossy UTF-8
- *     const rawSig = await signer(challenge);                  // wallet signs
- *     return SignatureUtil.adjustSignature(...);
+ *     const hashBytes = SanitizedMessageUtil.hash(message);
+ *     const challenge = new TextDecoder().decode(hashBytes);
+ *     const rawSig = await signer(challenge);
  *
- * On the verifier side, Arch reconstructs `messageHash` the same way and
- * re-encodes it as UTF-8 to recover bytes-the-wallet-saw. The round trip is
- * lossy for non-UTF-8 sequences (invalid bytes become \uFFFD), but both
- * sides do the same lossy dance so they agree on the byte sequence that
- * actually gets BIP-322 signed.
+ * In current `@saturnbtcio/arch-sdk`, `SanitizedMessageUtil.hash` already
+ * returns the UTF-8 encoding of a lowercase 64-char hex string (see
+ * `sanitized-message.ts` → `return new TextEncoder().encode(hex.encode(finalHash))`).
+ * `TextDecoder().decode` on that is therefore lossless: `challenge` IS the
+ * 64-char hex string.
  *
- * We replicate that here:
- *   1. Take the `challenge` string.
- *   2. Re-encode as UTF-8 to recover the byte sequence the verifier expects.
- *   3. Hand the hex of those bytes to the wallet's `signArchMessageHash`,
- *      which internally computes the BIP-322 taproot sighash and asks
- *      Turnkey to sign it.
- *   4. Wrap the resulting 64-byte Schnorr sig as a BIP-322 simple witness
- *      blob (base64), so arch-swap's `extractSignature` recovers it via
- *      its primary `getWalletWitnessSignatureItem` path.
+ * On the verifier side, Arch reproduces those same 64 UTF-8 bytes and
+ * BIP-322-verifies over them. The wallet's `signArchMessageHash` interprets
+ * `messageHashHex` as the hex string and passes it straight to bip322-js,
+ * which UTF-8-encodes it via `Buffer.from(message)` -- giving exactly the
+ * same 64 bytes the verifier signs over. So this adapter just forwards
+ * `challenge` unchanged.
  *
- * A cleaner long-term path: PR arch-swap to add a hex-based signer
- * signature `(hashHex: string) => Promise<string>` and skip step 2. The
- * adapter handles the call-site translation so the upgrade is a 1-line
- * change here. Until then, this works against the production code path
- * Xverse/UniSat already use.
+ * Historical note: an earlier version of this adapter double-encoded the
+ * challenge (hex(UTF-8(challenge)) → 128 chars) and relied on the wallet
+ * unwrapping via `hexToBytes` to recover the verifier's bytes. The wallet
+ * later switched to the canonical "treat messageHashHex as a string and
+ * UTF-8-encode it" convention used by `bip322-js.Signer.sign(wif, addr,
+ * hexString)`. After that switch, the double-encoded path BIP-322-signed
+ * the wrong byte length and Arch rejected the submission with
+ * `"BIP322 signature verification failed: Invalid signature"`. Passing the
+ * challenge through verbatim is what now matches the verifier.
  */
 
 import { Witness } from "@saturnbtcio/bip322-js";
@@ -42,22 +41,12 @@ import type { TransactionSigner } from "./lib/arch/transaction-runner";
 /**
  * Minimal interface the host wallet must implement. The chrome-wallet's
  * `Signer` (in `apps/chrome-wallet/src/signers/Signer.ts`) already satisfies
- * this -- it's the `signArchMessageHash` method we added during the spike.
+ * this. `messageHashHex` is the lowercase hex string of the message hash;
+ * the wallet UTF-8-encodes it for BIP-322 (the convention `bip322-js`'s
+ * `Signer.sign` and the on-chain Arch validator agree on).
  */
 export interface WalletDigestSigner {
-  /**
-   * Compute the BIP-322 SIGHASH_DEFAULT taproot sighash for the wallet's
-   * own Taproot address and the given 32-byte message hash (hex), sign that
-   * sighash with Turnkey, and return the 64-byte Schnorr signature as hex.
-   * Throws on user rejection / Turnkey failure.
-   */
   signArchMessageHash(opts: { messageHashHex: string }): Promise<{ signature64Hex: string }>;
-}
-
-function bytesToHex(bytes: Uint8Array): string {
-  let out = "";
-  for (const b of bytes) out += b.toString(16).padStart(2, "0");
-  return out;
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -72,10 +61,9 @@ function hexToBytes(hex: string): Uint8Array {
 
 export function makeSwapSigner(walletSigner: WalletDigestSigner): TransactionSigner {
   return async (challenge: string): Promise<string> => {
-    const messageHashBytes = new TextEncoder().encode(challenge);
-    const messageHashHex = bytesToHex(messageHashBytes);
-
-    const { signature64Hex } = await walletSigner.signArchMessageHash({ messageHashHex });
+    const { signature64Hex } = await walletSigner.signArchMessageHash({
+      messageHashHex: challenge,
+    });
     const schnorrSig = hexToBytes(signature64Hex);
     if (schnorrSig.length !== 64) {
       throw new Error(
