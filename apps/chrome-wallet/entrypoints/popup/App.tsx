@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { HashRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useWallet } from "../../src/hooks/useWallet";
 import { walletStore } from "../../src/state/wallet-store";
+import {
+  applyDiagnosticsRuntime,
+  installGlobalErrorHandlers,
+} from "../../src/utils/log";
 import Header from "../../src/components/Header";
 import ConnectionBanner from "../../src/components/ConnectionBanner";
 import NavBar from "../../src/components/NavBar";
@@ -177,6 +181,18 @@ function bodyClassForPath(pathname: string): string {
 
 function AppRoutes() {
   const { state, migration, activeAccount, loading, lock, unlock, refresh, setNetwork, sealLegacy } = useWallet();
+
+  // Diagnostics sync: mirror the persisted toggles into the runtime
+  // log module whenever they change. Effect captures the wallet
+  // state from the same hook the rest of the shell uses, so we
+  // don't double-poll storage.
+  useEffect(() => {
+    applyDiagnosticsRuntime({
+      debugMode: !!state.debugMode,
+      sentryOptIn: !!state.sentryOptIn,
+    });
+  }, [state.debugMode, state.sentryOptIn]);
+
   // Defer probing until the wallet is unlocked. Probing earlier reads the
   // locked-shell state (empty indexerApiKey), which causes the auth-gated
   // BTC fee-estimates endpoint to 401 and pin a spurious
@@ -291,6 +307,15 @@ function AppRoutes() {
 }
 
 export default function App() {
+  // Install global error/unhandled-rejection listeners once per popup
+  // realm so uncaught throws reach `log.error` (and Sentry, when opted
+  // in). Done in `App` rather than `AppRoutes` so the listeners don't
+  // re-install across route transitions.
+  useEffect(() => {
+    const teardown = installGlobalErrorHandlers(window);
+    return teardown;
+  }, []);
+
   return (
     <HashRouter>
       <AppRoutes />
