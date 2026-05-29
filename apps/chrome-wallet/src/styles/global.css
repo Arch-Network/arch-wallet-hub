@@ -345,6 +345,16 @@ a {
     gap: 18px;
   }
 
+  /* BTC row stacks vertically; the head supplies its own gap and the
+     breakdown its own margin, so cancel the row-level gap here. */
+  html[data-mode="sidepanel"] .asset-row.btc-row {
+    gap: 0;
+  }
+
+  html[data-mode="sidepanel"] .btc-row-head {
+    gap: 18px;
+  }
+
   html[data-mode="sidepanel"] .send-asset-row {
     gap: 14px;
   }
@@ -371,9 +381,12 @@ a {
     font-size: 13px;
   }
 
-  html[data-mode="sidepanel"] .asset-confirmed,
-  html[data-mode="sidepanel"] .asset-pending-line {
+  html[data-mode="sidepanel"] .btc-breakdown-label {
     font-size: 12px;
+  }
+
+  html[data-mode="sidepanel"] .btc-breakdown-value {
+    font-size: 13px;
   }
 
   /* Activity rows in the recent activity card */
@@ -1224,47 +1237,79 @@ a {
   color: var(--accent);
 }
 
-.asset-balance-breakdown {
+/*
+ * Bitcoin asset row. Unlike the other (single-line) asset rows, BTC
+ * carries a confirmed / pending / locked breakdown. To keep that
+ * legible we stack a headline row over a labeled breakdown block,
+ * separated by a hairline. Scoped to .btc-row so the shared
+ * .asset-* rows (Arch, runes, tokens) keep their compact layout.
+ */
+.asset-row.btc-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.btc-row-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btc-breakdown {
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
-  margin-top: 3px;
+  gap: 7px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(193, 154, 91, 0.08);
 }
 
-.asset-confirmed {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 500;
+.btc-breakdown-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.btc-breakdown-label {
+  font-size: 11px;
   color: var(--text-muted);
+  letter-spacing: 0.01em;
 }
 
-.asset-pending-line {
+.btc-breakdown-value {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.btc-breakdown-value.is-pending {
   font-weight: 600;
   animation: pulse-pending 2s ease-in-out infinite;
 }
 
-.asset-pending-line.incoming {
+.btc-breakdown-value.incoming {
   color: var(--success);
 }
 
-.asset-pending-line.outgoing {
+.btc-breakdown-value.outgoing {
   color: var(--warning);
 }
 
 /*
- * Subline showing sats locked in inscriptions / rune balances on
- * the BTC asset row. Muted color (less prominent than pending) to
- * avoid alarming users whose protected sats are intentional.
+ * Locked sats (inscriptions / rune balances). Muted, with a help
+ * cursor on the row to surface the tooltip explaining why these
+ * outputs are excluded from BTC sends.
  */
-.asset-protected-line {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 500;
-  color: var(--text-muted);
+.btc-breakdown-row.is-locked {
   cursor: help;
+}
+
+.btc-breakdown-row.is-locked .btc-breakdown-value {
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 /* ═══════════════════ Send Asset Picker ═══════════════════ */
