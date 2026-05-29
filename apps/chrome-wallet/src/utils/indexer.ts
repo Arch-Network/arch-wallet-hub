@@ -117,6 +117,30 @@ export interface BtcUtxoRune {
   [k: string]: unknown;
 }
 
+/**
+ * Aggregated rune balance for an address. `amount` is a decimal
+ * string carrying the raw u128 minor-unit value; pass through
+ * `formatRuneAmount(amount, divisibility)` for display.
+ *
+ * `symbol` is the rune's display glyph (Unicode), e.g. "\u29c9"
+ * for UNCOMMON\u2022GOODS. May be empty for runes without a
+ * configured symbol.
+ */
+export interface BtcAddressRuneBalance {
+  rune_id: string;
+  spaced_name: string;
+  amount: string;
+  divisibility: number;
+  symbol?: string;
+  [k: string]: unknown;
+}
+
+export interface BtcAddressRunesResponse {
+  address: string;
+  balances: BtcAddressRuneBalance[];
+  [k: string]: unknown;
+}
+
 export interface BtcUtxo {
   txid: string;
   vout: number;
@@ -345,6 +369,10 @@ export class ArchIndexerClient {
 
   getBtcAddressUtxos(btcAddress: string): Promise<BtcUtxo[]> {
     return this.getJson(`/bitcoin/address/${encodeURIComponent(btcAddress)}/utxo`);
+  }
+
+  getBtcAddressRunes(btcAddress: string): Promise<BtcAddressRunesResponse> {
+    return this.getJson(`/bitcoin/address/${encodeURIComponent(btcAddress)}/runes`);
   }
 
   getBtcAddressTxs(btcAddress: string, afterTxid?: string): Promise<Array<Record<string, unknown> | string>> {

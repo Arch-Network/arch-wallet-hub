@@ -3,7 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { useWideMode } from "../../hooks/useWideMode";
-import { getIndexer, isIndexerAuthError, isIndexerNotFoundError } from "../../utils/indexer";
+import {
+  getIndexer,
+  isIndexerAuthError,
+  isIndexerNotFoundError,
+  type BtcAddressRuneBalance
+} from "../../utils/indexer";
+import { formatRuneAmount, labelForRune } from "../../utils/runes-format";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
@@ -160,6 +166,10 @@ export default function Dashboard() {
   // mainnet during sync because the indexer omits protection fields
   // until it has the data.
   const [btcProtected, setBtcProtected] = useState<number>(0);
+  // Aggregated rune balances for the active BTC address. Populated
+  // by a best-effort fetch that runs alongside the wallet overview;
+  // null = still loading, [] = no runes (hides the section).
+  const [runes, setRunes] = useState<BtcAddressRuneBalance[] | null>(null);
   const [archLamports, setArchLamports] = useState<number | null>(null);
   const [archAddress, setArchAddress] = useState<string>("");
   const [tokens, setTokens] = useState<TokenBalance[] | null>(null);
@@ -207,6 +217,8 @@ export default function Dashboard() {
     if (!activeAccount) {
       setBtcBalance(0);
       setBtcPending(0);
+      setBtcProtected(0);
+      setRunes([]);
       setArchLamports(0);
       setTokens([]);
       setRecentTxs([]);
@@ -298,6 +310,16 @@ export default function Dashboard() {
       setArchLamports(lamports);
       setArchAddress(archAddr);
       setOverviewLoaded(true);
+
+      // Fetch aggregated rune balances in parallel with the rest of
+      // the overview. Failure is silent (sets []) because rune
+      // balances are an additive display surface -- if the indexer
+      // hiccups, the user still sees BTC/Arch/tokens correctly. The
+      // dashboard refresh interval will retry naturally.
+      indexer
+        .getBtcAddressRunes(btcAddrForNetwork)
+        .then((r) => setRunes(Array.isArray(r?.balances) ? r.balances : []))
+        .catch(() => setRunes([]));
 
       const btcTxItems: RecentTx[] = [];
       try {
@@ -428,6 +450,8 @@ export default function Dashboard() {
       console.warn("[Dashboard] load failed:", e?.message);
       setBtcBalance(0);
       setBtcPending(0);
+      setBtcProtected(0);
+      setRunes([]);
       setArchLamports(0);
       setTokens([]);
       setRecentTxs([]);
@@ -631,6 +655,37 @@ export default function Dashboard() {
           ) : (
             <SkeletonAssetRow />
           )}
+
+          {/*
+           * Rune balances. Bitcoin-native asset so they sit between
+           * the BTC row and the Arch row visually. Hidden entirely
+           * when the address has zero runes (most wallets), so the
+           * standard dashboard looks unchanged for non-rune users.
+           * `runes === null` is the "still loading" state -- we skip
+           * the skeleton because runes are optional decoration, not
+           * critical path; rendering a skeleton row for every BTC-
+           * only wallet would be visual noise.
+           */}
+          {runes && runes.length > 0 && runes.map((r) => (
+            <div className="asset-row" key={r.rune_id}>
+              <div
+                className="asset-icon apl"
+                title={r.spaced_name}
+              >
+                {r.symbol && r.symbol.trim().length > 0 ? r.symbol : "\u00A4"}
+              </div>
+              <div className="asset-info">
+                <div className="asset-name">{r.spaced_name}</div>
+                <div className="asset-sub">Rune</div>
+              </div>
+              <div
+                className="asset-balance"
+                title={labelForRune(r)}
+              >
+                {formatRuneAmount(r.amount, r.divisibility, { maxFractionDigits: 8 })}
+              </div>
+            </div>
+          ))}
 
           {balancesReady ? (
             <div className="asset-row">

@@ -32,6 +32,7 @@ import type {
   AccountSummary,
   AccountTokensResponse,
   AccountTransactionsResponse,
+  BtcAddressRunesResponse,
   BtcAddressSummary,
   BtcBlockResponse,
   BtcFeeEstimates,
@@ -236,6 +237,10 @@ export class ArchHubIndexerClient {
 
   getBtcAddressUtxos(btcAddress: string): Promise<BtcUtxo[]> {
     return this.getJson(`/btc/address/${encodeURIComponent(btcAddress)}/utxo`);
+  }
+
+  getBtcAddressRunes(btcAddress: string): Promise<BtcAddressRunesResponse> {
+    return this.getJson(`/btc/address/${encodeURIComponent(btcAddress)}/runes`);
   }
 
   getBtcAddressTxs(btcAddress: string, afterTxid?: string): Promise<Array<Record<string, unknown> | string>> {

@@ -32,6 +32,13 @@ export type IndexerClient = {
   getBtcAddressSummary(address: string): Promise<unknown>;
   getBtcAddressUtxos(address: string): Promise<unknown>;
   getBtcAddressTxs(address: string, afterTxid?: string): Promise<unknown>;
+  /**
+   * Aggregated rune balances for a Bitcoin address. Response shape:
+   * `{ address, balances: [{ amount, divisibility, rune_id, spaced_name, symbol }] }`.
+   * `amount` is a decimal-string (u128). Empty `balances` for addresses
+   * with no runes.
+   */
+  getBtcAddressRunes(address: string): Promise<unknown>;
   getBtcTransaction(txid: string): Promise<unknown>;
   getBtcTransactionStatus(txid: string): Promise<unknown>;
   broadcastBtcTransaction(rawTxHex: string): Promise<unknown>;
@@ -204,6 +211,8 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
     getBtcAddressUtxos: (address) => getJson(`/bitcoin/address/${enc(address)}/utxo`),
     getBtcAddressTxs: (address, afterTxid) =>
       getJson(`/bitcoin/address/${enc(address)}/txs${afterTxid ? `?after_txid=${enc(afterTxid)}` : ""}`),
+    getBtcAddressRunes: (address) =>
+      getJson(`/bitcoin/address/${enc(address)}/runes`),
     getBtcTransaction: (txid) => getJson(`/bitcoin/tx/${enc(txid)}`),
     getBtcTransactionStatus: (txid) => getJson(`/bitcoin/tx/${enc(txid)}/status`),
     broadcastBtcTransaction: (rawTxHex) => postText("/bitcoin/tx", rawTxHex),
