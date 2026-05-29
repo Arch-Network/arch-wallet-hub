@@ -72,6 +72,18 @@ function IconSwap({ active }: NavIconProps) {
   );
 }
 
+function IconCollectibles({ active }: NavIconProps) {
+  const s = active ? "#c19a5b" : "currentColor";
+  const f = active ? "rgba(193,154,91,0.15)" : "none";
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+      <rect x="3" y="3" width="18" height="18" rx="2.5" fill={f} stroke={s} strokeWidth="1.5" />
+      <circle cx="8.5" cy="8.5" r="1.6" fill={s} />
+      <path d="M21 16l-5-5L5 21" stroke={s} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export interface NavItem {
   path: string;
   label: string;
@@ -101,6 +113,7 @@ export const SIDE_NAV_ITEMS: NavItem[] = [
   { path: "/send", label: "Send", Icon: IconSend },
   { path: "/receive", label: "Receive", Icon: IconReceive },
   { path: "/swap", label: "Swap", Icon: IconSwap },
+  { path: "/collectibles", label: "Collectibles", Icon: IconCollectibles },
   { path: "/history", label: "Activity", Icon: IconHistory },
   { path: "/settings", label: "Settings", Icon: IconSettings },
 ];
