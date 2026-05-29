@@ -16,6 +16,7 @@ import AddWatch from "../../src/pages/AddWatch/AddWatch";
 import Unlock from "../../src/pages/Unlock/Unlock";
 import Dashboard from "../../src/pages/Dashboard/Dashboard";
 import Send from "../../src/pages/Send/Send";
+import SendRune from "../../src/pages/SendRune/SendRune";
 import Receive from "../../src/pages/Receive/Receive";
 import History from "../../src/pages/History/History";
 import TokenList from "../../src/pages/TokenList/TokenList";
@@ -295,6 +296,7 @@ function AppRoutes() {
           <Routes>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/send" element={<Send networkStatus={networkStatus} />} />
+            <Route path="/send-rune/:runeId" element={<SendRune />} />
             <Route path="/receive" element={<Receive />} />
             <Route path="/history" element={<History />} />
             <Route path="/tokens" element={<TokenList />} />

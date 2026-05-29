@@ -82,6 +82,54 @@ export function formatRuneAmount(
 }
 
 /**
+ * Parse a human-entered rune amount string into the minor-unit
+ * u128 BigInt the runestone encoder + coin selector expect.
+ *
+ * Examples (divisibility=8):
+ *   parseRuneAmount("1.5", 8)         -> 150_000_000n
+ *   parseRuneAmount("1.50000000", 8)  -> 150_000_000n
+ *   parseRuneAmount("0.00000001", 8)  -> 1n
+ *   parseRuneAmount("100", 0)         -> 100n
+ *
+ * Returns `null` for invalid / ambiguous input rather than throwing,
+ * so a form field can drive validation off this without try/catch:
+ *
+ *   - Empty string: null (caller treats as "nothing to send yet")
+ *   - Non-numeric characters: null
+ *   - More fractional digits than `divisibility`: null (would lose
+ *     precision; better to reject explicitly than silently truncate)
+ *   - Negative: null
+ *
+ * The CRITICAL invariant: a successful parse always round-trips
+ * exactly through formatRuneAmount with the same divisibility.
+ */
+export function parseRuneAmount(input: string, divisibility: number): bigint | null {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return null;
+  // Whole-number-only fast path; also catches "0".
+  if (/^\d+$/.test(trimmed)) {
+    const whole = BigInt(trimmed);
+    const div = Math.max(0, Math.floor(divisibility));
+    return whole * (10n ** BigInt(div));
+  }
+  // Decimal form: required to look like \d+\.\d+ (no leading dot,
+  // no trailing dot, no scientific notation). Reject anything else
+  // -- a wallet send page shouldn't be guessing at "1.5e3".
+  const m = /^(\d+)\.(\d+)$/.exec(trimmed);
+  if (!m) return null;
+  const wholePart = m[1]!;
+  const fracPart = m[2]!;
+  const div = Math.max(0, Math.floor(divisibility));
+  if (fracPart.length > div) return null; // would lose precision
+  const padded = fracPart.padEnd(div, "0");
+  try {
+    return BigInt(wholePart) * (10n ** BigInt(div)) + BigInt(padded);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Compact display label that combines symbol + spaced name. The
  * indexer's `symbol` is an optional Unicode glyph; we fall back to
  * the first letter of the spaced_name when missing.
