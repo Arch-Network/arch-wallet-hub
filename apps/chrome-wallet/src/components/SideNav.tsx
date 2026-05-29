@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router-dom";
-import { NAV_ITEMS } from "./nav-items";
+import { SIDE_NAV_ITEMS } from "./nav-items";
 import type { NetworkId } from "../state/types";
 import { APP_VERSION } from "../utils/version";
 
@@ -26,7 +26,7 @@ export default function SideNav({ network }: SideNavProps) {
         </div>
       </div>
 
-      {NAV_ITEMS.map((item) => {
+      {SIDE_NAV_ITEMS.map((item) => {
         const isActive = location.pathname === item.path;
         return (
           <button

@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router-dom";
-import { NAV_ITEMS } from "./nav-items";
+import { POPUP_NAV_ITEMS } from "./nav-items";
 
 export default function NavBar() {
   const navigate = useNavigate();
@@ -7,7 +7,7 @@ export default function NavBar() {
 
   return (
     <nav className="app-nav">
-      {NAV_ITEMS.map((item) => {
+      {POPUP_NAV_ITEMS.map((item) => {
         const isActive = location.pathname === item.path;
         return (
           <button
