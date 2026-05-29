@@ -141,6 +141,43 @@ export interface BtcAddressRunesResponse {
   [k: string]: unknown;
 }
 
+/**
+ * Per-inscription summary as returned by the per-address list.
+ * Has the full set of fields needed to render a gallery thumbnail
+ * (content_type, content_length, satpoint, id) without a second
+ * per-inscription fetch.
+ */
+export interface BtcInscriptionSummary {
+  id: string;
+  number?: number;
+  content_type: string;
+  content_length: number;
+  satpoint?: string;
+  owner?: string;
+  genesis_height?: number;
+  genesis_fee?: number;
+  [k: string]: unknown;
+}
+
+export interface BtcAddressInscriptionsResponse {
+  inscriptions: BtcInscriptionSummary[];
+  next_cursor: string | null;
+  page_index?: number;
+  page_size?: number;
+  [k: string]: unknown;
+}
+
+/**
+ * Result of fetching inscription binary content. `body` is the
+ * raw bytes (suitable for wrapping in a Blob); `contentType` is
+ * the MIME the wallet should use when rendering.
+ */
+export interface BtcInscriptionContent {
+  body: ArrayBuffer;
+  contentType: string;
+  contentLength?: number;
+}
+
 export interface BtcUtxo {
   txid: string;
   vout: number;
@@ -373,6 +410,49 @@ export class ArchIndexerClient {
 
   getBtcAddressRunes(btcAddress: string): Promise<BtcAddressRunesResponse> {
     return this.getJson(`/bitcoin/address/${encodeURIComponent(btcAddress)}/runes`);
+  }
+
+  getBtcAddressInscriptions(
+    btcAddress: string,
+    cursor?: string
+  ): Promise<BtcAddressInscriptionsResponse> {
+    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.getJson(
+      `/bitcoin/address/${encodeURIComponent(btcAddress)}/inscriptions${suffix}`
+    );
+  }
+
+  getBtcInscription(id: string): Promise<BtcInscriptionSummary> {
+    return this.getJson(`/bitcoin/inscriptions/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * Fetch inscription binary content with the wallet's auth path.
+   * Returns ArrayBuffer + content-type so callers (Dashboard
+   * thumbnail) can wrap in a Blob and create a single per-id
+   * object URL. The Hub forwards ord's `cache-control: immutable`
+   * header, so a service worker / disk cache will short-circuit
+   * repeat loads of the same id without hitting the indexer.
+   */
+  async getBtcInscriptionContent(id: string): Promise<BtcInscriptionContent> {
+    this.assertAuthAvailable();
+    const url = this.url(`/bitcoin/inscriptions/${encodeURIComponent(id)}/content`);
+    const res = await this.fetchImpl(url, { headers: this.headers() });
+    if (res.status === 401 || res.status === 403) {
+      this.rememberAuthFailure();
+      throw new IndexerApiKeyRejectedError();
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Indexer error ${res.status} ${res.statusText}: ${text}`);
+    }
+    const body = await res.arrayBuffer();
+    const lenHeader = res.headers.get("content-length");
+    return {
+      body,
+      contentType: res.headers.get("content-type") ?? "application/octet-stream",
+      contentLength: lenHeader ? Number(lenHeader) : undefined
+    };
   }
 
   getBtcAddressTxs(btcAddress: string, afterTxid?: string): Promise<Array<Record<string, unknown> | string>> {

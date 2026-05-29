@@ -32,10 +32,13 @@ import type {
   AccountSummary,
   AccountTokensResponse,
   AccountTransactionsResponse,
+  BtcAddressInscriptionsResponse,
   BtcAddressRunesResponse,
   BtcAddressSummary,
   BtcBlockResponse,
   BtcFeeEstimates,
+  BtcInscriptionContent,
+  BtcInscriptionSummary,
   BtcUtxo,
   IndexerNetwork
 } from "./indexer";
@@ -241,6 +244,39 @@ export class ArchHubIndexerClient {
 
   getBtcAddressRunes(btcAddress: string): Promise<BtcAddressRunesResponse> {
     return this.getJson(`/btc/address/${encodeURIComponent(btcAddress)}/runes`);
+  }
+
+  getBtcAddressInscriptions(
+    btcAddress: string,
+    cursor?: string
+  ): Promise<BtcAddressInscriptionsResponse> {
+    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return this.getJson(
+      `/btc/address/${encodeURIComponent(btcAddress)}/inscriptions${suffix}`
+    );
+  }
+
+  getBtcInscription(id: string): Promise<BtcInscriptionSummary> {
+    return this.getJson(`/btc/inscriptions/${encodeURIComponent(id)}`);
+  }
+
+  async getBtcInscriptionContent(id: string): Promise<BtcInscriptionContent> {
+    // Same auth path as the JSON methods, but the response body is
+    // binary -- we hand the ArrayBuffer back unwrapped so the caller
+    // can build a Blob + object URL once per inscription id.
+    const url = this.url(`/btc/inscriptions/${encodeURIComponent(id)}/content`);
+    const res = await this.fetchImpl(url, { headers: this.headers() });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Hub inscription content error ${res.status}: ${text}`);
+    }
+    const body = await res.arrayBuffer();
+    const lenHeader = res.headers.get("content-length");
+    return {
+      body,
+      contentType: res.headers.get("content-type") ?? "application/octet-stream",
+      contentLength: lenHeader ? Number(lenHeader) : undefined
+    };
   }
 
   getBtcAddressTxs(btcAddress: string, afterTxid?: string): Promise<Array<Record<string, unknown> | string>> {
