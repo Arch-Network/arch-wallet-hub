@@ -19,6 +19,7 @@ import Send from "../../src/pages/Send/Send";
 import SendRune from "../../src/pages/SendRune/SendRune";
 import Receive from "../../src/pages/Receive/Receive";
 import History from "../../src/pages/History/History";
+import Collectibles from "../../src/pages/Collectibles/Collectibles";
 import TokenList from "../../src/pages/TokenList/TokenList";
 import TokenDetail from "../../src/pages/TokenDetail/TokenDetail";
 import Approve from "../../src/pages/Approve/Approve";
@@ -35,6 +36,7 @@ const VALID_ROUTES = [
   "/send",
   "/receive",
   "/history",
+  "/collectibles",
   "/tokens",
   "/swap",
   "/settings",
@@ -173,6 +175,7 @@ function bodyClassForPath(pathname: string): string {
   if (pathname === "/send") return "app-body app-body-wide";
   if (pathname === "/receive") return "app-body app-body-narrow";
   if (pathname.startsWith("/tokens/")) return "app-body app-body-wide";
+  if (pathname === "/collectibles") return "app-body app-body-wide";
   if (pathname === "/swap") return "app-body app-body-medium";
   if (
     pathname === "/settings" ||
@@ -299,6 +302,7 @@ function AppRoutes() {
             <Route path="/send-rune/:runeId" element={<SendRune />} />
             <Route path="/receive" element={<Receive />} />
             <Route path="/history" element={<History />} />
+            <Route path="/collectibles" element={<Collectibles />} />
             <Route path="/tokens" element={<TokenList />} />
             <Route path="/tokens/:mint" element={<TokenDetail />} />
             <Route path="/swap" element={<Swap />} />

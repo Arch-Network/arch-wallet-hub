@@ -1002,6 +1002,167 @@ a {
   flex-shrink: 0;
 }
 
+/* Dashboard Ordinals row is a tap-through into the Collectibles
+   page. The chevron telegraphs that; hover tints like other
+   clickable asset rows. */
+.inscription-gallery-row.clickable {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+
+.inscription-gallery-row.clickable:hover {
+  background: rgba(193, 154, 91, 0.06);
+}
+
+.inscription-gallery-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ═══════════════════ Collectibles page ═══════════════════ */
+
+.collectibles-page {
+  position: relative;
+}
+
+/* Wide side panel splits gallery (left) + sticky detail pane (right).
+   Compact stays single-column and opens detail as a sheet instead. */
+.collectibles-layout.is-wide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 18px;
+  align-items: start;
+}
+
+.collectibles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+.collectibles-layout.is-wide .collectibles-detail-pane {
+  position: sticky;
+  top: 0;
+}
+
+.collectible-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  text-align: center;
+}
+
+.collectible-card:hover {
+  border-color: var(--accent);
+  background: rgba(193, 154, 91, 0.06);
+}
+
+.collectible-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.collectible-card-thumb {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.collectible-card-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* Detail -- shared by the wide pane and the compact sheet. */
+.collectible-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.collectible-detail-preview {
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+}
+
+.collectible-detail-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.collectible-detail-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.collectible-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.collectible-detail-key {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.collectible-detail-val {
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  text-align: right;
+  word-break: break-word;
+}
+
+.collectible-detail-val.mono {
+  font-family: var(--font-mono);
+}
+
+.collectible-detail-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.empty-state-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.empty-state-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .asset-icon {
   width: 36px;
   height: 36px;

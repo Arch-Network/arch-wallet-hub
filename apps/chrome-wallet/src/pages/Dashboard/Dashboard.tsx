@@ -830,7 +830,11 @@ export default function Dashboard() {
         <div className="section">
           <div className="section-title">Ordinals</div>
           <div className="card">
-            <div className="inscription-gallery-row">
+            <div
+              className="inscription-gallery-row clickable"
+              onClick={() => navigate("/collectibles")}
+              title="View all collectibles"
+            >
               <div className="inscription-gallery-meta">
                 <div className="asset-name">
                   {inscriptions.length === 1
@@ -840,7 +844,7 @@ export default function Dashboard() {
                 <div className="asset-sub">Ordinal inscriptions</div>
               </div>
               <div className="inscription-gallery-thumbs">
-                {inscriptions.slice(0, 6).map((insc) => (
+                {inscriptions.slice(0, 5).map((insc) => (
                   <InscriptionThumb
                     key={insc.id}
                     indexer={thumbIndexer}
@@ -848,15 +852,22 @@ export default function Dashboard() {
                     size={36}
                   />
                 ))}
-                {inscriptions.length > 6 && (
+                {inscriptions.length > 5 && (
                   <div
                     className="inscription-gallery-more"
-                    title={`+${inscriptions.length - 6} more inscriptions`}
+                    title={`+${inscriptions.length - 5} more inscriptions`}
                   >
-                    +{inscriptions.length - 6}
+                    +{inscriptions.length - 5}
                   </div>
                 )}
               </div>
+              <svg
+                className="inscription-gallery-chevron"
+                width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              >
+                <polyline points="9 18 15 12 9 6" />
+              </svg>
             </div>
           </div>
         </div>
