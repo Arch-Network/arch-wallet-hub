@@ -7,7 +7,7 @@
  * end-to-end across realistic and adversarial inputs.
  */
 import { describe, it, expect } from "vitest";
-import { formatRuneAmount, labelForRune } from "../runes-format";
+import { formatRuneAmount, labelForRune, parseRuneAmount } from "../runes-format";
 
 describe("formatRuneAmount — small / common cases", () => {
   it("returns integer amounts verbatim when divisibility is 0", () => {
@@ -106,6 +106,63 @@ describe("formatRuneAmount — defensive / parse-failure cases", () => {
 
   it("clamps negative divisibility to 0", () => {
     expect(formatRuneAmount("100", -2)).toBe("100");
+  });
+});
+
+describe("parseRuneAmount (reverse of formatRuneAmount)", () => {
+  it("parses whole numbers at any divisibility", () => {
+    expect(parseRuneAmount("100", 0)).toBe(100n);
+    expect(parseRuneAmount("100", 8)).toBe(10_000_000_000n);
+    expect(parseRuneAmount("0", 8)).toBe(0n);
+  });
+
+  it("parses decimal amounts within divisibility", () => {
+    expect(parseRuneAmount("1.5", 8)).toBe(150_000_000n);
+    expect(parseRuneAmount("0.00000001", 8)).toBe(1n);
+    expect(parseRuneAmount("12345.6789", 4)).toBe(123_456_789n);
+  });
+
+  it("accepts amounts with explicit trailing zeros", () => {
+    expect(parseRuneAmount("1.50000000", 8)).toBe(150_000_000n);
+  });
+
+  it("REJECTS amounts with more fractional digits than divisibility", () => {
+    // 0.9 with div=0 would silently round to 1n; refusing keeps
+    // the user from accidentally sending a different amount.
+    expect(parseRuneAmount("0.9", 0)).toBeNull();
+    expect(parseRuneAmount("1.123456789", 8)).toBeNull();
+  });
+
+  it("REJECTS malformed shapes", () => {
+    expect(parseRuneAmount("", 8)).toBeNull();
+    expect(parseRuneAmount("abc", 8)).toBeNull();
+    expect(parseRuneAmount("1.5e3", 8)).toBeNull();
+    expect(parseRuneAmount(".5", 8)).toBeNull();
+    expect(parseRuneAmount("1.", 8)).toBeNull();
+    expect(parseRuneAmount("-1", 0)).toBeNull();
+    expect(parseRuneAmount("1.5.6", 8)).toBeNull();
+  });
+
+  it("handles u128-max values without precision loss", () => {
+    const u128Max = (1n << 128n) - 1n;
+    expect(parseRuneAmount(u128Max.toString(), 0)).toBe(u128Max);
+  });
+
+  it("round-trips through formatRuneAmount for representative values", () => {
+    // formatRuneAmount strips trailing zeros, so the round-trip
+    // output is the canonical form (input may have extra zeros).
+    const cases: Array<[string, number, string]> = [
+      ["100", 0, "100"],
+      ["1.5", 8, "1.5"],
+      ["1.50000000", 8, "1.5"],
+      ["0.00000001", 8, "0.00000001"],
+      ["12345.6789", 4, "12345.6789"]
+    ];
+    for (const [input, div, expected] of cases) {
+      const minor = parseRuneAmount(input, div);
+      expect(minor).not.toBeNull();
+      expect(formatRuneAmount(minor!.toString(), div)).toBe(expected);
+    }
   });
 });
 

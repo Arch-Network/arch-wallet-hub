@@ -758,11 +758,14 @@ export default function Dashboard() {
            * only wallet would be visual noise.
            */}
           {runes && runes.length > 0 && runes.map((r) => (
-            <div className="asset-row" key={r.rune_id}>
-              <div
-                className="asset-icon apl"
-                title={r.spaced_name}
-              >
+            <div
+              className="asset-row"
+              key={r.rune_id}
+              onClick={() => navigate(`/send-rune/${encodeURIComponent(r.rune_id)}`)}
+              style={{ cursor: "pointer" }}
+              title={`Send ${r.spaced_name}`}
+            >
+              <div className="asset-icon apl">
                 {r.symbol && r.symbol.trim().length > 0 ? r.symbol : "\u00A4"}
               </div>
               <div className="asset-info">
