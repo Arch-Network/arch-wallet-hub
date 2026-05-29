@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import * as bitcoin from "bitcoinjs-lib";
 import { signerForAccount } from "../../signers/Signer";
@@ -36,6 +36,11 @@ import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, t
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { walletStore } from "../../state/wallet-store";
+import {
+  clearSendForm,
+  loadSendForm,
+  saveSendForm,
+} from "../../state/send-form-session";
 import { isExternalAccount, isWatchAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import ArchIcon from "../../components/ArchIcon";
@@ -256,6 +261,90 @@ export default function Send({ networkStatus }: SendProps) {
     loadBalances();
     return () => clearTimeout(timeout);
   }, [activeAccount, state.network]);
+
+  // ── Form-state persistence (chrome.storage.session) ───────────
+  //
+  // MV3 popups unmount on focus loss; without persistence the user
+  // loses every keystroke when they click out to grab a recipient
+  // address from another app. Restore once on mount when there's
+  // no explicit deep-link / preset URL param taking priority.
+  const formRestoredRef = useRef(false);
+  useEffect(() => {
+    if (formRestoredRef.current) return;
+    if (!activeAccount) return;
+    // Explicit deep-links win -- the user just clicked a "Send
+    // ARCH" link from Token Detail, that intent supersedes a parked
+    // form.
+    if (presetAsset) return;
+    formRestoredRef.current = true;
+    (async () => {
+      const ck = await loadSendForm({
+        kind: "btc-arch-apl",
+        accountId: activeAccount.id,
+        network: state.network,
+      });
+      if (!ck || ck.form.kind !== "btc-arch-apl") return;
+      const f = ck.form;
+      // Validate the persisted asset before applying -- defensive
+      // against schema drift / future asset additions.
+      if (f.asset === "btc" || f.asset === "arch" || f.asset === "apl") {
+        setAsset(f.asset as AssetType);
+        setRecipient(f.recipient);
+        setAmount(f.amount);
+        // APL token selection is two-phase: stash the mint here,
+        // a separate effect (below) resolves it against tokensHeld
+        // once that list finishes loading.
+        pendingTokenMintRef.current = f.asset === "apl" ? f.selectedTokenMint : null;
+        setStep(2);
+      }
+    })();
+  }, [activeAccount, presetAsset, state.network]);
+
+  // Phase 2 of the restore: tokensHeld loads async; once it does,
+  // resolve the persisted APL mint to its TokenHolding so the form
+  // shows the right token chip + balance.
+  const pendingTokenMintRef = useRef<string | null>(null);
+  useEffect(() => {
+    const mint = pendingTokenMintRef.current;
+    if (!mint || !tokensHeld.length) return;
+    const match = tokensHeld.find((t) => t.mint === mint);
+    if (match) setSelectedToken(match);
+    pendingTokenMintRef.current = null;
+  }, [tokensHeld]);
+
+  // Save the form whenever its restorable fields change. We only
+  // persist during the data-entry step (2) -- saving while on the
+  // asset-picker (step 1) would store an empty form, and saving on
+  // Review (3) / Complete (4) risks restoring to a state with a
+  // stale prepared PSBT.
+  useEffect(() => {
+    if (!activeAccount) return;
+    if (step !== 2) return;
+    // Empty form isn't worth persisting -- avoids stomping a
+    // legitimate parked form when the user briefly bounces to /send
+    // and back.
+    if (!asset && !recipient && !amount) return;
+    void saveSendForm({
+      form: {
+        kind: "btc-arch-apl",
+        asset: asset ?? null,
+        selectedTokenMint: selectedToken?.mint ?? null,
+        recipient,
+        amount,
+      },
+      accountId: activeAccount.id,
+      network: state.network,
+    });
+  }, [step, asset, selectedToken, recipient, amount, activeAccount, state.network]);
+
+  // Drop the parked form once a transaction broadcasts. We don't
+  // want a successful send to leave its inputs lingering and
+  // auto-fill them into the next send.
+  useEffect(() => {
+    if (step === 4) {
+      void clearSendForm();
+    }
+  }, [step]);
 
   // Apply preset asset/mint once (deep link from Token Detail). Only triggers
   // on step 1 so we don't yank the user out of a flow they started.
@@ -634,6 +723,10 @@ export default function Send({ networkStatus }: SendProps) {
     setError("");
     setTxResult(null);
     setBtcPrepare(null);
+    // The form has been intentionally reset -- drop any parked
+    // checkpoint so reopening the popup lands on the asset-picker
+    // instead of restoring stale fields.
+    void clearSendForm();
   }, []);
 
   const isTestnet = state.network === "testnet4";
