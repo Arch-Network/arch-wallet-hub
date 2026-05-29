@@ -11,6 +11,7 @@ import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatArchId, truncateAddress, formatBtc, timestampToMs } from "../../utils/format";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
+import { txHasRunestone } from "../../utils/btc-tx-classify";
 import { summarizeArchTx } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
@@ -230,7 +231,27 @@ export default function History() {
 
         const fullTxs = await Promise.all(
           rawList.map(async (entry) => {
-            if (typeof entry === "object" && entry !== null && (entry as any).txid) return entry as any;
+            // The address-level listing returns either a bare txid
+            // string OR a minimal `{txid, status?}` object for
+            // mempool entries (no `vin`/`vout`/`input`/`output`).
+            // The minimal shape causes `parseBtcTx` to bail out to
+            // direction=unknown and produce the unhelpful "BTC
+            // Transaction" row with no amount. Re-fetch whenever
+            // the entry doesn't already carry input/output arrays.
+            if (typeof entry === "object" && entry !== null && (entry as any).txid) {
+              const obj = entry as any;
+              const hasIO =
+                Array.isArray(obj.vin) ||
+                Array.isArray(obj.vout) ||
+                Array.isArray(obj.input) ||
+                Array.isArray(obj.output);
+              if (hasIO) return obj;
+              try {
+                return await indexer.getBtcTransaction(obj.txid);
+              } catch {
+                return obj;
+              }
+            }
             const txid = typeof entry === "string" ? entry : null;
             if (!txid) return null;
             try {
@@ -255,23 +276,54 @@ export default function History() {
             typeof statusObj === "object" && statusObj !== null
               ? Boolean(statusObj.confirmed)
               : false;
-          const timeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
+          const rawTimeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
+          // Clamp display timestamps to <= now. The indexer
+          // occasionally returns a mempool/block timestamp that's
+          // ahead of the user's local clock (Bitcoin block-time
+          // anti-malleability slack tolerates up to +2h, and some
+          // mempool views surface the next-block projection); a
+          // "12:26 PM" stamp on a tx that broadcast at 11:44 AM is
+          // confusing and looks broken. Never display a future
+          // moment for a transaction that has actually happened.
+          const nowMs = Date.now();
+          const timeMs = rawTimeMs != null && rawTimeMs > nowMs ? nowMs : rawTimeMs;
 
-          const btcLabel =
-            direction === "in" ? "Received BTC"
+          // Rune transfers are BTC txs with an OP_RETURN OP_13
+          // runestone output. Without this check they fall through
+          // to "BTC Transaction" because parseBtcTx doesn't know
+          // about runestones. Detect locally (no extra round-trip)
+          // and surface a useful label. Specific rune metadata
+          // (which rune, amount) is a follow-up that consumes the
+          // `/bitcoin/address/:a/rune-transactions` endpoint.
+          const isRune = txHasRunestone(tx);
+
+          const btcLabel = isRune
+            ? direction === "in" ? "Received Rune"
+            : direction === "out" ? "Sent Rune"
+            : "Rune Transfer"
+            : direction === "in" ? "Received BTC"
             : direction === "out" ? "Sent BTC"
             : direction === "self" ? "BTC Consolidation"
             : "BTC Transaction";
           const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
+          // For rune transfers the BTC net debit is just dust +
+          // fee (~1500-2500 sats); showing it as "-0.00001233 BTC"
+          // is technically true but misleads -- the user moved a
+          // RUNE, not a meaningful BTC amount. Suppress the BTC
+          // amount on rune rows entirely. The proper rune amount
+          // (X UNCOMMON•GOODS) ships in the follow-up PR that
+          // joins this row against `/bitcoin/address/:a/rune-
+          // transactions`.
+          const showAmount = !isRune && amountSats > 0;
           items.push({
             txid,
             displayTxid: truncateAddress(txid, 8),
             type: "btc",
             direction,
             label: btcLabel,
-            amountLabel: amountSats > 0 ? `${sign}${formatBtc(amountSats)}` : undefined,
-            amountSats: amountSats > 0 ? amountSats : undefined,
-            sats: amountSats > 0 ? amountSats : undefined,
+            amountLabel: showAmount ? `${sign}${formatBtc(amountSats)}` : undefined,
+            amountSats: showAmount ? amountSats : undefined,
+            sats: showAmount ? amountSats : undefined,
             timestamp: timeMs != null ? String(timeMs) : "",
             status: isConfirmed ? "confirmed" : "pending",
             explorerUrl: `${btcExplorer}${txid}`,
