@@ -712,6 +712,26 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
   );
 
   server.get(
+    "/indexer/btc/address/:address/runes",
+    {
+      schema: {
+        summary: "BTC address aggregated rune balances (proxied)",
+        tags: ["indexer"],
+        params: AddressParam,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { address } = request.params as { address: string };
+      const result = await forward(reply, () =>
+        indexer.getBtcAddressRunes(address),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
     "/indexer/btc/address/:address/txs",
     {
       schema: {
