@@ -661,8 +661,12 @@ export default function Dashboard() {
           single column on narrow viewports and splits side-by-side on
           wide side panels (>= 880px). */}
       <div className="dashboard-grid">
+      <div className="dashboard-assets-col">
+
+      {/* Bitcoin -- the hero asset. Always shown, even for a brand-new
+          BTC-only wallet. */}
       <div className="section">
-        <div className="section-title">Portfolio</div>
+        <div className="section-title">Bitcoin</div>
         <div className="card">
           {balancesReady ? (
             <div className={`asset-row ${btcPending !== 0 ? "has-pending" : ""}`}>
@@ -718,107 +722,14 @@ export default function Dashboard() {
           ) : (
             <SkeletonAssetRow />
           )}
+        </div>
+      </div>
 
-          {/*
-           * Inscription gallery card. One row of up to 6 thumbnails
-           * with a `+N more` chip when the address has more. Hidden
-           * when the address has zero inscriptions so the standard
-           * BTC-only dashboard is unchanged. Detail / full gallery
-           * view is a planned follow-up; clicking a thumb is a
-           * no-op in this PR (number + content_type visible via
-           * tooltip).
-           */}
-          {thumbIndexer && inscriptions && inscriptions.length > 0 && (
-            <div
-              className="inscription-gallery-row"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "10px 12px",
-                borderBottom: "1px solid var(--surface-border, rgba(255,255,255,0.06))"
-              }}
-            >
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="asset-name">Ordinals</div>
-                <div className="asset-sub">
-                  {inscriptions.length === 1 ? "1 inscription" : `${inscriptions.length} inscriptions`}
-                </div>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  gap: 6,
-                  flexShrink: 0,
-                  flexWrap: "nowrap"
-                }}
-              >
-                {inscriptions.slice(0, 6).map((insc) => (
-                  <InscriptionThumb
-                    key={insc.id}
-                    indexer={thumbIndexer}
-                    summary={insc}
-                    size={36}
-                  />
-                ))}
-                {inscriptions.length > 6 && (
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 8,
-                      background: "var(--surface-2, #1f2230)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontFamily: "var(--font-mono, monospace)",
-                      fontSize: 10,
-                      fontWeight: 600,
-                      color: "var(--text-muted, #9097a8)"
-                    }}
-                    title={`+${inscriptions.length - 6} more inscriptions`}
-                  >
-                    +{inscriptions.length - 6}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/*
-           * Rune balances. Bitcoin-native asset so they sit between
-           * the BTC row and the Arch row visually. Hidden entirely
-           * when the address has zero runes (most wallets), so the
-           * standard dashboard looks unchanged for non-rune users.
-           * `runes === null` is the "still loading" state -- we skip
-           * the skeleton because runes are optional decoration, not
-           * critical path; rendering a skeleton row for every BTC-
-           * only wallet would be visual noise.
-           */}
-          {runes && runes.length > 0 && runes.map((r) => (
-            <div
-              className="asset-row"
-              key={r.rune_id}
-              onClick={() => navigate(`/send-rune/${encodeURIComponent(r.rune_id)}`)}
-              style={{ cursor: "pointer" }}
-              title={`Send ${r.spaced_name}`}
-            >
-              <div className="asset-icon apl">
-                {r.symbol && r.symbol.trim().length > 0 ? r.symbol : "\u00A4"}
-              </div>
-              <div className="asset-info">
-                <div className="asset-name">{r.spaced_name}</div>
-                <div className="asset-sub">Rune</div>
-              </div>
-              <div
-                className="asset-balance"
-                title={labelForRune(r)}
-              >
-                {formatRuneAmount(r.amount, r.divisibility, { maxFractionDigits: 8 })}
-              </div>
-            </div>
-          ))}
-
+      {/* Arch -- ARCH plus any APL tokens. Prominent, second only to
+          Bitcoin in the asset hierarchy. */}
+      <div className="section">
+        <div className="section-title">Arch</div>
+        <div className="card">
           {balancesReady ? (
             <div className="asset-row">
               <div className="asset-icon arch"><ArchIcon size={18} /></div>
@@ -878,6 +789,79 @@ export default function Dashboard() {
             : <SkeletonAssetRow />
           }
         </div>
+      </div>
+
+      {/* Runes -- Bitcoin-native fungible tokens. Whole section is
+          hidden for the common BTC-only wallet. Each row deep-links
+          into the rune send flow. `runes === null` is the loading
+          state; we skip a skeleton because runes are optional
+          decoration, not critical path. */}
+      {runes && runes.length > 0 && (
+        <div className="section">
+          <div className="section-title">Runes</div>
+          <div className="card">
+            {runes.map((r) => (
+              <div
+                className="asset-row clickable"
+                key={r.rune_id}
+                onClick={() => navigate(`/send-rune/${encodeURIComponent(r.rune_id)}`)}
+                title={`Send ${r.spaced_name}`}
+              >
+                <div className="asset-icon apl">
+                  {r.symbol && r.symbol.trim().length > 0 ? r.symbol : "\u00A4"}
+                </div>
+                <div className="asset-info">
+                  <div className="asset-name">{r.spaced_name}</div>
+                  <div className="asset-sub">Rune</div>
+                </div>
+                <div className="asset-balance" title={labelForRune(r)}>
+                  {formatRuneAmount(r.amount, r.divisibility, { maxFractionDigits: 8 })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Ordinals -- inscription gallery. Compact thumbnail strip;
+          a full detail/gallery view lands in a later phase. Hidden
+          when the address holds no inscriptions. */}
+      {thumbIndexer && inscriptions && inscriptions.length > 0 && (
+        <div className="section">
+          <div className="section-title">Ordinals</div>
+          <div className="card">
+            <div className="inscription-gallery-row">
+              <div className="inscription-gallery-meta">
+                <div className="asset-name">
+                  {inscriptions.length === 1
+                    ? "1 inscription"
+                    : `${inscriptions.length} inscriptions`}
+                </div>
+                <div className="asset-sub">Ordinal inscriptions</div>
+              </div>
+              <div className="inscription-gallery-thumbs">
+                {inscriptions.slice(0, 6).map((insc) => (
+                  <InscriptionThumb
+                    key={insc.id}
+                    indexer={thumbIndexer}
+                    summary={insc}
+                    size={36}
+                  />
+                ))}
+                {inscriptions.length > 6 && (
+                  <div
+                    className="inscription-gallery-more"
+                    title={`+${inscriptions.length - 6} more inscriptions`}
+                  >
+                    +{inscriptions.length - 6}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       </div>
 
       {/* Recent activity -- progressive loading */}

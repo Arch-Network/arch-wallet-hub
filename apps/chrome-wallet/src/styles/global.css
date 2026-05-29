@@ -953,6 +953,52 @@ a {
   border-bottom: none;
 }
 
+/* Clickable asset rows (runes today; deep-link into a send/detail
+   flow). Subtle hover so the affordance reads without being noisy. */
+.asset-row.clickable {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+
+.asset-row.clickable:hover {
+  background: rgba(193, 154, 91, 0.06);
+}
+
+/* ── Inscription gallery (Ordinals section) ── */
+.inscription-gallery-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inscription-gallery-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.inscription-gallery-thumbs {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+
+.inscription-gallery-more {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--surface-2, #1f2230);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
 .asset-icon {
   width: 36px;
   height: 36px;
@@ -1751,9 +1797,18 @@ a {
   display: contents;
 }
 
-/* Two-column layout once we have real space: Portfolio on the left,
-   Recent Activity on the right. Only fires in the side panel since the
-   popup is fixed at 400px. */
+/* The asset column groups the per-class sections (Bitcoin / Arch /
+   Runes / Ordinals) so they stack as one unit. In the popup it's a
+   plain block; in the wide side panel it becomes the left grid
+   column (see below). */
+.dashboard-assets-col {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Two-column layout once we have real space: the asset column on the
+   left, Recent Activity on the right. Only fires in the side panel
+   since the popup is fixed at 400px. */
 @media (min-width: 880px) {
   html[data-mode="sidepanel"] .dashboard-grid {
     display: grid;
@@ -1762,7 +1817,8 @@ a {
     align-items: start;
   }
 
-  html[data-mode="sidepanel"] .dashboard-grid > .section {
+  html[data-mode="sidepanel"] .dashboard-grid > .section,
+  html[data-mode="sidepanel"] .dashboard-grid > .dashboard-assets-col {
     margin-bottom: 0;
   }
 }
