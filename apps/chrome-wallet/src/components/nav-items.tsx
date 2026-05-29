@@ -78,11 +78,29 @@ export interface NavItem {
   Icon: FC<NavIconProps>;
 }
 
-export const NAV_ITEMS: NavItem[] = [
+/**
+ * The popup (and narrow side panel) shows a bottom tab bar fixed to a
+ * 400px-wide column. Send and Receive are *actions*, not destinations,
+ * and live as hero buttons on the dashboard -- so we keep the bottom
+ * bar to four true destinations and let the tap targets stay wide.
+ */
+export const POPUP_NAV_ITEMS: NavItem[] = [
+  { path: "/dashboard", label: "Home", Icon: IconHome },
+  { path: "/swap", label: "Swap", Icon: IconSwap },
+  { path: "/history", label: "Activity", Icon: IconHistory },
+  { path: "/settings", label: "Settings", Icon: IconSettings },
+];
+
+/**
+ * The wide side panel (>=560px) has a persistent left sidebar with
+ * room to breathe, so it surfaces Send and Receive as first-class
+ * destinations alongside the rest. Phase 3 adds Collectibles here.
+ */
+export const SIDE_NAV_ITEMS: NavItem[] = [
   { path: "/dashboard", label: "Home", Icon: IconHome },
   { path: "/send", label: "Send", Icon: IconSend },
   { path: "/receive", label: "Receive", Icon: IconReceive },
   { path: "/swap", label: "Swap", Icon: IconSwap },
-  { path: "/history", label: "History", Icon: IconHistory },
+  { path: "/history", label: "Activity", Icon: IconHistory },
   { path: "/settings", label: "Settings", Icon: IconSettings },
 ];
