@@ -156,6 +156,10 @@ export default function Send({ networkStatus }: SendProps) {
 
   const [btcConfirmed, setBtcConfirmed] = useState<number>(0);
   const [btcPending, setBtcPending] = useState<number>(0);
+  // Sats locked in inscription / rune outputs. Drives the MAX button
+  // (caps at spendable, not total) and the asset-row subtitle. Stays
+  // 0 on mainnet during sync since the indexer omits the field.
+  const [btcProtected, setBtcProtected] = useState<number>(0);
   const [btcLoaded, setBtcLoaded] = useState(false);
   const [archBalance, setArchBalance] = useState<string | null>(null);
   const [tokensHeld, setTokensHeld] = useState<TokenHolding[]>([]);
@@ -208,6 +212,11 @@ export default function Send({ networkStatus }: SendProps) {
 
         setBtcConfirmed(confirmed);
         setBtcPending(pending);
+        setBtcProtected(
+          typeof btcSummary?.protected_value === "number"
+            ? btcSummary.protected_value
+            : 0
+        );
         setBtcLoaded(true);
 
         const lamports = o.arch.account?.lamports_balance ?? 0;
@@ -776,18 +785,29 @@ export default function Send({ networkStatus }: SendProps) {
       : asset === "arch"
         ? "Native gas token"
         : selectedToken?.name || "APL token";
+    // Effective max for a BTC send is `confirmed - protected` (sats
+    // locked in inscriptions/runes can't be moved by a plain send).
+    // Pending is excluded too -- prepareBtcSend only walks confirmed
+    // UTXOs, so a MAX based on pending would always fail.
+    const btcSpendableSats = Math.max(0, btcConfirmed - btcProtected);
+    // Show spendable as the headline figure for BTC. If protected
+    // sats exist, append a "+0.001 BTC locked" tail so the user
+    // understands the gap between this number and their dashboard
+    // balance.
     const availableValue = asset === "btc" && btcLoaded
-      ? `${((btcConfirmed + btcPending) / 1e8).toFixed(8)} BTC`
+      ? (btcProtected > 0
+          ? `${(btcSpendableSats / 1e8).toFixed(8)} BTC spendable (+${(btcProtected / 1e8).toFixed(8)} locked in inscriptions/runes)`
+          : `${((btcConfirmed + btcPending) / 1e8).toFixed(8)} BTC`)
       : asset === "arch" && archBalance
         ? formatArch(archBalance)
         : asset === "apl" && selectedToken
           ? `${selectedToken.uiAmount} ${selectedToken.symbol || ""}`.trim()
           : "—";
-    const showMax = (asset === "btc" && btcLoaded && (btcConfirmed + btcPending) > 0)
+    const showMax = (asset === "btc" && btcLoaded && btcSpendableSats > 0)
       || (asset === "arch" && archBalance && Number(archBalance) > 0);
     const handleMax = () => {
       if (asset === "btc") {
-        setAmount(((btcConfirmed + btcPending) / 1e8).toFixed(8));
+        setAmount((btcSpendableSats / 1e8).toFixed(8));
       } else if (asset === "arch" && archBalance) {
         setAmount((Number(archBalance) / 1e9).toFixed(4));
       }

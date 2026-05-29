@@ -156,6 +156,10 @@ export default function Dashboard() {
 
   const [btcBalance, setBtcBalance] = useState<number | null>(null);
   const [btcPending, setBtcPending] = useState<number>(0);
+  // Sats locked in inscription/rune/risky_rune outputs. Stays 0 on
+  // mainnet during sync because the indexer omits protection fields
+  // until it has the data.
+  const [btcProtected, setBtcProtected] = useState<number>(0);
   const [archLamports, setArchLamports] = useState<number | null>(null);
   const [archAddress, setArchAddress] = useState<string>("");
   const [tokens, setTokens] = useState<TokenBalance[] | null>(null);
@@ -259,6 +263,15 @@ export default function Dashboard() {
       const btcSummary = overview?.btc?.summary;
       let confirmedSats = 0;
       let pendingSats = 0;
+      // `protected_value` is only present when the indexer has
+      // enriched UTXOs (testnet today, mainnet post-sync). Keep
+      // separate from confirmed so the asset row can render an
+      // explicit "locked" line when > 0 without affecting the
+      // primary balance number.
+      const protectedSats =
+        typeof btcSummary?.protected_value === "number"
+          ? btcSummary.protected_value
+          : 0;
 
       if (btcSummary?.chain_stats) {
         confirmedSats = (btcSummary.chain_stats.funded_txo_sum ?? 0) - (btcSummary.chain_stats.spent_txo_sum ?? 0);
@@ -281,6 +294,7 @@ export default function Dashboard() {
       const archAddr = activeAccount.archAddress ?? overview?.archAccountAddress ?? "";
       setBtcBalance(confirmedSats);
       setBtcPending(pendingSats);
+      setBtcProtected(protectedSats);
       setArchLamports(lamports);
       setArchAddress(archAddr);
       setOverviewLoaded(true);
@@ -584,6 +598,14 @@ export default function Dashboard() {
                       <span className={`asset-pending-line ${btcPending > 0 ? "incoming" : "outgoing"}`}>
                         {btcPending > 0 ? "+" : ""}{(btcPending / 1e8).toFixed(8)} pending
                       </span>
+                      {btcProtected > 0 && (
+                        <span
+                          className="asset-protected-line"
+                          title="Locked in Ordinal inscriptions and/or Rune balances. These outputs are excluded from BTC sends to prevent accidental loss."
+                        >
+                          {formatBtcAmount(btcProtected)} locked in inscriptions/runes
+                        </span>
+                      )}
                     </div>
                   </>
                 ) : (
@@ -591,6 +613,16 @@ export default function Dashboard() {
                     <div className="asset-balance">{formatBtcAmount(btcBalance ?? 0)}</div>
                     {formatBtcUsd(btcBalance ?? 0, btcUsd) && (
                       <div className="asset-balance-usd">{formatBtcUsd(btcBalance ?? 0, btcUsd)}</div>
+                    )}
+                    {btcProtected > 0 && (
+                      <div
+                        className="asset-balance-breakdown"
+                        title="Locked in Ordinal inscriptions and/or Rune balances. These outputs are excluded from BTC sends to prevent accidental loss."
+                      >
+                        <span className="asset-protected-line">
+                          {formatBtcAmount(btcProtected)} locked in inscriptions/runes
+                        </span>
+                      </div>
                     )}
                   </>
                 )}
