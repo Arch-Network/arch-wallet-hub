@@ -2,6 +2,7 @@ import * as bitcoin from "bitcoinjs-lib";
 import * as ecc from "@bitcoinerlab/secp256k1";
 import type { BtcUtxo, IndexerClient } from "./indexer";
 import { partitionByProtection } from "./btc-protection";
+import { dustThresholdForAddress } from "./btc-dust";
 
 // bitcoinjs-lib v6 needs an ECC backend wired in for taproot helpers.
 // `@bitcoinerlab/secp256k1` is a pure-JS implementation that works in
@@ -34,7 +35,6 @@ export interface BuildPsbtResult {
   inputCount: number;
 }
 
-const DUST_THRESHOLD_SATS = 546;
 const MIN_FALLBACK_FEE_RATE = 5;
 
 /**
@@ -156,7 +156,12 @@ export async function buildUnsignedPsbt(params: BuildPsbtParams): Promise<BuildP
   }
 
   psbt.addOutput({ address: toAddress, value: BigInt(amountSats) });
-  if (changeSats > DUST_THRESHOLD_SATS) {
+  // Change goes back to the sender; dust limit is keyed on the
+  // sender's address script type (we own that). Anything below
+  // this is non-standard and would prevent the tx from relaying,
+  // so we drop the change output and fold it into the fee.
+  const changeDust = dustThresholdForAddress(fromAddress);
+  if (changeSats > changeDust) {
     psbt.addOutput({ address: fromAddress, value: BigInt(changeSats) });
   }
 
@@ -168,7 +173,7 @@ export async function buildUnsignedPsbt(params: BuildPsbtParams): Promise<BuildP
     amountSats,
     feeSats: actualFee,
     feeRate,
-    changeSats: changeSats > DUST_THRESHOLD_SATS ? changeSats : 0,
+    changeSats: changeSats > changeDust ? changeSats : 0,
     inputCount: selected.length
   };
 }
