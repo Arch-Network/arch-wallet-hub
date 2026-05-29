@@ -7,9 +7,12 @@ import {
   getIndexer,
   isIndexerAuthError,
   isIndexerNotFoundError,
-  type BtcAddressRuneBalance
+  type BtcAddressRuneBalance,
+  type BtcInscriptionSummary,
+  type IndexerClient
 } from "../../utils/indexer";
 import { formatRuneAmount, labelForRune } from "../../utils/runes-format";
+import { InscriptionThumb } from "../../components/InscriptionThumb";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
@@ -170,6 +173,13 @@ export default function Dashboard() {
   // by a best-effort fetch that runs alongside the wallet overview;
   // null = still loading, [] = no runes (hides the section).
   const [runes, setRunes] = useState<BtcAddressRuneBalance[] | null>(null);
+  // Inscriptions held at the active BTC address. First page only
+  // (server caps at 100); the dashboard card shows the first 6.
+  const [inscriptions, setInscriptions] = useState<BtcInscriptionSummary[] | null>(null);
+  // The indexer client used to fetch thumbnails. Stable reference
+  // across renders so the InscriptionThumb effect doesn't refire
+  // every time the dashboard re-renders for unrelated state.
+  const [thumbIndexer, setThumbIndexer] = useState<IndexerClient | null>(null);
   const [archLamports, setArchLamports] = useState<number | null>(null);
   const [archAddress, setArchAddress] = useState<string>("");
   const [tokens, setTokens] = useState<TokenBalance[] | null>(null);
@@ -219,6 +229,7 @@ export default function Dashboard() {
       setBtcPending(0);
       setBtcProtected(0);
       setRunes([]);
+      setInscriptions([]);
       setArchLamports(0);
       setTokens([]);
       setRecentTxs([]);
@@ -320,6 +331,19 @@ export default function Dashboard() {
         .getBtcAddressRunes(btcAddrForNetwork)
         .then((r) => setRunes(Array.isArray(r?.balances) ? r.balances : []))
         .catch(() => setRunes([]));
+
+      // Fetch the first page of inscriptions held at this address.
+      // Same best-effort pattern: silent fallback to empty on error,
+      // dashboard refresh retries. We stash the indexer instance
+      // alongside the data so InscriptionThumb has a stable
+      // reference for its content-fetch effect.
+      setThumbIndexer(indexer);
+      indexer
+        .getBtcAddressInscriptions(btcAddrForNetwork)
+        .then((r) =>
+          setInscriptions(Array.isArray(r?.inscriptions) ? r.inscriptions : [])
+        )
+        .catch(() => setInscriptions([]));
 
       const btcTxItems: RecentTx[] = [];
       try {
@@ -452,6 +476,7 @@ export default function Dashboard() {
       setBtcPending(0);
       setBtcProtected(0);
       setRunes([]);
+      setInscriptions([]);
       setArchLamports(0);
       setTokens([]);
       setRecentTxs([]);
@@ -654,6 +679,72 @@ export default function Dashboard() {
             </div>
           ) : (
             <SkeletonAssetRow />
+          )}
+
+          {/*
+           * Inscription gallery card. One row of up to 6 thumbnails
+           * with a `+N more` chip when the address has more. Hidden
+           * when the address has zero inscriptions so the standard
+           * BTC-only dashboard is unchanged. Detail / full gallery
+           * view is a planned follow-up; clicking a thumb is a
+           * no-op in this PR (number + content_type visible via
+           * tooltip).
+           */}
+          {thumbIndexer && inscriptions && inscriptions.length > 0 && (
+            <div
+              className="inscription-gallery-row"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "10px 12px",
+                borderBottom: "1px solid var(--surface-border, rgba(255,255,255,0.06))"
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="asset-name">Ordinals</div>
+                <div className="asset-sub">
+                  {inscriptions.length === 1 ? "1 inscription" : `${inscriptions.length} inscriptions`}
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 6,
+                  flexShrink: 0,
+                  flexWrap: "nowrap"
+                }}
+              >
+                {inscriptions.slice(0, 6).map((insc) => (
+                  <InscriptionThumb
+                    key={insc.id}
+                    indexer={thumbIndexer}
+                    summary={insc}
+                    size={36}
+                  />
+                ))}
+                {inscriptions.length > 6 && (
+                  <div
+                    style={{
+                      width: 36,
+                      height: 36,
+                      borderRadius: 8,
+                      background: "var(--surface-2, #1f2230)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontFamily: "var(--font-mono, monospace)",
+                      fontSize: 10,
+                      fontWeight: 600,
+                      color: "var(--text-muted, #9097a8)"
+                    }}
+                    title={`+${inscriptions.length - 6} more inscriptions`}
+                  >
+                    +{inscriptions.length - 6}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {/*

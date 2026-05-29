@@ -39,6 +39,35 @@ export type IndexerClient = {
    * with no runes.
    */
   getBtcAddressRunes(address: string): Promise<unknown>;
+
+  /**
+   * Inscriptions held at a Bitcoin address (paginated). Cursor is
+   * an opaque base64 string from a previous response's `next_cursor`.
+   * Page size is fixed at 100 by ord upstream.
+   */
+  getBtcAddressInscriptions(address: string, cursor?: string): Promise<unknown>;
+
+  /**
+   * Per-inscription metadata: id, number, content_type, satpoint,
+   * content_length, genesis_height, owner, etc. Used by the gallery
+   * detail view; the per-address list response already carries
+   * enough to render thumbnails.
+   */
+  getBtcInscription(id: string): Promise<unknown>;
+
+  /**
+   * Raw inscription content (binary). Returns the upstream body
+   * with its content-type and cache-control headers preserved so
+   * the Hub can stream it to the wallet without losing browser
+   * cacheability. Body may be up to several MB; callers should
+   * decide their own size cap.
+   */
+  getBtcInscriptionContent(id: string): Promise<{
+    body: ArrayBuffer;
+    contentType: string;
+    contentLength?: number;
+    cacheControl?: string;
+  }>;
   getBtcTransaction(txid: string): Promise<unknown>;
   getBtcTransactionStatus(txid: string): Promise<unknown>;
   broadcastBtcTransaction(rawTxHex: string): Promise<unknown>;
@@ -213,6 +242,40 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
       getJson(`/bitcoin/address/${enc(address)}/txs${afterTxid ? `?after_txid=${enc(afterTxid)}` : ""}`),
     getBtcAddressRunes: (address) =>
       getJson(`/bitcoin/address/${enc(address)}/runes`),
+    getBtcAddressInscriptions: (address, cursor) =>
+      getJson(`/bitcoin/address/${enc(address)}/inscriptions${cursor ? `?cursor=${enc(cursor)}` : ""}`),
+    getBtcInscription: (id) => getJson(`/bitcoin/inscriptions/${enc(id)}`),
+    getBtcInscriptionContent: async (id) => {
+      // Inscription content is binary (image/video/text/etc) so we
+      // skip the JSON helpers and pull the raw upstream response.
+      // Preserve content-type + cache-control so the Hub can replay
+      // them to the wallet -- ord ships `immutable, max-age=1y`
+      // which keeps thumbnails out of the indexer hot path after
+      // the first fetch.
+      const url = joinUrl(`/bitcoin/inscriptions/${enc(id)}/content`);
+      let res: Response;
+      try {
+        res = await fetch(url, { headers: headers(), signal: abortSignal() });
+      } catch (err: any) {
+        const isAbort =
+          err?.name === "AbortError" ||
+          String(err?.message ?? "").toLowerCase().includes("abort");
+        if (isAbort) throw new Error(`Indexer request timeout after ${timeoutMs}ms: ${url}`);
+        throw err;
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Indexer error ${res.status} ${res.statusText} (${url}): ${body}`);
+      }
+      const body = await res.arrayBuffer();
+      const lengthHeader = res.headers.get("content-length");
+      return {
+        body,
+        contentType: res.headers.get("content-type") ?? "application/octet-stream",
+        contentLength: lengthHeader ? Number(lengthHeader) : undefined,
+        cacheControl: res.headers.get("cache-control") ?? undefined
+      };
+    },
     getBtcTransaction: (txid) => getJson(`/bitcoin/tx/${enc(txid)}`),
     getBtcTransactionStatus: (txid) => getJson(`/bitcoin/tx/${enc(txid)}/status`),
     broadcastBtcTransaction: (rawTxHex) => postText("/bitcoin/tx", rawTxHex),

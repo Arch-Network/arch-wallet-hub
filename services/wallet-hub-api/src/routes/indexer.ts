@@ -732,6 +732,98 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
   );
 
   server.get(
+    "/indexer/btc/address/:address/inscriptions",
+    {
+      schema: {
+        summary: "BTC address inscriptions (paginated, proxied)",
+        tags: ["indexer"],
+        params: AddressParam,
+        querystring: Type.Object({
+          cursor: Type.Optional(Type.String({ maxLength: 256 })),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { address } = request.params as { address: string };
+      const { cursor } = request.query as { cursor?: string };
+      const result = await forward(reply, () =>
+        indexer.getBtcAddressInscriptions(address, cursor),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
+    "/indexer/btc/inscriptions/:id",
+    {
+      schema: {
+        summary: "Inscription metadata (proxied)",
+        tags: ["indexer"],
+        // Inscription IDs are `<txid>i<vout-index>`, e.g.
+        // `89e3658deb98...37bi0`. Validating only the shape; the
+        // upstream will 404 on a bogus value.
+        params: Type.Object({
+          id: Type.String({ minLength: 65, maxLength: 80, pattern: "^[0-9a-fA-F]{64}i[0-9]+$" }),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { id } = request.params as { id: string };
+      const result = await forward(reply, () =>
+        indexer.getBtcInscription(id),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
+    "/indexer/btc/inscriptions/:id/content",
+    {
+      schema: {
+        summary: "Inscription raw content (binary, proxied with cache + content-type)",
+        tags: ["indexer"],
+        params: Type.Object({
+          id: Type.String({ minLength: 65, maxLength: 80, pattern: "^[0-9a-fA-F]{64}i[0-9]+$" }),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { id } = request.params as { id: string };
+      try {
+        const r = await indexer.getBtcInscriptionContent(id);
+        // Forward the upstream's content-type so the browser knows
+        // how to decode the body. Default `application/octet-stream`
+        // is the safe fallback if upstream omits the header.
+        reply.header("content-type", r.contentType);
+        // ord ships `cache-control: public, max-age=31536000, immutable`
+        // which is exactly what we want -- inscription content is
+        // content-addressed by ID and never mutates. Replay it.
+        if (r.cacheControl) reply.header("cache-control", r.cacheControl);
+        // Defense in depth: forbid browser MIME-sniffing. Some
+        // inscriptions are HTML/SVG with script payloads; without
+        // this header, an `<img src>` pointing here could be
+        // re-typed by the browser into something executable.
+        reply.header("x-content-type-options", "nosniff");
+        if (r.contentLength !== undefined) {
+          reply.header("content-length", String(r.contentLength));
+        }
+        return reply.send(Buffer.from(r.body));
+      } catch (err: any) {
+        const message = err?.message ? String(err.message) : "Inscription proxy failed";
+        return reply
+          .code(502)
+          .send({ statusCode: 502, error: "BadGateway", message });
+      }
+    },
+  );
+
+  server.get(
     "/indexer/btc/address/:address/txs",
     {
       schema: {
