@@ -28,7 +28,7 @@
  * The PSBT itself is the same shape both signers expect; only the
  * signer differs.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { signerForAccount } from "../../signers/Signer";
@@ -40,6 +40,11 @@ import { isExternalAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import { buildExplorerUrl, notifyTxBroadcast } from "../../utils/notifications";
 import { formatBtc } from "../../utils/format";
+import {
+  clearSendForm,
+  loadSendForm,
+  saveSendForm,
+} from "../../state/send-form-session";
 
 type Step = "form" | "confirm" | "sent";
 
@@ -92,6 +97,57 @@ export default function SendRune() {
       cancelled = true;
     };
   }, [activeAccount?.btcAddress, runeId]);
+
+  // ── Form-state persistence (chrome.storage.session) ───────────
+  //
+  // MV3 popups unmount on focus loss; without persistence the
+  // user loses every keystroke when they click out to copy a
+  // recipient address. Restore once on mount, then keep the
+  // checkpoint in sync as the user types.
+  const formRestoredRef = useRef(false);
+  useEffect(() => {
+    if (formRestoredRef.current) return;
+    if (!activeAccount || !runeId) return;
+    formRestoredRef.current = true;
+    (async () => {
+      const ck = await loadSendForm({
+        kind: "rune",
+        accountId: activeAccount.id,
+        network: state.network,
+        runeId,
+      });
+      if (!ck || ck.form.kind !== "rune") return;
+      setRecipient(ck.form.recipient);
+      setAmountText(ck.form.amount);
+    })();
+  }, [activeAccount, runeId, state.network]);
+
+  // Persist while on the data-entry step. Skip empty forms so a
+  // quick bounce into /send-rune/X and back doesn't stomp a real
+  // parked form on a different rune.
+  useEffect(() => {
+    if (!activeAccount || !runeId) return;
+    if (step !== "form") return;
+    if (!recipient && !amountText) return;
+    void saveSendForm({
+      form: {
+        kind: "rune",
+        runeId,
+        recipient,
+        amount: amountText,
+      },
+      accountId: activeAccount.id,
+      network: state.network,
+    });
+  }, [step, recipient, amountText, activeAccount, runeId, state.network]);
+
+  // Clear once the transfer broadcasts. We don't want the form to
+  // auto-restore after a successful send.
+  useEffect(() => {
+    if (step === "sent") {
+      void clearSendForm();
+    }
+  }, [step]);
 
   // ── Form validation ────────────────────────────────────────────
   const amountMinor = useMemo(() => {
@@ -383,9 +439,17 @@ export default function SendRune() {
   }
 
   // ── Form step ──────────────────────────────────────────────────
+  // Back from the form step = explicit "I'm leaving this flow"
+  // signal -- clear the parked checkpoint so the user gets a fresh
+  // form next time, rather than auto-restoring fields they just
+  // walked away from.
+  const handleCancelToDashboard = () => {
+    void clearSendForm();
+    navigate("/dashboard");
+  };
   return (
     <div className="send-form-shell">
-      <button className="back-link" onClick={() => navigate("/dashboard")}>
+      <button className="back-link" onClick={handleCancelToDashboard}>
         <BackChevron />
         Back
       </button>
