@@ -9,7 +9,17 @@
  *                       "Sign & Send" button
  * Plus terminal states:
  *   Sent  -- success screen with txid + explorer link
- *   Error -- inline message; user stays on form
+ *   Error -- inline banner; user stays on form
+ *
+ * Visual design intentionally mirrors Send.tsx (BTC/ARCH/APL flow)
+ * one-for-one: `send-form-shell` shell, `page-header`, `back-link`
+ * chevron, `asset-summary-chip`, `form-field`, `review-card`,
+ * `send-success`, `btn btn-primary btn-full`. Reusing existing
+ * classes (defined in styles/global.css) keeps a single source of
+ * truth for spacing, typography, error/banner styling and gives
+ * SendRune the same gloss the rest of the wallet has -- the
+ * original version inlined raw styles and looked half-finished
+ * next to the BTC flow.
  *
  * Signing path mirrors Send.tsx exactly:
  *   - External wallets (Xverse / UniSat): adapter.signBtcPsbt
@@ -138,12 +148,12 @@ export default function SendRune() {
     if (!activeAccount || !prepared) return;
     setSigning(true);
     setError("");
-    setSignStatus("Signing transaction…");
+    setSignStatus("Signing transaction\u2026");
     try {
       let signedPsbtBase64: string;
       if (isExternalAccount(activeAccount)) {
         const adapter = getExternalWalletAdapter(activeAccount.externalProvider);
-        setSignStatus(`Waiting for ${adapter.label} to sign…`);
+        setSignStatus(`Waiting for ${adapter.label} to sign\u2026`);
         const signed = await adapter.signBtcPsbt({
           address: activeAccount.btcAddress,
           psbtBase64: prepared.psbt.toBase64(),
@@ -161,7 +171,7 @@ export default function SendRune() {
         signedPsbtBase64 = hexToBase64(signedPsbtHex);
       }
 
-      setSignStatus("Broadcasting transaction…");
+      setSignStatus("Broadcasting transaction\u2026");
       const rawTxHex = finalizeSignedPsbt(signedPsbtBase64, prepared.network);
       const indexer = await getIndexer();
       const txid = await indexer.broadcastBtc(rawTxHex);
@@ -184,192 +194,321 @@ export default function SendRune() {
     }
   }, [activeAccount, prepared, balance, state.network]);
 
-  // ── Render ─────────────────────────────────────────────────────
+  // ── Derived UI values ──────────────────────────────────────────
+  const balanceHuman = balance ? formatRuneAmount(balance.amount, balance.divisibility) : "";
+  const label = balance ? labelForRune(balance) : "";
+  const runeGlyph = balance?.symbol && balance.symbol.trim().length > 0 ? balance.symbol : "\u00A4";
+  const networkPlaceholder = state.network === "mainnet" ? "bc1p\u2026" : "tb1p\u2026";
+  const explorerUrl = sentTxid
+    ? buildExplorerUrl({ kind: "btc", txid: sentTxid, network: state.network })
+    : "";
+
+  // ── Early-return states ────────────────────────────────────────
   if (!runeId) {
     return (
-      <div className="page-content">
-        <p>No rune specified.</p>
-        <button onClick={() => navigate("/dashboard")}>Back to dashboard</button>
+      <div className="send-form-shell">
+        <div className="page-header">
+          <h2 className="page-title">Send Rune</h2>
+          <div className="page-subtitle">No rune was specified.</div>
+        </div>
+        <button className="btn btn-secondary btn-full" onClick={() => navigate("/dashboard")}>
+          Back to dashboard
+        </button>
       </div>
     );
   }
 
   if (balanceError) {
     return (
-      <div className="page-content">
-        <h2>{labelForRune({ spaced_name: runeId })}</h2>
-        <p style={{ color: "var(--danger, #ff6b6b)" }}>{balanceError}</p>
-        <button onClick={() => navigate("/dashboard")}>Back to dashboard</button>
+      <div className="send-form-shell">
+        <button className="back-link" onClick={() => navigate("/dashboard")}>
+          <BackChevron />
+          Back
+        </button>
+        <div className="page-header">
+          <h2 className="page-title">Send {labelForRune({ spaced_name: runeId })}</h2>
+        </div>
+        <div className="error-banner">{balanceError}</div>
+        <button className="btn btn-secondary btn-full" onClick={() => navigate("/dashboard")}>
+          Back to dashboard
+        </button>
       </div>
     );
   }
 
   if (!balance) {
     return (
-      <div className="page-content">
-        <p>Loading balance\u2026</p>
+      <div className="send-form-shell">
+        <div className="page-header">
+          <h2 className="page-title">Loading\u2026</h2>
+        </div>
       </div>
     );
   }
 
-  const balanceHuman = formatRuneAmount(balance.amount, balance.divisibility);
-  const label = labelForRune(balance);
-
+  // ── Sent terminal state ────────────────────────────────────────
   if (step === "sent") {
+    const sentHuman = prepared
+      ? formatRuneAmount(prepared.amount.toString(), balance.divisibility)
+      : "";
     return (
-      <div className="page-content">
-        <h2>Sent</h2>
-        <p>{prepared && formatRuneAmount(prepared.amount.toString(), balance.divisibility)} {balance.spaced_name} broadcast.</p>
-        <p style={{ fontFamily: "monospace", fontSize: 12, wordBreak: "break-all" }}>
-          {sentTxid}
-        </p>
-        <a
-          href={buildExplorerUrl({ kind: "btc", txid: sentTxid, network: state.network })}
-          target="_blank"
-          rel="noreferrer noopener"
-        >
-          View on explorer
-        </a>
-        <div style={{ marginTop: 16 }}>
-          <button onClick={() => navigate("/dashboard")}>Done</button>
+      <div className="send-form-shell">
+        <div className="send-success">
+          <div className="send-success-badge" aria-hidden>✓</div>
+          <h2 className="send-success-title">Rune transfer sent</h2>
+          <div className="send-success-subtitle">
+            {sentHuman} {balance.spaced_name} is broadcasting on the Bitcoin network.
+          </div>
+          {sentTxid && <div className="send-success-txid">{sentTxid}</div>}
+          {explorerUrl && (
+            <a
+              href={explorerUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-sm btn-secondary"
+            >
+              View on Mempool {"\u2192"}
+            </a>
+          )}
         </div>
+        <button className="btn btn-primary btn-full" onClick={() => navigate("/dashboard")}>
+          Done
+        </button>
       </div>
     );
   }
 
+  // ── Confirm step ───────────────────────────────────────────────
   if (step === "confirm" && prepared) {
+    const sendAmountHuman = formatRuneAmount(prepared.amount.toString(), balance.divisibility);
+    const leftoverHuman = formatRuneAmount(prepared.leftoverRune.toString(), balance.divisibility);
     return (
-      <div className="page-content">
-        <h2>Confirm send</h2>
-        <ConfirmRow k="Asset" v={label} />
-        <ConfirmRow
-          k="Amount"
-          v={`${formatRuneAmount(prepared.amount.toString(), balance.divisibility)} ${balance.spaced_name}`}
-        />
-        <ConfirmRow k="To" v={prepared.toAddress} mono />
-        <ConfirmRow k="Fee" v={`${formatBtc(prepared.feeSats)} BTC (${prepared.feeRate} sat/vB)`} />
-        <ConfirmRow k="Inputs" v={`${prepared.runedInputCount} runed + ${prepared.btcInputCount} BTC`} />
-        {prepared.leftoverRune > 0n && (
-          <ConfirmRow
-            k="Leftover"
-            v={`${formatRuneAmount(prepared.leftoverRune.toString(), balance.divisibility)} ${balance.spaced_name} returned to you`}
-          />
-        )}
-        <ConfirmRow k="BTC change" v={`${formatBtc(prepared.changeSats)} BTC`} />
-
-        {error && <p style={{ color: "var(--danger, #ff6b6b)" }}>{error}</p>}
-        {signStatus && <p style={{ color: "var(--text-muted)" }}>{signStatus}</p>}
-
-        <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-          <button
-            type="button"
-            onClick={() => {
-              setStep("form");
-              setError("");
-            }}
-            disabled={signing}
-          >
-            Back
-          </button>
-          <button
-            type="button"
-            onClick={handleSign}
-            disabled={signing}
-            style={{ flex: 1 }}
-          >
-            {signing ? "Signing\u2026" : "Sign & send"}
-          </button>
+      <div className="send-form-shell">
+        <button
+          className="back-link"
+          onClick={() => {
+            setStep("form");
+            setError("");
+          }}
+          disabled={signing}
+        >
+          <BackChevron />
+          Back
+        </button>
+        <div className="page-header">
+          <h2 className="page-title">Review</h2>
+          <div className="page-subtitle">Double-check the details before signing this transaction.</div>
         </div>
+
+        {error && <div className="error-banner">{error}</div>}
+
+        <div className="review-card">
+          <div className="review-row">
+            <div className="review-row-label">Asset</div>
+            <div className="review-row-value">
+              <span className="review-row-primary">
+                <RuneInlineIcon glyph={runeGlyph} />
+                {label}
+              </span>
+            </div>
+          </div>
+          <div className="review-row">
+            <div className="review-row-label">To</div>
+            <div className="review-row-value">
+              <span className="review-row-mono">{prepared.toAddress}</span>
+            </div>
+          </div>
+          <div className="review-row">
+            <div className="review-row-label">Amount</div>
+            <div className="review-row-value">
+              <span className="review-row-primary">
+                {sendAmountHuman} {balance.spaced_name}
+              </span>
+            </div>
+          </div>
+          {prepared.leftoverRune > 0n && (
+            <div className="review-row">
+              <div className="review-row-label">Leftover</div>
+              <div className="review-row-value">
+                <span className="review-row-primary">
+                  {leftoverHuman} {balance.spaced_name}
+                </span>
+                <span className="review-row-sub">returned to you</span>
+              </div>
+            </div>
+          )}
+
+          <div className="review-section">
+            <div className="review-section-label">Network Fee</div>
+            <div className="review-section-row">
+              <span className="label">Fee</span>
+              <span className="value">
+                {prepared.feeSats.toLocaleString()} sats ({formatBtc(prepared.feeSats)} BTC)
+              </span>
+            </div>
+            <div className="review-section-row">
+              <span className="label">Fee rate</span>
+              <span className="value">{prepared.feeRate.toFixed(1)} sat/vB</span>
+            </div>
+            <div className="review-section-row">
+              <span className="label">Inputs</span>
+              <span className="value">
+                {prepared.runedInputCount} runed + {prepared.btcInputCount} BTC
+              </span>
+            </div>
+            {prepared.changeSats > 0 && (
+              <div className="review-section-row">
+                <span className="label">BTC change</span>
+                <span className="value">{prepared.changeSats.toLocaleString()} sats</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {signStatus && (
+          <div className="form-field-hint" style={{ marginBottom: 8 }}>
+            {signStatus}
+          </div>
+        )}
+
+        <button
+          className="btn btn-primary btn-full"
+          onClick={handleSign}
+          disabled={signing}
+        >
+          {signing ? (signStatus || "Signing\u2026") : "Sign & Send"}
+        </button>
       </div>
     );
   }
 
+  // ── Form step ──────────────────────────────────────────────────
   return (
-    <div className="page-content">
-      <h2>Send {balance.spaced_name}</h2>
-      <p style={{ color: "var(--text-muted)" }}>
-        Available: {balanceHuman} {balance.spaced_name}
-      </p>
+    <div className="send-form-shell">
+      <button className="back-link" onClick={() => navigate("/dashboard")}>
+        <BackChevron />
+        Back
+      </button>
+      <div className="page-header">
+        <h2 className="page-title">Send {balance.spaced_name}</h2>
+        <div className="page-subtitle">Enter the recipient address and the amount to send.</div>
+      </div>
 
-      <label style={{ display: "block", marginTop: 12 }}>
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Recipient address</div>
-        <input
-          type="text"
-          value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
-          placeholder={state.network === "testnet4" ? "tb1p\u2026" : "bc1p\u2026"}
-          style={{ width: "100%", marginTop: 4, fontFamily: "monospace" }}
-        />
-      </label>
-
-      <label style={{ display: "block", marginTop: 12 }}>
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          Amount ({balance.spaced_name})
+      <div className="asset-summary-chip">
+        <div className="asset-icon apl" aria-hidden>{runeGlyph}</div>
+        <div className="asset-summary-chip-info">
+          <div className="asset-summary-chip-name">{balance.spaced_name}</div>
+          <div className="asset-summary-chip-sub">Rune</div>
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+        <div className="asset-summary-chip-balance">
+          <div className="asset-summary-chip-balance-label">Available</div>
+          <div className="asset-summary-chip-balance-value">
+            {balanceHuman} {balance.spaced_name}
+          </div>
+        </div>
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="form-field">
+        <div className="form-field-header">
+          <label className="form-field-label">Recipient address</label>
+        </div>
+        <div className="form-field-input">
           <input
             type="text"
+            value={recipient}
+            onChange={(e) => setRecipient(e.target.value)}
+            placeholder={networkPlaceholder}
+            spellCheck={false}
+            autoComplete="off"
+          />
+        </div>
+      </div>
+
+      <div className="form-field">
+        <div className="form-field-header">
+          <label className="form-field-label">Amount</label>
+          <span className="form-field-meta">
+            Available <strong>{balanceHuman}</strong>
+          </span>
+        </div>
+        <div className="form-field-input">
+          <input
+            type="text"
+            inputMode="decimal"
             value={amountText}
             onChange={(e) => setAmountText(e.target.value)}
             placeholder="0"
-            inputMode="decimal"
-            style={{ flex: 1 }}
           />
+          <span className="form-field-suffix">{balance.spaced_name}</span>
           <button
             type="button"
+            className="form-field-action"
             onClick={() => setAmountText(balanceHuman)}
-            disabled={!balance}
           >
             MAX
           </button>
         </div>
         {amountText.length > 0 && amountMinor === null && (
-          <div style={{ fontSize: 12, color: "var(--danger, #ff6b6b)", marginTop: 4 }}>
+          <div className="form-field-hint" style={{ color: "var(--danger, #ff6b6b)" }}>
             Invalid amount (max {balance.divisibility} decimal places)
           </div>
         )}
         {amountExceedsBalance && (
-          <div style={{ fontSize: 12, color: "var(--danger, #ff6b6b)", marginTop: 4 }}>
+          <div className="form-field-hint" style={{ color: "var(--danger, #ff6b6b)" }}>
             Exceeds available balance
           </div>
         )}
-      </label>
-
-      {error && (
-        <p style={{ color: "var(--danger, #ff6b6b)", marginTop: 12 }}>{error}</p>
-      )}
-
-      <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-        <button type="button" onClick={() => navigate("/dashboard")}>
-          Cancel
-        </button>
-        <button
-          type="button"
-          onClick={handleContinue}
-          disabled={!canContinue || preparing}
-          style={{ flex: 1 }}
-        >
-          {preparing ? "Preparing\u2026" : "Continue"}
-        </button>
       </div>
+
+      <button
+        className="btn btn-primary btn-full"
+        onClick={handleContinue}
+        disabled={!canContinue || preparing}
+      >
+        {preparing ? "Preparing\u2026" : "Review"}
+      </button>
     </div>
   );
 }
 
-function ConfirmRow({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
+// Small visual primitives kept local to this file -- they're not
+// reused elsewhere and inlining keeps the component file readable.
+
+function BackChevron() {
   return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{k}</div>
-      <div
-        style={{
-          fontFamily: mono ? "monospace" : undefined,
-          fontSize: mono ? 12 : 14,
-          wordBreak: "break-all",
-        }}
-      >
-        {v}
-      </div>
-    </div>
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  );
+}
+
+function RuneInlineIcon({ glyph }: { glyph: string }) {
+  // Matches the BTC/ARCH inline icons used in Send.tsx's review row.
+  // We don't have a dedicated rune CSS variant, so reuse `apl` --
+  // visually consistent with the dashboard's rune rows.
+  return (
+    <span
+      className="send-inline-icon"
+      aria-hidden
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        marginRight: 6,
+      }}
+    >
+      {glyph}
+    </span>
   );
 }
 
@@ -386,4 +525,3 @@ function hexToBase64(hex: string): string {
   for (const b of bytes) bin += String.fromCharCode(b);
   return btoa(bin);
 }
-
