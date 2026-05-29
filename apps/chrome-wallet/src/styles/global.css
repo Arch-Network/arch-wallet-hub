@@ -3764,7 +3764,7 @@ a {
 
 .token-detail-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   font-size: 11px;
   color: var(--text-muted);
@@ -3803,6 +3803,14 @@ a {
   display: contents;
 }
 
+/* Restore a comfortable gap between the Send/Receive actions and the
+   Recent Activity heading in the popup. Scoped to Token Detail so the
+   shared density tuning of .action-bar / .section is left untouched.
+   In the wide side panel the grid `gap` owns this spacing instead. */
+.token-detail-activity {
+  margin-top: 20px;
+}
+
 /* Wide side panel: split summary on the left from activity on the right.
    The collapsible "Details" section follows the summary in the left
    column so the activity feed stays full-height. */
@@ -3818,7 +3826,7 @@ a {
   }
 
   html[data-mode="sidepanel"] .token-detail-summary { grid-area: summary; }
-  html[data-mode="sidepanel"] .token-detail-activity { grid-area: activity; }
+  html[data-mode="sidepanel"] .token-detail-activity { grid-area: activity; margin-top: 0; }
   html[data-mode="sidepanel"] .token-detail-extras { grid-area: extras; }
 }
 

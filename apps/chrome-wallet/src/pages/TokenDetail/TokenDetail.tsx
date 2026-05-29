@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { getIndexer } from "../../utils/indexer";
-import { truncateAddress } from "../../utils/format";
 import { enrichIndexerToken } from "../../utils/enrich-token";
 import { addressForms } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
@@ -668,7 +667,7 @@ export default function TokenDetail() {
               target="_blank"
               rel="noopener noreferrer"
             >
-              {truncateAddress(token.mint, 8)}
+              {token.mint}
             </a>
             <CopyButton text={token.mint} />
             <a
@@ -690,7 +689,7 @@ export default function TokenDetail() {
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                {truncateAddress(token.tokenAccount, 8)}
+                {token.tokenAccount}
               </a>
               <CopyButton text={token.tokenAccount} />
               <a
