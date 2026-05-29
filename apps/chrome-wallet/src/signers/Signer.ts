@@ -31,7 +31,12 @@ import {
   getSignedTransactionFromActivity,
   type TurnkeyClient,
 } from "@turnkey/http";
+import * as bitcoin from "bitcoinjs-lib";
 import { bytesToHex, computeBip322ToSignTaprootSighash } from "../utils/bip322";
+import {
+  psbtHasOpReturnOutput,
+  signPsbtViaRawSighash,
+} from "../utils/psbt-raw-sign";
 import { isExternalAccount, isWatchAccount, type WalletAccount } from "../state/types";
 import { sessionManager } from "../session/SessionManager";
 
@@ -170,6 +175,32 @@ export class SessionStampedSigner implements Signer {
   }
 
   async signPsbt(opts: SignPsbtOptions): Promise<SignPsbtResult> {
+    // Turnkey's `signTransaction` API validates every output by
+    // trying to extract a payable address from its script. That
+    // works for ordinary sends but rejects PSBTs that include an
+    // OP_RETURN -- notably our rune-transfer PSBTs, which carry a
+    // runestone as output 0 ("Turnkey error 3: ...
+    // UnrecognizedScript"). Detect that case and route around the
+    // validator by computing each input's BIP-341 sighash locally
+    // and signing the 32-byte digest via raw-payload (the same
+    // primitive `signArchPayload` already uses). End result is a
+    // tapKeySig-populated PSBT the existing finalize/broadcast
+    // pipeline consumes unchanged.
+    const parsed = bitcoin.Psbt.fromHex(opts.psbtHex);
+    if (psbtHasOpReturnOutput(parsed)) {
+      await signPsbtViaRawSighash(parsed, async (digestHex) => {
+        const r = await this.signArchPayload({
+          signingRequestId: "",
+          payloadHex: digestHex,
+        });
+        // `signArchPayload` returns `${r}${s}` as a 64-byte hex
+        // string -- exactly what tapKeySig wants for
+        // SIGHASH_DEFAULT.
+        return r.signature64Hex;
+      });
+      return { signedPsbtHex: parsed.toHex() };
+    }
+
     const res = await (await this.client()).signTransaction({
       type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
       timestampMs: String(Date.now()),
