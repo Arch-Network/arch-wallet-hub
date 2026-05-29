@@ -669,55 +669,49 @@ export default function Dashboard() {
         <div className="section-title">Bitcoin</div>
         <div className="card">
           {balancesReady ? (
-            <div className={`asset-row ${btcPending !== 0 ? "has-pending" : ""}`}>
-              <div className="asset-icon btc">₿</div>
-              <div className="asset-info">
-                <div className="asset-name">Bitcoin</div>
-                <div className="asset-sub">BTC</div>
-              </div>
-              <div className="asset-balance-group">
-                {btcPending !== 0 ? (
-                  <>
-                    <div className="asset-balance">{formatBtcAmount((btcBalance ?? 0) + btcPending)}</div>
-                    {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd) && (
-                      <div className="asset-balance-usd">
-                        {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd)}
-                      </div>
-                    )}
-                    <div className="asset-balance-breakdown">
-                      <span className="asset-confirmed">{formatBtcAmount(btcBalance ?? 0)} confirmed</span>
-                      <span className={`asset-pending-line ${btcPending > 0 ? "incoming" : "outgoing"}`}>
-                        {btcPending > 0 ? "+" : ""}{(btcPending / 1e8).toFixed(8)} pending
-                      </span>
-                      {btcProtected > 0 && (
-                        <span
-                          className="asset-protected-line"
-                          title="Locked in Ordinal inscriptions and/or Rune balances. These outputs are excluded from BTC sends to prevent accidental loss."
-                        >
-                          {formatBtcAmount(btcProtected)} locked in inscriptions/runes
-                        </span>
-                      )}
+            <div className={`asset-row btc-row ${btcPending !== 0 ? "has-pending" : ""}`}>
+              <div className="btc-row-head">
+                <div className="asset-icon btc">₿</div>
+                <div className="asset-info">
+                  <div className="asset-name">Bitcoin</div>
+                  <div className="asset-sub">BTC</div>
+                </div>
+                <div className="asset-balance-group">
+                  <div className="asset-balance">{formatBtcAmount((btcBalance ?? 0) + btcPending)}</div>
+                  {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd) && (
+                    <div className="asset-balance-usd">
+                      {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd)}
                     </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="asset-balance">{formatBtcAmount(btcBalance ?? 0)}</div>
-                    {formatBtcUsd(btcBalance ?? 0, btcUsd) && (
-                      <div className="asset-balance-usd">{formatBtcUsd(btcBalance ?? 0, btcUsd)}</div>
-                    )}
-                    {btcProtected > 0 && (
-                      <div
-                        className="asset-balance-breakdown"
-                        title="Locked in Ordinal inscriptions and/or Rune balances. These outputs are excluded from BTC sends to prevent accidental loss."
-                      >
-                        <span className="asset-protected-line">
-                          {formatBtcAmount(btcProtected)} locked in inscriptions/runes
+                  )}
+                </div>
+              </div>
+              {(btcPending !== 0 || btcProtected > 0) && (
+                <div className="btc-breakdown">
+                  {btcPending !== 0 && (
+                    <>
+                      <div className="btc-breakdown-row">
+                        <span className="btc-breakdown-label">Confirmed</span>
+                        <span className="btc-breakdown-value">{formatBtcAmount(btcBalance ?? 0)}</span>
+                      </div>
+                      <div className="btc-breakdown-row">
+                        <span className="btc-breakdown-label">Pending</span>
+                        <span className={`btc-breakdown-value is-pending ${btcPending > 0 ? "incoming" : "outgoing"}`}>
+                          {btcPending > 0 ? "+" : ""}{(btcPending / 1e8).toFixed(8)}
                         </span>
                       </div>
-                    )}
-                  </>
-                )}
-              </div>
+                    </>
+                  )}
+                  {btcProtected > 0 && (
+                    <div
+                      className="btc-breakdown-row is-locked"
+                      title="Locked in Ordinal inscriptions and/or Rune balances. These outputs are excluded from BTC sends to prevent accidental loss."
+                    >
+                      <span className="btc-breakdown-label">Locked in inscriptions/runes</span>
+                      <span className="btc-breakdown-value">{formatBtcAmount(btcProtected)}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <SkeletonAssetRow />
