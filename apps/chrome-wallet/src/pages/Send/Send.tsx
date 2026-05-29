@@ -18,6 +18,7 @@ import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress, isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
 import QrScanner from "../../components/QrScanner";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
+import { dustThresholdForAddress } from "../../utils/btc-dust";
 import {
   buildExplorerUrl,
   notifyTxBroadcast,
@@ -345,7 +346,16 @@ export default function Send({ networkStatus }: SendProps) {
       if (!opts?.keepStep) setBtcPrepare(null);
       try {
         const amountSats = Math.round((Number(amount) || 0) * 1e8);
-        if (amountSats < 546) throw new Error("Amount too small (minimum 546 sats)");
+        // Dust threshold depends on the recipient's script type:
+        // P2WPKH=294, P2TR/P2WSH=330, P2SH=540, P2PKH=546. The old
+        // hardcoded 546 blocked legitimately-relayable small sends
+        // to SegWit/Taproot recipients (which most modern wallets
+        // are). dustThresholdForAddress() returns the canonical
+        // post-segwit value matching Bitcoin Core's policy.
+        const recipientDust = dustThresholdForAddress(recipient.trim());
+        if (amountSats < recipientDust) {
+          throw new Error(`Amount too small (minimum ${recipientDust} sats for this address type)`);
+        }
 
         const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
 
