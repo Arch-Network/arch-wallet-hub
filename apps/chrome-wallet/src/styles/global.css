@@ -1044,6 +1044,19 @@ a {
   color: var(--warning);
 }
 
+/*
+ * Subline showing sats locked in inscriptions / rune balances on
+ * the BTC asset row. Muted color (less prominent than pending) to
+ * avoid alarming users whose protected sats are intentional.
+ */
+.asset-protected-line {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: help;
+}
+
 /* ═══════════════════ Send Asset Picker ═══════════════════ */
 
 .send-asset-list {

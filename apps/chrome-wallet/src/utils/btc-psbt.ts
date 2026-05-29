@@ -1,6 +1,7 @@
 import * as bitcoin from "bitcoinjs-lib";
 import * as ecc from "@bitcoinerlab/secp256k1";
 import type { BtcUtxo, IndexerClient } from "./indexer";
+import { partitionByProtection } from "./btc-protection";
 
 // bitcoinjs-lib v6 needs an ECC backend wired in for taproot helpers.
 // `@bitcoinerlab/secp256k1` is a pure-JS implementation that works in
@@ -36,13 +37,34 @@ export interface BuildPsbtResult {
 const DUST_THRESHOLD_SATS = 546;
 const MIN_FALLBACK_FEE_RATE = 5;
 
-function selectUtxos(
+/**
+ * Coin selection for a plain BTC send. Filters out protected UTXOs
+ * (inscriptions, runes, risky_runes) BEFORE sorting, so an inscribed
+ * 50,000-sat output can never be selected as fee fodder over a plain
+ * 10,000-sat output.
+ *
+ * Two failure modes, distinguishable by error code:
+ *   - INSUFFICIENT_SPENDABLE_BTC: spendable subset alone can't cover
+ *     target+fee, but protected UTXOs would have. Caller is expected
+ *     to surface "you have BTC, but it's locked in inscriptions/runes".
+ *   - INSUFFICIENT_BALANCE: total balance (spendable + protected) is
+ *     also under target+fee. Plain "not enough BTC" failure.
+ *
+ * Behavior on legacy / unenriched UTXO lists is unchanged: when no
+ * UTXO carries protection metadata, partitionByProtection returns
+ * the entire list as spendable and selection proceeds as before.
+ */
+/** Exported for unit tests; `buildUnsignedPsbt` is the production entry. */
+export function selectUtxos(
   utxos: BtcUtxo[],
   targetSats: number,
   feeSats: number
 ): { selected: BtcUtxo[]; totalInput: number } {
-  const sorted = [...utxos].sort((a, b) => b.value - a.value);
+  const { spendable, spendableSats, protectedSats } =
+    partitionByProtection(utxos);
+
   const needed = targetSats + feeSats;
+  const sorted = [...spendable].sort((a, b) => b.value - a.value);
   const selected: BtcUtxo[] = [];
   let total = 0;
 
@@ -53,6 +75,18 @@ function selectUtxos(
   }
 
   if (total < needed) {
+    // Caller can distinguish the two failure modes by the error code:
+    // if some protected UTXOs would have unblocked the send, point
+    // the user at their inscriptions / runes specifically.
+    if (protectedSats > 0 && spendableSats + protectedSats >= needed) {
+      const err = new Error(
+        `Insufficient spendable BTC: have ${spendableSats} sats spendable + ${protectedSats} sats locked in inscriptions/runes, need ${needed} sats (${targetSats} + ${feeSats} fee). Move or sell the protected assets first.`
+      );
+      (err as any).code = "INSUFFICIENT_SPENDABLE_BTC";
+      (err as any).spendableSats = spendableSats;
+      (err as any).protectedSats = protectedSats;
+      throw err;
+    }
     const err = new Error(
       `Insufficient BTC balance: have ${total} sats, need ${needed} sats (${targetSats} + ${feeSats} fee)`
     );

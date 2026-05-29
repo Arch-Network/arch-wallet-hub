@@ -74,6 +74,46 @@ export interface BtcAddressSummary {
   };
   outputs?: Array<Record<string, unknown>>;
   value?: number;
+
+  /**
+   * Sats sum across UTXOs that are NOT encumbered by inscriptions
+   * or rune balances. Populated by the Titan-backed indexer on
+   * testnet; may be absent on mainnet until sync completes -- in
+   * that case callers should fall back to `value`.
+   */
+  spendable_value?: number;
+
+  /**
+   * Sats sum across UTXOs that ARE encumbered (inscriptions, runes,
+   * or mempool-pending runes). Companion to `spendable_value`;
+   * either both fields are present or both are absent.
+   */
+  protected_value?: number;
+
+  [k: string]: unknown;
+}
+
+/**
+ * Inscription metadata attached to an enriched UTXO. The Titan
+ * indexer returns just `id` here -- richer fields (content_type,
+ * satpoint) come from the per-inscription endpoint, not the UTXO
+ * list. Keep this shape minimal so the wallet doesn't depend on
+ * optional indexer fields landing on the UTXO list.
+ */
+export interface BtcUtxoInscription {
+  id: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Rune balance carried by a UTXO. Amount is a decimal string
+ * because the underlying value is u128 (Number is unsafe above 2^53).
+ * Callers MUST parse with `BigInt(amount)` before arithmetic.
+ */
+export interface BtcUtxoRune {
+  rune_id: string;
+  spaced_name?: string;
+  amount: string;
   [k: string]: unknown;
 }
 
@@ -82,6 +122,26 @@ export interface BtcUtxo {
   vout: number;
   value: number;
   status?: { confirmed: boolean; block_height?: number };
+
+  /**
+   * Ordinal inscriptions present on this output. Field is omitted
+   * (not empty array) on plain BTC outputs -- check with
+   * `"inscriptions" in utxo` or use isProtectedUtxo() from
+   * btc-protection.ts which handles both shapes.
+   */
+  inscriptions?: BtcUtxoInscription[];
+
+  /** Confirmed rune balances on this output. */
+  runes?: BtcUtxoRune[];
+
+  /**
+   * Mempool-pending rune balances on this output. Treat as
+   * protected even though not yet confirmed -- including a
+   * risky-runed UTXO in coin selection lets a front-runner
+   * invalidate the user's send.
+   */
+  risky_runes?: BtcUtxoRune[];
+
   [k: string]: unknown;
 }
 
