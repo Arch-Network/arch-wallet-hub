@@ -19,6 +19,7 @@ import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd } from "../../utils/format";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
+import { txHasRunestone } from "../../utils/btc-tx-classify";
 import { summarizeArchTx, type ArchTxSummary } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
 import {
@@ -136,7 +137,12 @@ function buildBtcAmountLabel(direction: BtcTxDelta["direction"], sats: number): 
   return `${sign}${formatBtc(sats)}`;
 }
 
-function btcLabel(direction: BtcTxDelta["direction"]): string {
+function btcLabel(direction: BtcTxDelta["direction"], isRune: boolean): string {
+  if (isRune) {
+    if (direction === "in") return "Received Rune";
+    if (direction === "out") return "Sent Rune";
+    return "Rune Transfer";
+  }
   if (direction === "in") return "Received BTC";
   if (direction === "out") return "Sent BTC";
   return "BTC Transaction";
@@ -351,7 +357,26 @@ export default function Dashboard() {
         const rawList = (btcTxs ?? []).slice(0, 5);
         const fullTxs = await Promise.all(
           rawList.map(async (entry) => {
-            if (typeof entry === "object" && entry !== null && (entry as any).txid) return entry as any;
+            // Mempool listings return minimal `{txid}` objects with
+            // no `vin`/`vout`/`input`/`output`; the unconditional
+            // "has txid -> use as-is" short-circuit left those rows
+            // un-classifiable. Re-fetch when input/output arrays
+            // are missing so rune detection + direction parsing
+            // have something to work with.
+            if (typeof entry === "object" && entry !== null && (entry as any).txid) {
+              const obj = entry as any;
+              const hasIO =
+                Array.isArray(obj.vin) ||
+                Array.isArray(obj.vout) ||
+                Array.isArray(obj.input) ||
+                Array.isArray(obj.output);
+              if (hasIO) return obj;
+              try {
+                return await indexer.getBtcTransaction(obj.txid);
+              } catch {
+                return obj;
+              }
+            }
             const txid = typeof entry === "string" ? entry : null;
             if (!txid) return null;
             try {
@@ -365,15 +390,28 @@ export default function Dashboard() {
         for (const tx of fullTxs) {
           const txid = tx?.txid as string | undefined;
           if (!txid) continue;
-          const timeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
+          const rawTimeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
+          // Clamp future timestamps. Same rationale as History.tsx:
+          // a tx that has happened cannot legitimately display a
+          // moment in the future, but indexer mempool views and
+          // Bitcoin's loose block-time anti-malleability rules can
+          // surface +N-minute drift.
+          const nowMs = Date.now();
+          const timeMs = rawTimeMs != null && rawTimeMs > nowMs ? nowMs : rawTimeMs;
           const { direction, sats } = parseRecentBtcTx(tx, btcAddrForNetwork);
+          // Detect rune transfers locally (OP_RETURN OP_13). Avoids
+          // the misleading "BTC Transaction" label and suppresses
+          // the ~dust+fee net debit, which would otherwise show as
+          // an irrelevant "BTC moved" amount on a rune row.
+          const isRune = txHasRunestone(tx);
+          const showAmount = !isRune;
           btcTxItems.push({
             txid,
             type: "btc",
             direction,
-            sats,
-            label: btcLabel(direction),
-            amountLabel: buildBtcAmountLabel(direction, sats),
+            sats: showAmount ? sats : 0,
+            label: btcLabel(direction, isRune),
+            amountLabel: showAmount ? buildBtcAmountLabel(direction, sats) : undefined,
             timestamp: timeMs != null ? String(timeMs) : undefined,
             status: isBtcTxConfirmed(tx) ? "confirmed" : "unconfirmed",
             explorerUrl: `${btcExplorerBase}${txid}`,
