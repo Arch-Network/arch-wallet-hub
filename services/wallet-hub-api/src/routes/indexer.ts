@@ -267,6 +267,31 @@ const BtcTxsQuery = Type.Object({
   after_txid: Type.Optional(Type.String()),
 });
 
+const BtcInscriptionsQuery = Type.Object({
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+  cursor: Type.Optional(Type.String({ maxLength: 512 })),
+});
+
+const BtcRuneTransactionsQuery = Type.Object({
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+  cursor: Type.Optional(Type.String({ maxLength: 512 })),
+  rune_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+});
+
+/** `txid:vout` outpoint (64-hex txid, colon, vout index). */
+const BtcOutpointParam = Type.Object({
+  outpoint: Type.String({
+    minLength: 66,
+    maxLength: 80,
+    pattern: "^[0-9a-fA-F]{64}:[0-9]+$",
+  }),
+});
+
+/** Rune ID (`block:tx`) or spaced rune name (URL-encoded on the wire). */
+const BtcRuneParam = Type.Object({
+  rune: Type.String({ minLength: 1, maxLength: 256 }),
+});
+
 const FaucetBody = Type.Object({
   address: Type.String({ minLength: 1 }),
 });

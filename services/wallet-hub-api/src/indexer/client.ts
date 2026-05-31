@@ -42,10 +42,24 @@ export type IndexerClient = {
 
   /**
    * Inscriptions held at a Bitcoin address (paginated). Cursor is
-   * an opaque base64 string from a previous response's `next_cursor`.
-   * Page size is fixed at 100 by ord upstream.
+   * an opaque token from a previous response's `next_cursor`.
    */
-  getBtcAddressInscriptions(address: string, cursor?: string): Promise<unknown>;
+  getBtcAddressInscriptions(
+    address: string,
+    options?: { cursor?: string; limit?: number }
+  ): Promise<unknown>;
+
+  /** Rune metadata by ID or spaced name. */
+  getBtcRune(rune: string): Promise<unknown>;
+
+  /** Per-output detail (`txid:vout`). */
+  getBtcOutput(outpoint: string): Promise<unknown>;
+
+  /** Address-scoped rune transfer history (paginated). */
+  getBtcAddressRuneTransactions(
+    address: string,
+    options?: { limit?: number; cursor?: string; rune_id?: string }
+  ): Promise<unknown>;
 
   /**
    * Per-inscription metadata: id, number, content_type, satpoint,

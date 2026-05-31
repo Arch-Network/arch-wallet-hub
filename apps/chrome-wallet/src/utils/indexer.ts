@@ -414,11 +414,36 @@ export class ArchIndexerClient {
 
   getBtcAddressInscriptions(
     btcAddress: string,
-    cursor?: string
+    options?: { cursor?: string; limit?: number }
   ): Promise<BtcAddressInscriptionsResponse> {
-    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    const qs = new URLSearchParams();
+    if (options?.cursor) qs.set("cursor", options.cursor);
+    if (options?.limit !== undefined) qs.set("limit", String(options.limit));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
     return this.getJson(
       `/bitcoin/address/${encodeURIComponent(btcAddress)}/inscriptions${suffix}`
+    );
+  }
+
+  getBtcRune(rune: string): Promise<BtcRuneMetadata> {
+    return this.getJson(`/bitcoin/runes/${encodeURIComponent(rune)}`);
+  }
+
+  getBtcOutput(outpoint: string): Promise<BtcOutputDetail> {
+    return this.getJson(`/bitcoin/output/${encodeURIComponent(outpoint)}`);
+  }
+
+  getBtcAddressRuneTransactions(
+    btcAddress: string,
+    options?: { limit?: number; cursor?: string; rune_id?: string }
+  ): Promise<BtcAddressRuneTransactionsResponse> {
+    const qs = new URLSearchParams();
+    if (options?.limit !== undefined) qs.set("limit", String(options.limit));
+    if (options?.cursor) qs.set("cursor", options.cursor);
+    if (options?.rune_id) qs.set("rune_id", options.rune_id);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.getJson(
+      `/bitcoin/address/${encodeURIComponent(btcAddress)}/rune-transactions${suffix}`
     );
   }
 
