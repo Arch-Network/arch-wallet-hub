@@ -374,6 +374,32 @@ components:
           $ref: "#/components/schemas/BtcAddressStats"
         mempool_stats:
           $ref: "#/components/schemas/BtcAddressStats"
+        spendable_value:
+          type: integer
+          description: Sats on UTXOs with no inscriptions or rune balances.
+        protected_value:
+          type: integer
+          description: Sats on UTXOs carrying inscriptions and/or runes.
+      additionalProperties: true
+
+    BtcUtxoInscriptionRef:
+      type: object
+      properties:
+        id:
+          type: string
+      additionalProperties: true
+
+    BtcUtxoRuneBalance:
+      type: object
+      properties:
+        rune_id:
+          type: string
+        spaced_name:
+          type: string
+        amount:
+          type: string
+          description: Raw u128 amount as a decimal string.
+      required: [rune_id, spaced_name, amount]
       additionalProperties: true
 
     BtcTxStatus:
@@ -404,18 +430,6 @@ components:
           description: Value in satoshis.
         status:
           $ref: "#/components/schemas/BtcTxStatus"
-        inscriptions:
-          type: array
-          items:
-            $ref: "#/components/schemas/BtcUtxoInscriptionRef"
-        runes:
-          type: array
-          items:
-            $ref: "#/components/schemas/BtcUtxoRuneBalance"
-        risky_runes:
-          type: array
-          items:
-            $ref: "#/components/schemas/BtcUtxoRuneBalance"
 
     BtcTxOutput:
       type: object
