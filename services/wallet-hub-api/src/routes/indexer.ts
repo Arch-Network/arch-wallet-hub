@@ -267,31 +267,6 @@ const BtcTxsQuery = Type.Object({
   after_txid: Type.Optional(Type.String()),
 });
 
-const BtcInscriptionsQuery = Type.Object({
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
-  cursor: Type.Optional(Type.String({ maxLength: 512 })),
-});
-
-const BtcRuneTransactionsQuery = Type.Object({
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
-  cursor: Type.Optional(Type.String({ maxLength: 512 })),
-  rune_id: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-});
-
-/** `txid:vout` outpoint (64-hex txid, colon, vout index). */
-const BtcOutpointParam = Type.Object({
-  outpoint: Type.String({
-    minLength: 66,
-    maxLength: 80,
-    pattern: "^[0-9a-fA-F]{64}:[0-9]+$",
-  }),
-});
-
-/** Rune ID (`block:tx`) or spaced rune name (URL-encoded on the wire). */
-const BtcRuneParam = Type.Object({
-  rune: Type.String({ minLength: 1, maxLength: 256 }),
-});
-
 const FaucetBody = Type.Object({
   address: Type.String({ minLength: 1 }),
 });
@@ -763,19 +738,86 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
         summary: "BTC address inscriptions (paginated, proxied)",
         tags: ["indexer"],
         params: AddressParam,
-        querystring: Type.Object({
-          cursor: Type.Optional(Type.String({ maxLength: 256 })),
-        }),
+        querystring: BtcInscriptionsQuery,
       },
     },
     async (request, reply) => {
       const indexer = indexerOr501(request, reply);
       if (!indexer) return;
       const { address } = request.params as { address: string };
-      const { cursor } = request.query as { cursor?: string };
+      const { cursor, limit } = request.query as {
+        cursor?: string;
+        limit?: number;
+      };
       const result = await forward(reply, () =>
-        indexer.getBtcAddressInscriptions(address, cursor),
+        indexer.getBtcAddressInscriptions(address, { cursor, limit }),
       );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
+    "/indexer/btc/address/:address/rune-transactions",
+    {
+      schema: {
+        summary: "BTC address rune transfer history (paginated, proxied)",
+        tags: ["indexer"],
+        params: AddressParam,
+        querystring: BtcRuneTransactionsQuery,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { address } = request.params as { address: string };
+      const { cursor, limit, rune_id } = request.query as {
+        cursor?: string;
+        limit?: number;
+        rune_id?: string;
+      };
+      const result = await forward(reply, () =>
+        indexer.getBtcAddressRuneTransactions(address, {
+          cursor,
+          limit,
+          rune_id,
+        }),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
+    "/indexer/btc/runes/:rune",
+    {
+      schema: {
+        summary: "Rune metadata by ID or spaced name (proxied)",
+        tags: ["indexer"],
+        params: BtcRuneParam,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { rune } = request.params as { rune: string };
+      const result = await forward(reply, () => indexer.getBtcRune(rune));
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
+    "/indexer/btc/output/:outpoint",
+    {
+      schema: {
+        summary: "Bitcoin output detail by outpoint txid:vout (proxied)",
+        tags: ["indexer"],
+        params: BtcOutpointParam,
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { outpoint } = request.params as { outpoint: string };
+      const result = await forward(reply, () => indexer.getBtcOutput(outpoint));
       if (result !== undefined) reply.send(result);
     },
   );
