@@ -29,15 +29,8 @@ import {
 } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { InscriptionThumb } from "../../components/InscriptionThumb";
+import BackBar from "../../components/BackBar";
 import CopyButton from "../../components/CopyButton";
-
-function BackChevron() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="15 18 9 12 15 6" />
-    </svg>
-  );
-}
 
 function formatBytes(n?: number): string {
   if (n == null || !Number.isFinite(n)) return "\u2014";
@@ -68,20 +61,14 @@ interface DetailProps {
   indexer: IndexerClient;
   summary: BtcInscriptionSummary;
   btcExplorerBase: string;
-  /** Present only in the compact sheet, where the user can dismiss. */
-  onClose?: () => void;
+  /** Navigate to the send-inscription flow for this inscription. */
+  onSend: () => void;
 }
 
-function InscriptionDetail({ indexer, summary, btcExplorerBase, onClose }: DetailProps) {
+function InscriptionDetail({ indexer, summary, btcExplorerBase, onSend }: DetailProps) {
   const txid = txidFromSatpoint(summary.satpoint);
   return (
     <div className="collectible-detail">
-      {onClose && (
-        <button className="back-link" onClick={onClose}>
-          <BackChevron />
-          Back to gallery
-        </button>
-      )}
       <div className="collectible-detail-preview">
         <InscriptionThumb indexer={indexer} summary={summary} size={200} />
       </div>
@@ -120,6 +107,9 @@ function InscriptionDetail({ indexer, summary, btcExplorerBase, onClose }: Detai
         </div>
       </div>
 
+      <button className="btn btn-primary btn-full" onClick={onSend}>
+        Send
+      </button>
       {txid && (
         <a
           className="btn btn-secondary btn-full"
@@ -130,7 +120,6 @@ function InscriptionDetail({ indexer, summary, btcExplorerBase, onClose }: Detai
           View transaction
         </a>
       )}
-      <div className="collectible-detail-hint">Sending inscriptions is coming soon.</div>
     </div>
   );
 }
@@ -197,12 +186,21 @@ export default function Collectibles() {
     }
   }, [wide, items, selectedId]);
 
+  // In the compact layout a tapped tile replaces the grid with the
+  // detail view, so the single sticky back control steps back to the
+  // gallery first, then out to the dashboard -- one affordance, no
+  // stacked "Back" + "Back to gallery" buttons.
+  const onPageBack = () => {
+    if (!wide && selected) {
+      setSelectedId(null);
+    } else {
+      navigate("/dashboard");
+    }
+  };
+
   return (
     <div className="collectibles-page">
-      <button className="back-link" onClick={() => navigate("/dashboard")}>
-        <BackChevron />
-        Back
-      </button>
+      <BackBar onBack={onPageBack} />
       <div className="page-header">
         <h2 className="page-title">Collectibles</h2>
         <div className="page-subtitle">
@@ -258,7 +256,7 @@ export default function Collectibles() {
           indexer={indexer}
           summary={selected}
           btcExplorerBase={btcExplorerBase}
-          onClose={() => setSelectedId(null)}
+          onSend={() => navigate(`/send-inscription/${encodeURIComponent(selected.id)}`)}
         />
       );
     }
@@ -293,6 +291,7 @@ export default function Collectibles() {
               indexer={indexer}
               summary={selected}
               btcExplorerBase={btcExplorerBase}
+              onSend={() => navigate(`/send-inscription/${encodeURIComponent(selected.id)}`)}
             />
           </aside>
         )}

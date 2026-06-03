@@ -17,6 +17,7 @@ import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress, isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
 import QrScanner from "../../components/QrScanner";
+import BackBar from "../../components/BackBar";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
 import { dustThresholdForAddress } from "../../utils/btc-dust";
 import {
@@ -936,12 +937,7 @@ export default function Send({ networkStatus }: SendProps) {
 
     return (
       <div className="send-form-shell">
-        <button className="back-link" onClick={() => setStep(1)}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-          Back
-        </button>
+        <BackBar onBack={() => setStep(1)} />
         <div className="page-header">
           <h2 className="page-title">Send {assetLabel}</h2>
           <div className="page-subtitle">Enter the recipient address and the amount to send.</div>
@@ -1126,12 +1122,7 @@ export default function Send({ networkStatus }: SendProps) {
 
     return (
       <div className="send-form-shell">
-        <button className="back-link" onClick={() => { setStep(2); setBtcPrepare(null); }}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-          Back
-        </button>
+        <BackBar onBack={() => { setStep(2); setBtcPrepare(null); }} />
         <div className="page-header">
           <h2 className="page-title">Review</h2>
           <div className="page-subtitle">Double-check the details before signing this transaction.</div>

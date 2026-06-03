@@ -663,11 +663,17 @@ export default function Dashboard() {
       <div className="dashboard-grid">
       <div className="dashboard-assets-col">
 
-      {/* Bitcoin -- the hero asset. Always shown, even for a brand-new
-          BTC-only wallet. */}
+      {/* Unified holdings list. BTC -> Arch -> APL tokens -> runes ->
+          Collectibles, all rendered as uniform rows inside a single
+          card so the dashboard reads as one continuous holdings
+          surface instead of a stack of per-asset-class boxes. Runes
+          and Collectibles rows are omitted entirely when empty. */}
       <div className="section">
-        <div className="section-title">Bitcoin</div>
-        <div className="card">
+        <div className="section-title">Assets</div>
+        <div className="card holdings">
+          {/* Bitcoin -- the hero asset. Always shown, even for a
+              brand-new BTC-only wallet. Carries the optional
+              pending/locked breakdown. */}
           {balancesReady ? (
             <div className={`asset-row btc-row ${btcPending !== 0 ? "has-pending" : ""}`}>
               <div className="btc-row-head">
@@ -716,14 +722,8 @@ export default function Dashboard() {
           ) : (
             <SkeletonAssetRow />
           )}
-        </div>
-      </div>
 
-      {/* Arch -- ARCH plus any APL tokens. Prominent, second only to
-          Bitcoin in the asset hierarchy. */}
-      <div className="section">
-        <div className="section-title">Arch</div>
-        <div className="card">
+          {/* Arch */}
           {balancesReady ? (
             <div className="asset-row">
               <div className="asset-icon arch"><ArchIcon size={18} /></div>
@@ -737,6 +737,8 @@ export default function Dashboard() {
             <SkeletonAssetRow />
           )}
 
+          {/* APL tokens (capped inline; overflow folds into a
+              "+N more tokens" row that deep-links to the token list). */}
           {tokensLoaded
             ? (() => {
                 const allTokens = tokens ?? [];
@@ -746,10 +748,9 @@ export default function Dashboard() {
                   <>
                     {visible.map((tk) => (
                       <div
-                        className="asset-row"
+                        className="asset-row clickable"
                         key={tk.mint}
                         onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
-                        style={{ cursor: "pointer" }}
                       >
                         <TokenIcon
                           image={tk.image}
@@ -782,26 +783,19 @@ export default function Dashboard() {
               })()
             : <SkeletonAssetRow />
           }
-        </div>
-      </div>
 
-      {/* Runes -- Bitcoin-native fungible tokens. Whole section is
-          hidden for the common BTC-only wallet. Each row deep-links
-          into the rune send flow. `runes === null` is the loading
-          state; we skip a skeleton because runes are optional
-          decoration, not critical path. */}
-      {runes && runes.length > 0 && (
-        <div className="section">
-          <div className="section-title">Runes</div>
-          <div className="card">
-            {runes.map((r) => (
+          {/* Runes -- Bitcoin-native fungible tokens. Each row
+              deep-links into the rune send flow. Omitted for the
+              common BTC-only wallet. */}
+          {runes && runes.length > 0 &&
+            runes.map((r) => (
               <div
                 className="asset-row clickable"
                 key={r.rune_id}
                 onClick={() => navigate(`/send-rune/${encodeURIComponent(r.rune_id)}`)}
                 title={`Send ${r.spaced_name}`}
               >
-                <div className="asset-icon apl">
+                <div className="asset-icon rune">
                   {r.symbol && r.symbol.trim().length > 0 ? r.symbol : "\u00A4"}
                 </div>
                 <div className="asset-info">
@@ -813,32 +807,34 @@ export default function Dashboard() {
                 </div>
               </div>
             ))}
-          </div>
-        </div>
-      )}
 
-      {/* Ordinals -- inscription gallery. Compact thumbnail strip;
-          a full detail/gallery view lands in a later phase. Hidden
-          when the address holds no inscriptions. */}
-      {thumbIndexer && inscriptions && inscriptions.length > 0 && (
-        <div className="section">
-          <div className="section-title">Ordinals</div>
-          <div className="card">
+          {/* Collectibles -- single row summarizing inscriptions, with
+              a thumbnail preview that taps through to the gallery.
+              Omitted when the address holds no inscriptions. */}
+          {thumbIndexer && inscriptions && inscriptions.length > 0 && (
             <div
-              className="inscription-gallery-row clickable"
+              className="asset-row clickable collectibles-row"
               onClick={() => navigate("/collectibles")}
               title="View all collectibles"
             >
-              <div className="inscription-gallery-meta">
-                <div className="asset-name">
+              <div className="asset-icon collectibles">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                  <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                  <rect x="14" y="14" width="7" height="7" rx="1.5" />
+                </svg>
+              </div>
+              <div className="asset-info">
+                <div className="asset-name">Collectibles</div>
+                <div className="asset-sub">
                   {inscriptions.length === 1
                     ? "1 inscription"
                     : `${inscriptions.length} inscriptions`}
                 </div>
-                <div className="asset-sub">Ordinal inscriptions</div>
               </div>
               <div className="inscription-gallery-thumbs">
-                {inscriptions.slice(0, 5).map((insc) => (
+                {inscriptions.slice(0, 3).map((insc) => (
                   <InscriptionThumb
                     key={insc.id}
                     indexer={thumbIndexer}
@@ -846,12 +842,12 @@ export default function Dashboard() {
                     size={36}
                   />
                 ))}
-                {inscriptions.length > 5 && (
+                {inscriptions.length > 3 && (
                   <div
                     className="inscription-gallery-more"
-                    title={`+${inscriptions.length - 5} more inscriptions`}
+                    title={`+${inscriptions.length - 3} more inscriptions`}
                   >
-                    +{inscriptions.length - 5}
+                    +{inscriptions.length - 3}
                   </div>
                 )}
               </div>
@@ -863,9 +859,9 @@ export default function Dashboard() {
                 <polyline points="9 18 15 12 9 6" />
               </svg>
             </div>
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
       </div>
 

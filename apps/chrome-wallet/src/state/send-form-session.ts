@@ -46,13 +46,16 @@
 // Each page only ever reads / writes its own slot.
 const KEY_BTC_ARCH_APL = "arch_wallet_send_form_session_btc";
 const KEY_RUNE = "arch_wallet_send_form_session_rune";
+const KEY_INSCRIPTION = "arch_wallet_send_form_session_inscription";
 const TTL_MS = 30 * 60 * 1000;
 
 function keyForKind(kind: SendKind): string {
-  return kind === "rune" ? KEY_RUNE : KEY_BTC_ARCH_APL;
+  if (kind === "rune") return KEY_RUNE;
+  if (kind === "inscription") return KEY_INSCRIPTION;
+  return KEY_BTC_ARCH_APL;
 }
 
-export type SendKind = "btc-arch-apl" | "rune";
+export type SendKind = "btc-arch-apl" | "rune" | "inscription";
 
 /** What we restore for the Send.tsx (BTC/ARCH/APL) flow. */
 export interface BtcArchAplFormState {
@@ -75,7 +78,18 @@ export interface RuneFormState {
   amount: string;
 }
 
-export type SendFormState = BtcArchAplFormState | RuneFormState;
+/** What we restore for the SendInscription.tsx flow. */
+export interface InscriptionFormState {
+  kind: "inscription";
+  /** Inscription id, e.g. "<64-hex-txid>i<index>". */
+  inscriptionId: string;
+  recipient: string;
+}
+
+export type SendFormState =
+  | BtcArchAplFormState
+  | RuneFormState
+  | InscriptionFormState;
 
 export interface SendFormCheckpoint {
   /** The form state to restore. */
@@ -144,6 +158,8 @@ export async function loadSendForm(filter: {
   network: string;
   /** For rune restores: only return a match if the same rune is open. */
   runeId?: string;
+  /** For inscription restores: only return a match if the same inscription is open. */
+  inscriptionId?: string;
 }): Promise<SendFormCheckpoint | null> {
   const store = sessionStore();
   if (!store) return null;
@@ -171,8 +187,12 @@ export async function loadSendForm(filter: {
     const runeOk =
       filter.kind !== "rune" ||
       (v.form.kind === "rune" && v.form.runeId === filter.runeId);
+    const inscriptionOk =
+      filter.kind !== "inscription" ||
+      (v.form.kind === "inscription" &&
+        v.form.inscriptionId === filter.inscriptionId);
 
-    if (!contextOk || !kindOk || !runeOk) {
+    if (!contextOk || !kindOk || !runeOk || !inscriptionOk) {
       // Different account / network / rune -- the parked form may
       // still be valid for that other context. Don't touch it.
       return null;
@@ -197,7 +217,7 @@ export async function clearSendForm(): Promise<void> {
   const store = sessionStore();
   if (!store) return;
   try {
-    await store.remove([KEY_BTC_ARCH_APL, KEY_RUNE]);
+    await store.remove([KEY_BTC_ARCH_APL, KEY_RUNE, KEY_INSCRIPTION]);
   } catch {
     /* ignore */
   }

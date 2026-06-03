@@ -17,6 +17,7 @@ import Unlock from "../../src/pages/Unlock/Unlock";
 import Dashboard from "../../src/pages/Dashboard/Dashboard";
 import Send from "../../src/pages/Send/Send";
 import SendRune from "../../src/pages/SendRune/SendRune";
+import SendInscription from "../../src/pages/SendInscription/SendInscription";
 import Receive from "../../src/pages/Receive/Receive";
 import History from "../../src/pages/History/History";
 import Collectibles from "../../src/pages/Collectibles/Collectibles";
@@ -300,6 +301,7 @@ function AppRoutes() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/send" element={<Send networkStatus={networkStatus} />} />
             <Route path="/send-rune/:runeId" element={<SendRune />} />
+            <Route path="/send-inscription/:inscriptionId" element={<SendInscription />} />
             <Route path="/receive" element={<Receive />} />
             <Route path="/history" element={<History />} />
             <Route path="/collectibles" element={<Collectibles />} />

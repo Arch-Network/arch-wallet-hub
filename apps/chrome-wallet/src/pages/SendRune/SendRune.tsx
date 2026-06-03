@@ -40,6 +40,7 @@ import { isExternalAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import { buildExplorerUrl, notifyTxBroadcast } from "../../utils/notifications";
 import { formatBtc } from "../../utils/format";
+import BackBar from "../../components/BackBar";
 import {
   clearSendForm,
   loadSendForm,
@@ -277,10 +278,7 @@ export default function SendRune() {
   if (balanceError) {
     return (
       <div className="send-form-shell">
-        <button className="back-link" onClick={() => navigate("/dashboard")}>
-          <BackChevron />
-          Back
-        </button>
+        <BackBar onBack={() => navigate("/dashboard")} />
         <div className="page-header">
           <h2 className="page-title">Send {labelForRune({ spaced_name: runeId })}</h2>
         </div>
@@ -340,17 +338,13 @@ export default function SendRune() {
     const leftoverHuman = formatRuneAmount(prepared.leftoverRune.toString(), balance.divisibility);
     return (
       <div className="send-form-shell">
-        <button
-          className="back-link"
-          onClick={() => {
+        <BackBar
+          onBack={() => {
             setStep("form");
             setError("");
           }}
           disabled={signing}
-        >
-          <BackChevron />
-          Back
-        </button>
+        />
         <div className="page-header">
           <h2 className="page-title">Review</h2>
           <div className="page-subtitle">Double-check the details before signing this transaction.</div>
@@ -449,10 +443,7 @@ export default function SendRune() {
   };
   return (
     <div className="send-form-shell">
-      <button className="back-link" onClick={handleCancelToDashboard}>
-        <BackChevron />
-        Back
-      </button>
+      <BackBar onBack={handleCancelToDashboard} />
       <div className="page-header">
         <h2 className="page-title">Send {balance.spaced_name}</h2>
         <div className="page-subtitle">Enter the recipient address and the amount to send.</div>
@@ -539,22 +530,6 @@ export default function SendRune() {
 
 // Small visual primitives kept local to this file -- they're not
 // reused elsewhere and inlining keeps the component file readable.
-
-function BackChevron() {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <polyline points="15 18 9 12 15 6" />
-    </svg>
-  );
-}
 
 function RuneInlineIcon({ glyph }: { glyph: string }) {
   // Matches the BTC/ARCH inline icons used in Send.tsx's review row.
