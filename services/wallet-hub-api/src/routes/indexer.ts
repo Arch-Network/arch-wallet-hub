@@ -756,6 +756,32 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
   );
 
   server.get(
+    "/indexer/btc/address/:address/rune-transactions",
+    {
+      schema: {
+        summary: "BTC address rune transfer history (paginated, proxied)",
+        tags: ["indexer"],
+        params: AddressParam,
+        querystring: Type.Object({
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+          cursor: Type.Optional(Type.String({ maxLength: 256 })),
+          rune_id: Type.Optional(Type.String({ maxLength: 64 })),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { address } = request.params as { address: string };
+      const query = request.query as { limit?: number; cursor?: string; rune_id?: string };
+      const result = await forward(reply, () =>
+        indexer.getBtcAddressRuneTransactions(address, query),
+      );
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
     "/indexer/btc/inscriptions/:id",
     {
       schema: {

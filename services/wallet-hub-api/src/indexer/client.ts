@@ -48,6 +48,18 @@ export type IndexerClient = {
   getBtcAddressInscriptions(address: string, cursor?: string): Promise<unknown>;
 
   /**
+   * Address-scoped rune transfer history (paginated). Response shape:
+   * `{ transactions: [{ txid, block_height, timestamp_ms, kind, rune_id,
+   * spaced_name, delta, counterparty? }], next_cursor }`. `delta` is a
+   * signed decimal string (positive = inbound to the address). Used by
+   * the wallet's History tab to label rune mint/transfer/etch/burn rows.
+   */
+  getBtcAddressRuneTransactions(
+    address: string,
+    params?: { limit?: number; cursor?: string; rune_id?: string },
+  ): Promise<unknown>;
+
+  /**
    * Per-inscription metadata: id, number, content_type, satpoint,
    * content_length, genesis_height, owner, etc. Used by the gallery
    * detail view; the per-address list response already carries
@@ -244,6 +256,14 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
       getJson(`/bitcoin/address/${enc(address)}/runes`),
     getBtcAddressInscriptions: (address, cursor) =>
       getJson(`/bitcoin/address/${enc(address)}/inscriptions${cursor ? `?cursor=${enc(cursor)}` : ""}`),
+    getBtcAddressRuneTransactions: (address, params) =>
+      getJson(
+        `/bitcoin/address/${enc(address)}/rune-transactions${qs({
+          limit: params?.limit,
+          cursor: params?.cursor,
+          rune_id: params?.rune_id,
+        })}`,
+      ),
     getBtcInscription: (id) => getJson(`/bitcoin/inscriptions/${enc(id)}`),
     getBtcInscriptionContent: async (id) => {
       // Inscription content is binary (image/video/text/etc) so we

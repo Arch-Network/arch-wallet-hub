@@ -12,6 +12,8 @@ import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatArchId, truncateAddress, formatBtc, timestampToMs } from "../../utils/format";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { txHasRunestone } from "../../utils/btc-tx-classify";
+import { indexRuneTxsByTxid, runeRowLabel, formatRuneDelta } from "../../utils/rune-history";
+import type { BtcRuneTransaction } from "../../utils/indexer";
 import { summarizeArchTx } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
@@ -222,6 +224,32 @@ export default function History() {
       }
       }
 
+      // Rune transfer history for accurate row labels + amounts. Both
+      // calls are best-effort: a failure must not hide BTC history, so
+      // rune rows fall back to the local runestone heuristic below.
+      // `divisibility` isn't on the rune-transactions payload, so we
+      // source it from the aggregated balances (covers held runes;
+      // fully-sent runes degrade to a raw minor-unit amount).
+      const runeTxByTxid = new Map<string, BtcRuneTransaction>();
+      const runeDivByRuneId = new Map<string, number>();
+      {
+        const [runeTxRes, runeBalRes] = await Promise.allSettled([
+          indexer.getBtcAddressRuneTransactions(btcAddr, { limit: 50 }),
+          indexer.getBtcAddressRunes(btcAddr),
+        ]);
+        if (runeTxRes.status === "fulfilled") {
+          const txs = runeTxRes.value?.transactions ?? [];
+          for (const [txid, ev] of indexRuneTxsByTxid(txs)) runeTxByTxid.set(txid, ev);
+        }
+        if (runeBalRes.status === "fulfilled") {
+          for (const b of runeBalRes.value?.balances ?? []) {
+            if (b?.rune_id && typeof b.divisibility === "number") {
+              runeDivByRuneId.set(b.rune_id, b.divisibility);
+            }
+          }
+        }
+      }
+
       try {
         const btcTxs = await indexer.getBtcAddressTxs(btcAddr);
         const rawList = btcTxs ?? [];
@@ -289,41 +317,56 @@ export default function History() {
           const timeMs = rawTimeMs != null && rawTimeMs > nowMs ? nowMs : rawTimeMs;
 
           // Rune transfers are BTC txs with an OP_RETURN OP_13
-          // runestone output. Without this check they fall through
-          // to "BTC Transaction" because parseBtcTx doesn't know
-          // about runestones. Detect locally (no extra round-trip)
-          // and surface a useful label. Specific rune metadata
-          // (which rune, amount) is a follow-up that consumes the
-          // `/bitcoin/address/:a/rune-transactions` endpoint.
-          const isRune = txHasRunestone(tx);
+          // runestone output. Prefer the authoritative rune-transactions
+          // join (real rune name + signed amount + direction); fall back
+          // to the local runestone sniff for mempool transfers the rune
+          // index hasn't picked up yet.
+          const runeEvent = runeTxByTxid.get(txid);
+          const isRune = Boolean(runeEvent) || txHasRunestone(tx);
 
-          const btcLabel = isRune
-            ? direction === "in" ? "Received Rune"
-            : direction === "out" ? "Sent Rune"
-            : "Rune Transfer"
-            : direction === "in" ? "Received BTC"
-            : direction === "out" ? "Sent BTC"
-            : direction === "self" ? "BTC Consolidation"
-            : "BTC Transaction";
-          const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
-          // For rune transfers the BTC net debit is just dust +
-          // fee (~1500-2500 sats); showing it as "-0.00001233 BTC"
-          // is technically true but misleads -- the user moved a
-          // RUNE, not a meaningful BTC amount. Suppress the BTC
-          // amount on rune rows entirely. The proper rune amount
-          // (X UNCOMMON•GOODS) ships in the follow-up PR that
-          // joins this row against `/bitcoin/address/:a/rune-
-          // transactions`.
-          const showAmount = !isRune && amountSats > 0;
+          let rowLabel: string;
+          let rowDirection: TxItem["direction"] = direction;
+          let rowAmountLabel: string | undefined;
+
+          if (runeEvent) {
+            rowLabel = runeRowLabel(runeEvent);
+            const amt = formatRuneDelta(runeEvent.delta, runeDivByRuneId.get(runeEvent.rune_id));
+            if (amt) {
+              rowDirection = amt.direction;
+              rowAmountLabel = amt.amountLabel;
+            }
+          } else if (isRune) {
+            // Runestone detected locally but not yet in the rune index.
+            // Label without an amount -- the BTC dust+fee debit (~1500-
+            // 2500 sats) would misrepresent a rune move as a BTC amount.
+            rowLabel =
+              direction === "in" ? "Received Rune"
+              : direction === "out" ? "Sent Rune"
+              : "Rune Transfer";
+          } else {
+            rowLabel =
+              direction === "in" ? "Received BTC"
+              : direction === "out" ? "Sent BTC"
+              : direction === "self" ? "BTC Consolidation"
+              : "BTC Transaction";
+            if (amountSats > 0) {
+              const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
+              rowAmountLabel = `${sign}${formatBtc(amountSats)}`;
+            }
+          }
+
+          // Only attach raw sats (drives the USD subtitle) for genuine
+          // BTC rows; rune rows carry a rune amount, not a BTC value.
+          const showBtcAmount = !isRune && amountSats > 0;
           items.push({
             txid,
             displayTxid: truncateAddress(txid, 8),
             type: "btc",
-            direction,
-            label: btcLabel,
-            amountLabel: showAmount ? `${sign}${formatBtc(amountSats)}` : undefined,
-            amountSats: showAmount ? amountSats : undefined,
-            sats: showAmount ? amountSats : undefined,
+            direction: rowDirection,
+            label: rowLabel,
+            amountLabel: rowAmountLabel,
+            amountSats: showBtcAmount ? amountSats : undefined,
+            sats: showBtcAmount ? amountSats : undefined,
             timestamp: timeMs != null ? String(timeMs) : "",
             status: isConfirmed ? "confirmed" : "pending",
             explorerUrl: `${btcExplorer}${txid}`,

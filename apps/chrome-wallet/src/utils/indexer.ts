@@ -142,6 +142,31 @@ export interface BtcAddressRunesResponse {
 }
 
 /**
+ * A single rune event (mint / transfer / etch / burn) affecting an
+ * address, from `GET /bitcoin/address/:address/rune-transactions`.
+ * `delta` is a signed decimal string in minor units; positive means
+ * inbound to the queried address. Pair with the rune's `divisibility`
+ * (from the aggregated balances) to render a human amount.
+ */
+export interface BtcRuneTransaction {
+  txid: string;
+  block_height?: number;
+  timestamp_ms?: number;
+  kind: "etch" | "mint" | "transfer" | "burn";
+  rune_id: string;
+  spaced_name: string;
+  delta: string;
+  counterparty?: string;
+  [k: string]: unknown;
+}
+
+export interface BtcAddressRuneTransactionsResponse {
+  transactions: BtcRuneTransaction[];
+  next_cursor: string | null;
+  [k: string]: unknown;
+}
+
+/**
  * Per-inscription summary as returned by the per-address list.
  * Has the full set of fields needed to render a gallery thumbnail
  * (content_type, content_length, satpoint, id) without a second
@@ -410,6 +435,20 @@ export class ArchIndexerClient {
 
   getBtcAddressRunes(btcAddress: string): Promise<BtcAddressRunesResponse> {
     return this.getJson(`/bitcoin/address/${encodeURIComponent(btcAddress)}/runes`);
+  }
+
+  getBtcAddressRuneTransactions(
+    btcAddress: string,
+    params?: { limit?: number; cursor?: string; rune_id?: string }
+  ): Promise<BtcAddressRuneTransactionsResponse> {
+    const sp = new URLSearchParams();
+    if (params?.limit != null) sp.set("limit", String(params.limit));
+    if (params?.cursor) sp.set("cursor", params.cursor);
+    if (params?.rune_id) sp.set("rune_id", params.rune_id);
+    const suffix = sp.toString() ? `?${sp.toString()}` : "";
+    return this.getJson(
+      `/bitcoin/address/${encodeURIComponent(btcAddress)}/rune-transactions${suffix}`
+    );
   }
 
   getBtcAddressInscriptions(

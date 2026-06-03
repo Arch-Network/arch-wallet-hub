@@ -34,6 +34,7 @@ import type {
   AccountTransactionsResponse,
   BtcAddressInscriptionsResponse,
   BtcAddressRunesResponse,
+  BtcAddressRuneTransactionsResponse,
   BtcAddressSummary,
   BtcBlockResponse,
   BtcFeeEstimates,
@@ -244,6 +245,20 @@ export class ArchHubIndexerClient {
 
   getBtcAddressRunes(btcAddress: string): Promise<BtcAddressRunesResponse> {
     return this.getJson(`/btc/address/${encodeURIComponent(btcAddress)}/runes`);
+  }
+
+  getBtcAddressRuneTransactions(
+    btcAddress: string,
+    params?: { limit?: number; cursor?: string; rune_id?: string }
+  ): Promise<BtcAddressRuneTransactionsResponse> {
+    const sp = new URLSearchParams();
+    if (params?.limit != null) sp.set("limit", String(params.limit));
+    if (params?.cursor) sp.set("cursor", params.cursor);
+    if (params?.rune_id) sp.set("rune_id", params.rune_id);
+    const suffix = sp.toString() ? `?${sp.toString()}` : "";
+    return this.getJson(
+      `/btc/address/${encodeURIComponent(btcAddress)}/rune-transactions${suffix}`
+    );
   }
 
   getBtcAddressInscriptions(
