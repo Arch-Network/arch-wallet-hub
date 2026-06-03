@@ -542,14 +542,14 @@ ask. Don't expand scope unilaterally.
   indexer (regression check)
 
 ### Phase 2 — full surfacing
-- [ ] `GET /bitcoin/address/:address/runes`
-- [ ] `GET /bitcoin/address/:address/inscriptions` (paginated)
-- [ ] `GET /bitcoin/runes/:rune`
-- [ ] `GET /bitcoin/inscriptions/:id`
+- [ ] `GET /bitcoin/address/:address/runes` (upstream; Hub proxy: `/v1/indexer/btc/address/:address/runes`)
+- [ ] `GET /bitcoin/address/:address/inscriptions` (paginated; Hub proxy + `limit` query)
+- [ ] `GET /bitcoin/runes/:rune` (Hub proxy: `/v1/indexer/btc/runes/:rune`)
+- [ ] `GET /bitcoin/inscriptions/:id` (Hub proxy)
 - [ ] `GET /bitcoin/inscriptions/:id/content` (streaming, immutable
-  cache)
-- [ ] `GET /bitcoin/output/:outpoint`
-- [ ] `GET /bitcoin/address/:address/rune-transactions` (paginated)
+  cache; Hub proxy)
+- [ ] `GET /bitcoin/output/:outpoint` (Hub proxy: `/v1/indexer/btc/output/:outpoint`)
+- [ ] `GET /bitcoin/address/:address/rune-transactions` (paginated; Hub proxy)
 - [ ] BRC-20 endpoints (only if Titan/wrapper has BRC-20 state; ask
   first)
 

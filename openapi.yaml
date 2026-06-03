@@ -374,6 +374,29 @@ components:
           $ref: "#/components/schemas/BtcAddressStats"
         mempool_stats:
           $ref: "#/components/schemas/BtcAddressStats"
+        spendable_value:
+          type: integer
+        protected_value:
+          type: integer
+      additionalProperties: true
+
+    BtcUtxoInscriptionRef:
+      type: object
+      properties:
+        id:
+          type: string
+      additionalProperties: true
+
+    BtcUtxoRuneBalance:
+      type: object
+      properties:
+        rune_id:
+          type: string
+        spaced_name:
+          type: string
+        amount:
+          type: string
+      required: [rune_id, spaced_name, amount]
       additionalProperties: true
 
     BtcTxStatus:
@@ -404,6 +427,18 @@ components:
           description: Value in satoshis.
         status:
           $ref: "#/components/schemas/BtcTxStatus"
+        inscriptions:
+          type: array
+          items:
+            $ref: "#/components/schemas/BtcUtxoInscriptionRef"
+        runes:
+          type: array
+          items:
+            $ref: "#/components/schemas/BtcUtxoRuneBalance"
+        risky_runes:
+          type: array
+          items:
+            $ref: "#/components/schemas/BtcUtxoRuneBalance"
 
     BtcTxOutput:
       type: object
@@ -1684,6 +1719,136 @@ paths:
                     block_height: 800000
                     block_hash: "00000000000000000002..."
                     block_time: 1700000000
+
+  /api/v1/bitcoin/address/{address}/runes:
+    get:
+      tags: [Bitcoin]
+      summary: Aggregated rune balances for a Bitcoin address
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Address rune balances.
+
+  /api/v1/bitcoin/address/{address}/inscriptions:
+    get:
+      tags: [Bitcoin]
+      summary: Inscriptions held by a Bitcoin address
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/LimitParam"
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated inscription list.
+
+  /api/v1/bitcoin/address/{address}/rune-transactions:
+    get:
+      tags: [Bitcoin]
+      summary: Rune transfer history for a Bitcoin address
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/LimitParam"
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: rune_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated rune transaction history.
+
+  /api/v1/bitcoin/runes/{rune}:
+    get:
+      tags: [Bitcoin]
+      summary: Rune metadata
+      parameters:
+        - name: rune
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Rune metadata.
+        "404":
+          description: Rune not found.
+
+  /api/v1/bitcoin/inscriptions/{id}:
+    get:
+      tags: [Bitcoin]
+      summary: Inscription metadata
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}i[0-9]+$"
+      responses:
+        "200":
+          description: Inscription metadata.
+        "404":
+          description: Inscription not found.
+
+  /api/v1/bitcoin/inscriptions/{id}/content:
+    get:
+      tags: [Bitcoin]
+      summary: Inscription content stream
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}i[0-9]+$"
+      responses:
+        "200":
+          description: Raw inscription bytes.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /api/v1/bitcoin/output/{outpoint}:
+    get:
+      tags: [Bitcoin]
+      summary: Per-output detail
+      description: Path param is `txid:vout` (URL-encode the colon when calling).
+      parameters:
+        - name: outpoint
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}:[0-9]+$"
+      responses:
+        "200":
+          description: Output detail.
+        "404":
+          description: Output not found.
 
   /api/v1/bitcoin/address/{address}/txs:
     get:
