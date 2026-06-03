@@ -35,17 +35,35 @@ import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
 import { indexerForRequest } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
 import * as bitcoin from "bitcoinjs-lib";
+import { partitionByProtection, type BtcUtxo } from "../bitcoin/protection.js";
+import { dustThresholdForAddress } from "../bitcoin/dust.js";
 
-type Utxo = {
-  txid: string;
-  vout: number;
-  value: number;
-  status: { confirmed: boolean; block_height?: number };
-};
+type Utxo = BtcUtxo;
 
-function selectUtxos(utxos: Utxo[], targetSats: number, feeSats: number): { selected: Utxo[]; totalInput: number } {
-  const sorted = [...utxos].sort((a, b) => b.value - a.value);
+/**
+ * Coin selection for a plain BTC send. Filters out protected UTXOs
+ * (inscriptions, runes, risky_runes) BEFORE sorting, so an inscribed
+ * or runed output can never be spent as fee fodder. Mirrors the
+ * wallet's selectUtxos in apps/chrome-wallet/src/utils/btc-psbt.ts.
+ *
+ * Two failure modes, distinguishable by error code:
+ *   - INSUFFICIENT_SPENDABLE_BTC: the spendable subset alone can't
+ *     cover target+fee, but the protected UTXOs would have. The
+ *     client surfaces "you have BTC, but it's locked in
+ *     inscriptions/runes".
+ *   - INSUFFICIENT_BALANCE: total balance (spendable + protected) is
+ *     also under target+fee. Plain "not enough BTC".
+ *
+ * Unenriched UTXO lists behave exactly as before: partitionByProtection
+ * returns the whole set as spendable, so selection is unchanged.
+ *
+ * Exported for unit tests; `buildUnsignedPsbt` is the production entry.
+ */
+export function selectUtxos(utxos: Utxo[], targetSats: number, feeSats: number): { selected: Utxo[]; totalInput: number } {
+  const { spendable, spendableSats, protectedSats } = partitionByProtection(utxos);
+
   const needed = targetSats + feeSats;
+  const sorted = [...spendable].sort((a, b) => b.value - a.value);
   const selected: Utxo[] = [];
   let total = 0;
 
@@ -56,8 +74,22 @@ function selectUtxos(utxos: Utxo[], targetSats: number, feeSats: number): { sele
   }
 
   if (total < needed) {
-    throw new Error(
-      `Insufficient BTC balance: have ${total} sats, need ${needed} sats (${targetSats} + ${feeSats} fee)`,
+    // Distinguish the two failure modes so the client can point the
+    // user at their locked inscriptions/runes when those funds would
+    // otherwise have covered the send.
+    if (protectedSats > 0 && spendableSats + protectedSats >= needed) {
+      throw Object.assign(
+        new Error(
+          `Insufficient spendable BTC: have ${spendableSats} sats spendable + ${protectedSats} sats locked in inscriptions/runes, need ${needed} sats (${targetSats} + ${feeSats} fee). Move or sell the protected assets first.`,
+        ),
+        { code: "INSUFFICIENT_SPENDABLE_BTC", spendableSats, protectedSats },
+      );
+    }
+    throw Object.assign(
+      new Error(
+        `Insufficient BTC balance: have ${total} sats, need ${needed} sats (${targetSats} + ${feeSats} fee)`,
+      ),
+      { code: "INSUFFICIENT_BALANCE" },
     );
   }
 
@@ -119,7 +151,12 @@ async function buildUnsignedPsbt(params: {
 
   psbt.addOutput({ address: toAddress, value: BigInt(amountSats) });
 
-  if (changeSats > 546) {
+  // Change goes back to the sender; the dust floor is keyed on the
+  // sender's address script type (P2TR/P2WPKH relay below a flat 546).
+  // Anything under it is non-standard and won't relay, so we drop the
+  // change output and fold it into the fee.
+  const changeDust = dustThresholdForAddress(fromAddress);
+  if (changeSats > changeDust) {
     psbt.addOutput({ address: fromAddress, value: BigInt(changeSats) });
   }
 
@@ -131,7 +168,7 @@ async function buildUnsignedPsbt(params: {
     amountSats,
     feeSats: actualFee,
     feeRate,
-    changeSats: changeSats > 546 ? changeSats : 0,
+    changeSats: changeSats > changeDust ? changeSats : 0,
     inputCount: selected.length,
   };
 }
@@ -217,6 +254,17 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
         if (err.code === "NO_UTXOS") {
           return reply.code(409).send({ error: "NoUtxos", message: err.message });
         }
+        if (err.code === "INSUFFICIENT_SPENDABLE_BTC") {
+          return reply.code(409).send({
+            error: "InsufficientSpendableBtc",
+            message: err.message,
+            spendableSats: err.spendableSats,
+            protectedSats: err.protectedSats,
+          });
+        }
+        if (err.code === "INSUFFICIENT_BALANCE") {
+          return reply.code(409).send({ error: "InsufficientBalance", message: err.message });
+        }
         return reply.code(502).send({ error: "PsbtBuildFailed", message: err.message });
       }
     },
@@ -298,6 +346,17 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
       } catch (err: any) {
         if (err.code === "NO_UTXOS") {
           return reply.code(409).send({ error: "NoUtxos", message: err.message });
+        }
+        if (err.code === "INSUFFICIENT_SPENDABLE_BTC") {
+          return reply.code(409).send({
+            error: "InsufficientSpendableBtc",
+            message: err.message,
+            spendableSats: err.spendableSats,
+            protectedSats: err.protectedSats,
+          });
+        }
+        if (err.code === "INSUFFICIENT_BALANCE") {
+          return reply.code(409).send({ error: "InsufficientBalance", message: err.message });
         }
         return reply.code(502).send({ error: "EstimateFailed", message: err.message });
       }
