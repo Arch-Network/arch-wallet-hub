@@ -109,11 +109,34 @@ a {
 /* ═══════════════════ Layout ═══════════════════ */
 
 .app-container {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   height: 100%;
   overflow: hidden;
   background: var(--bg-primary);
+}
+
+/* Persistent cyberpunk skyline behind every tab. City + readability scrim are
+   combined in ::after (the ::before pseudo is reserved for the network badge).
+   Header/nav are opaque bars; the scrollable .app-body is transparent so the
+   city shows through card gaps. */
+.app-container::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(14, 12, 10, 0.45) 0%,
+      rgba(14, 12, 10, 0.28) 35%,
+      rgba(14, 12, 10, 0.4) 70%,
+      rgba(14, 12, 10, 0.6) 100%
+    ),
+    url("/hero-bg.png") center / cover no-repeat;
 }
 
 .app-main {
@@ -818,35 +841,25 @@ a {
   margin: -14px -14px 10px;
   position: relative;
   overflow: hidden;
-  background: var(--bg-primary);
+  /* Transparent so the persistent app-wide skyline (on .app-container)
+     shows through the hero too. */
+  background: transparent;
 }
 
-.balance-hero::before {
-  content: "";
-  position: absolute;
-  /* Extend the background layer above and below the hero so it has
-     room to slide on scroll without revealing empty edges. */
-  top: -60px;
-  left: 0;
-  right: 0;
-  bottom: -240px;
-  background: url("/hero-bg.png") center 60% / cover no-repeat;
-  opacity: 0.45;
-  filter: saturate(0.8) brightness(0.7);
-  /* Parallax: drive by --parallax-y (set by Dashboard's scroll handler
-     on .app-body). Hero moves at 100% scroll speed; this layer at 35%,
-     producing a 65% relative shift -- a subtle depth cue. */
-  transform: translate3d(0, var(--parallax-y, 0px), 0);
-  will-change: transform;
-}
-
+/* The dashboard hero no longer paints its own skyline -- the app-wide
+   background handles that. Keep only a soft scrim so the balance figure
+   stays legible over the city. */
 .balance-hero::after {
   content: "";
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(to bottom, rgba(14, 12, 10, 0.35) 0%, rgba(14, 12, 10, 0.1) 35%, rgba(14, 12, 10, 0.5) 80%, var(--bg-primary) 100%),
-    radial-gradient(ellipse at 50% 60%, rgba(193, 154, 91, 0.12) 0%, transparent 70%);
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at 50% 45%,
+    rgba(14, 12, 10, 0.45) 0%,
+    rgba(14, 12, 10, 0.2) 55%,
+    transparent 80%
+  );
 }
 
 .balance-hero > * {
