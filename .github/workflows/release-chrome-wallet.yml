@@ -50,9 +50,16 @@ jobs:
 
       - name: Determine version
         id: version
+        # SECURITY: never interpolate the user-controlled `inputs.version`
+        # directly into the script body (`${{ inputs.version }}`) -- that
+        # is a shell-injection sink. Pass it through `env` and reference
+        # the shell variable instead.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#wallet-v}"
           fi
@@ -77,9 +84,9 @@ jobs:
 
       - name: Stamp version into manifest
         working-directory: apps/chrome-wallet
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          npm pkg set version="$VERSION"
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm pkg set version="$VERSION"
 
       - name: Verify build-time secrets are populated
         # Fail fast if WXT_HUB_API_KEY is missing; otherwise end users hit
@@ -102,10 +109,12 @@ jobs:
       - name: Locate zip file
         id: zip
         working-directory: apps/chrome-wallet
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           ZIP_PATH=$(find .output -name '*.zip' | head -n 1)
           echo "path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
-          echo "name=arch-wallet-${{ steps.version.outputs.version }}.zip" >> "$GITHUB_OUTPUT"
+          echo "name=arch-wallet-${VERSION}.zip" >> "$GITHUB_OUTPUT"
 
       - name: Upload zip artifact
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3

@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Weekly full-git-history secret sweep (Mondays 07:00 UTC). See the
+    # `secret-scan-history` job below.
+    - cron: "0 7 * * 1"
 
 # Default deny; each job requests what it needs.
 permissions: {}
@@ -46,6 +50,44 @@ jobs:
           gitleaks detect \
             --source . \
             --no-git \
+            --config .gitleaks.toml \
+            --redact \
+            --no-banner \
+            --verbose
+
+  secret-scan-history:
+    name: Gitleaks full-history scan
+    # The PR-gating job above scans the working tree only (`--no-git`)
+    # so already-rotated historical keys don't re-flag on every push.
+    # This job scans the FULL git history against the same allowlist so
+    # a newly-introduced secret buried in history is still caught. It is
+    # heavier and can be noisy, so it runs on the weekly schedule / on
+    # manual dispatch instead of blocking PRs.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: "8.21.2"
+        run: |
+          set -euo pipefail
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Run gitleaks (full history)
+        run: |
+          set -euo pipefail
+          gitleaks detect \
+            --source . \
             --config .gitleaks.toml \
             --redact \
             --no-banner \
