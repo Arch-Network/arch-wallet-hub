@@ -60,7 +60,7 @@ function hexToBase64(hex: string): string {
 
 async function requestExternalWallet<T>(
   provider: ExternalWalletProvider,
-  method: "connect" | "signMessage" | "signPsbt",
+  method: "connect" | "signMessage" | "signPsbt" | "signBtcPsbt",
   args: Record<string, unknown>,
 ): Promise<T> {
   console.log("[ArchWallet] external request →", { provider, method, args });
