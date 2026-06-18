@@ -64,6 +64,9 @@ const appAuthPlugin: FastifyPluginAsync = async (server) => {
 
     if (!row) return reply.unauthorized("Invalid API key");
     if (row.revoked_at) return reply.unauthorized("API key revoked");
+    // Reject keys belonging to a disabled app even if the key itself
+    // was never individually revoked.
+    if (row.app_disabled_at) return reply.unauthorized("App disabled");
 
     request.app = { appId: row.app_id, apiKeyId: row.id, apiKeyPrefix: row.key_prefix };
   });

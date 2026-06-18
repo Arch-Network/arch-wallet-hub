@@ -16,6 +16,8 @@ export type AppApiKeyRow = {
   revoked_at: string | null;
   created_at: string;
   last_used_at: string | null;
+  /** Owning app's `disabled_at`; only populated by getAppApiKeyByHash. */
+  app_disabled_at?: string | null;
 };
 
 export async function createApp(client: PoolClient, params: { name: string }): Promise<AppRow> {
@@ -45,7 +47,14 @@ export async function insertAppApiKey(client: PoolClient, params: {
 
 export async function getAppApiKeyByHash(client: PoolClient, params: { keyHash: string }): Promise<AppApiKeyRow | null> {
   const res = await client.query<AppApiKeyRow>(
-    `SELECT id, app_id, name, key_hash, key_prefix, revoked_at, created_at, last_used_at FROM app_api_keys WHERE key_hash = $1`,
+    `
+      SELECT k.id, k.app_id, k.name, k.key_hash, k.key_prefix,
+             k.revoked_at, k.created_at, k.last_used_at,
+             a.disabled_at AS app_disabled_at
+      FROM app_api_keys k
+      JOIN apps a ON a.id = k.app_id
+      WHERE k.key_hash = $1
+    `,
     [params.keyHash]
   );
   return res.rows[0] ?? null;
