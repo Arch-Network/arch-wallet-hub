@@ -85,6 +85,12 @@ import {
 } from "../db/recovery.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
+import {
+  getOtpAgeMs,
+  getOtpStartCount,
+  recordOtpStart,
+  recoveryOtpLogFields
+} from "../recovery/otpObservability.js";
 
 // Bumped from the original 3/hour after early field reports of
 // legitimate users (and our own QA) hitting the cap during a single
@@ -251,7 +257,16 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       });
 
       if (recentCount >= RATE_LIMIT_MAX_INITS) {
-        request.log.warn({ emailHash }, "recovery.init.rate_limited");
+        request.log.warn(
+          {
+            appId,
+            emailHash,
+            recentCount,
+            limit: RATE_LIMIT_MAX_INITS,
+            windowMs: RATE_LIMIT_WINDOW_MS
+          },
+          "recovery.init.rate_limited"
+        );
         // Synthesise a non-existent challenge id so the client UX
         // shape is identical to the success path.
         return emptyResponse(`chal_blocked_${Date.now().toString(36)}`);
@@ -314,6 +329,10 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       }
 
       if (sourceCandidates.length === 0) {
+        request.log.info(
+          { appId, emailHash, matchedUsers: users.length, candidateCount: 0 },
+          "recovery.init.no_candidates"
+        );
         await withDbTransaction(db, (client) =>
           auditEvent({
             client,
@@ -364,6 +383,16 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       }
 
       if (candidates.length === 0) {
+        request.log.warn(
+          {
+            appId,
+            emailHash,
+            sourceCandidateCount: sourceCandidates.length,
+            failureCount: failed.length,
+            failures: failed
+          },
+          "recovery.init.no_otp_capable_candidates"
+        );
         await withDbTransaction(db, (client) =>
           auditEvent({
             client,
@@ -424,6 +453,19 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           outcome: "succeeded"
         });
       });
+
+      request.log.info(
+        {
+          appId,
+          emailHash,
+          challengeId: challenge.id,
+          matchedUsers: users.length,
+          sourceCandidateCount: sourceCandidates.length,
+          candidateCount: tokensFilled.length,
+          failureCount: failed.length
+        },
+        "recovery.init.created"
+      );
 
       // SECURITY: do NOT return `defaultAddress` (full address) here.
       // Doing so lets an attacker enumerate every wallet ever
@@ -494,17 +536,35 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         return reply.badRequest("Selected wallet cannot receive OTP recovery");
       }
 
+      const startRequestedAtMs = Date.now();
+      const previousOtpAgeMs = getOtpAgeMs(candidate, startRequestedAtMs);
+      const previousOtpStartCount = getOtpStartCount(candidate);
+      const isResend = Boolean(candidate.otpId);
+      request.log.info(
+        {
+          appId,
+          challengeId: challenge.id,
+          ...recoveryOtpLogFields(candidate, startRequestedAtMs),
+          isResend,
+          previousOtpAgeMs,
+          nextOtpStartCount: previousOtpStartCount + 1
+        },
+        "recovery.otp_start.requested"
+      );
+
       try {
         const turnkey = getTurnkeyClient();
-        const { otpId } = await turnkey.initOtpAuth({
+        const { otpId, activityId } = await turnkey.initOtpAuth({
           organizationId: candidate.organizationId,
           userId: candidate.rootUserId,
           contact: email,
           emailCustomization: buildOtpEmailCustomization(server.config)
         });
+        const turnkeyElapsedMs = Date.now() - startRequestedAtMs;
+        const updatedCandidate = recordOtpStart(candidate, { otpId });
 
         const candidates = challenge.candidates.map((c, i) =>
-          i === candidateIndex ? { ...c, otpId } : c
+          i === candidateIndex ? updatedCandidate : c
         );
         await withDbTransaction(db, async (client) => {
           await updateRecoveryChallengeCandidates(client, {
@@ -519,12 +579,29 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             eventType: "recovery.otp_start",
             entityType: "recovery_challenge",
             entityId: challenge.id,
-            turnkeyActivityId: null,
+            turnkeyActivityId: activityId,
             turnkeyRequestId: null,
-            payloadJson: { candidateResourceId: candidate.resourceId },
+            payloadJson: {
+              candidateResourceId: candidate.resourceId,
+              isResend,
+              otpStartCount: updatedCandidate.otpStartCount
+            },
             outcome: "succeeded"
           });
         });
+
+        request.log.info(
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(updatedCandidate),
+            isResend,
+            previousOtpAgeMs,
+            turnkeyElapsedMs,
+            turnkeyActivityId: activityId
+          },
+          "recovery.otp_start.succeeded"
+        );
 
         return {
           emailMasked: maskEmail(email),
@@ -532,7 +609,15 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         };
       } catch (err: any) {
         request.log.warn(
-          { resourceId: candidate.resourceId, err: String(err?.message ?? err) },
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(candidate, startRequestedAtMs),
+            isResend,
+            previousOtpAgeMs,
+            turnkeyElapsedMs: Date.now() - startRequestedAtMs,
+            err: String(err?.message ?? err)
+          },
           "recovery.start.otp_failed"
         );
         await withDbTransaction(db, (client) =>
@@ -548,6 +633,8 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             turnkeyRequestId: null,
             payloadJson: {
               candidateResourceId: candidate.resourceId,
+              isResend,
+              otpStartCount: previousOtpStartCount,
               error: String(err?.message ?? err)
             },
             outcome: "failed"
@@ -607,6 +694,15 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       );
       if (!candidate) return reply.badRequest("Unknown candidateToken");
       if (!candidate.otpId) {
+        request.log.warn(
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(candidate),
+            codeLength: body.code.length
+          },
+          "recovery.verify.no_otp_started"
+        );
         return reply.badRequest("Verification code has not been sent for this wallet");
       }
 
@@ -622,6 +718,20 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         return reply.badRequest("externalUserId does not match candidate");
       }
 
+      const verifyRequestedAtMs = Date.now();
+      const verifyAttempt = challenge.attempts + 1;
+      request.log.info(
+        {
+          appId,
+          challengeId: challenge.id,
+          ...recoveryOtpLogFields(candidate, verifyRequestedAtMs),
+          attempt: verifyAttempt,
+          codeLength: body.code.length,
+          hasExternalUserId: Boolean(body.externalUserId)
+        },
+        "recovery.verify.requested"
+      );
+
       await withDbTransaction(db, async (client) => {
         await incrementRecoveryAttempts(client, { id: challenge.id });
         await auditEvent({
@@ -636,7 +746,8 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           turnkeyRequestId: null,
           payloadJson: {
             candidateResourceId: candidate.resourceId,
-            attempt: challenge.attempts + 1
+            attempt: verifyAttempt,
+            otpStartCount: getOtpStartCount(candidate)
           },
           outcome: "requested"
         });
@@ -653,6 +764,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           apiKeyName,
           expirationSeconds: RECOVERY_API_KEY_TTL_SECONDS
         });
+        const turnkeyElapsedMs = Date.now() - verifyRequestedAtMs;
 
         // Optionally validate that the user record's externalUserId
         // matches what the client supplied. We've checked equality
@@ -686,11 +798,26 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             turnkeyRequestId: null,
             payloadJson: {
               candidateResourceId: candidate.resourceId,
-              apiKeyId: otpResult.apiKeyId
+              apiKeyId: otpResult.apiKeyId,
+              attempt: verifyAttempt,
+              otpStartCount: getOtpStartCount(candidate)
             },
             outcome: "succeeded"
           });
         });
+
+        request.log.info(
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(candidate),
+            attempt: verifyAttempt,
+            turnkeyElapsedMs,
+            turnkeyActivityId: otpResult.activityId,
+            apiKeyId: otpResult.apiKeyId
+          },
+          "recovery.verify.succeeded"
+        );
 
         return {
           credentialBundle: otpResult.credentialBundle,
@@ -717,10 +844,24 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             turnkeyRequestId: null,
             payloadJson: {
               candidateResourceId: candidate.resourceId,
+              attempt: verifyAttempt,
+              otpStartCount: getOtpStartCount(candidate),
               error: String(err?.message ?? err)
             },
             outcome: "failed"
           })
+        );
+        request.log.warn(
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(candidate),
+            attempt: verifyAttempt,
+            codeLength: body.code.length,
+            turnkeyElapsedMs: Date.now() - verifyRequestedAtMs,
+            err: String(err?.message ?? err)
+          },
+          "recovery.verify.failed"
         );
         return reply.unauthorized("Invalid or expired code");
       }

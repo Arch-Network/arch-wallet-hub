@@ -22,8 +22,12 @@ export interface RecoveryCandidate {
   /** Sub-org root user id; recovered API key targets this user in
    *  CREATE_AUTHENTICATORS. */
   rootUserId: string | null;
-  /** Turnkey activity id returned by INIT_OTP_AUTH; populated after wallet selection. */
+  /** Turnkey OTP id returned by INIT_OTP_AUTH; populated after wallet selection. */
   otpId: string | null;
+  /** Number of OTP emails started for this candidate within the challenge. */
+  otpStartCount?: number;
+  /** ISO timestamp for the latest OTP start; used only for diagnostics. */
+  otpStartedAt?: string;
   walletLabel: string;
   addressMasked: string;
   walletId: string | null;
