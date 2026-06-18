@@ -225,6 +225,10 @@ export default function Recover({ onRecovered }: RecoverProps) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [resending, setResending] = useState(false);
+  // Courtesy throttle for the OTP-step resend. The Hub owns the real
+  // per-challenge cooldown/cap; this just stops the user spamming it.
+  const [resendCooldown, setResendCooldown] = useState(0);
 
   // Case (a) bootstrap: if the URL carries an externalUserId, try to
   // pre-fill the email from a previously-recorded recovery email on
@@ -342,6 +346,42 @@ export default function Recover({ onRecovered }: RecoverProps) {
       setLoading(false);
     }
   }, [buildClient, email]);
+
+  // Tick the resend cooldown down to zero.
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
+
+  // Resend on the OTP step re-sends the code on the *existing*
+  // challenge (same candidate) instead of re-running init, which would
+  // mint a fresh challengeId and orphan the in-flight OTP (issue #57).
+  const resendOtp = useCallback(async () => {
+    if (!challengeId || !pickedToken || resending || resendCooldown > 0) {
+      return;
+    }
+    setResending(true);
+    setError(null);
+    try {
+      const client = await buildClient();
+      const res = await client.startRecoveryEmailOtp({
+        challengeId,
+        candidateToken: pickedToken,
+        email: email.trim(),
+      });
+      if (res.emailMasked) setEmailMasked(res.emailMasked);
+      setOtp("");
+      setResendCooldown(30);
+    } catch (e: any) {
+      // Neutral 429 from the Hub when resends are too frequent / over
+      // the cap: surface the message and keep the user on the OTP step.
+      setError(e?.message || "Failed to resend verification code");
+      setResendCooldown(30);
+    } finally {
+      setResending(false);
+    }
+  }, [challengeId, pickedToken, email, resending, resendCooldown, buildClient]);
 
   const initOtp = useCallback(async () => {
     setLoading(true);
@@ -746,6 +786,30 @@ export default function Recover({ onRecovered }: RecoverProps) {
                 disabled={loading || !otp}
               >
                 {loading ? "Verifying..." : "Verify"}
+              </button>
+              <button
+                className="btn btn-link"
+                type="button"
+                onClick={resendOtp}
+                disabled={loading || resending || resendCooldown > 0}
+                style={{
+                  marginTop: 8,
+                  background: "none",
+                  border: "none",
+                  color: "var(--text-muted)",
+                  cursor:
+                    loading || resending || resendCooldown > 0
+                      ? "default"
+                      : "pointer",
+                  fontSize: 12,
+                  textDecoration: "underline",
+                }}
+              >
+                {resending
+                  ? "Resending..."
+                  : resendCooldown > 0
+                    ? `Resend code in ${resendCooldown}s`
+                    : "Resend code"}
               </button>
             </>
           )}
