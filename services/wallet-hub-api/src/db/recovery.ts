@@ -119,6 +119,25 @@ export async function getRecoveryChallenge(
   return res.rows[0] ?? null;
 }
 
+/**
+ * Same as getRecoveryChallenge but takes a row lock for the duration of
+ * the surrounding transaction. The /recovery/email/start path does a
+ * read-modify-write on the JSONB `candidates` column (overwriting the
+ * selected candidate's otpId); without a lock two concurrent resends can
+ * read the same snapshot and clobber each other's otpId / otpStartCount
+ * (lost update). Locking the row makes the last write deterministic.
+ */
+export async function getRecoveryChallengeForUpdate(
+  client: PoolClient,
+  params: { appId: string; id: string }
+): Promise<RecoveryChallengeRow | null> {
+  const res = await client.query<RecoveryChallengeRow>(
+    `SELECT * FROM recovery_challenges WHERE id = $1 AND app_id = $2 FOR UPDATE`,
+    [params.id, params.appId]
+  );
+  return res.rows[0] ?? null;
+}
+
 export async function incrementRecoveryAttempts(
   client: PoolClient,
   params: { id: string }
@@ -160,6 +179,24 @@ export async function incrementRecoveryAttemptIfUnderCap(
     [params.id, params.appId, params.maxAttempts]
   );
   return res.rows[0] ?? null;
+}
+
+/**
+ * Reset the verify attempt counter to zero. Called in the same
+ * transaction as the candidate/otpId update on a resend so the user
+ * gets a fresh set of verify attempts against the new code -- stale
+ * codes from a superseded OTP should not burn the new code's budget.
+ * The per-challenge send cap (MAX_OTP_SENDS) bounds how often this can
+ * happen, so resetting here cannot grant unlimited verify attempts.
+ */
+export async function resetRecoveryAttempts(
+  client: PoolClient,
+  params: { id: string }
+): Promise<void> {
+  await client.query(
+    `UPDATE recovery_challenges SET attempts = 0 WHERE id = $1`,
+    [params.id]
+  );
 }
 
 export async function updateRecoveryChallengeCandidates(

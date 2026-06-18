@@ -76,6 +76,49 @@ export function recordOtpStart(
   };
 }
 
+export interface ResendThrottleLimits {
+  /** Reject a resend whose previous OTP is younger than this. */
+  cooldownMs: number;
+  /** Max OTP emails (initial + resends) allowed per challenge candidate. */
+  maxSends: number;
+}
+
+export type ResendThrottleDecision =
+  | { throttled: false }
+  | { throttled: true; reason: "cooldown" | "max_sends" };
+
+/**
+ * Decide whether a resend OTP request should be throttled. Pure (no
+ * DB/IO) so it can be unit-tested in isolation; the route owns the
+ * limits and the side effects.
+ *
+ * `previousOtpStartCount` is how many OTPs have already been sent for
+ * this candidate. A resend would push it one higher, so once it has
+ * reached `maxSends` we refuse rather than mint another OTP -- this
+ * stops a user from using resend to reset verify attempts indefinitely.
+ *
+ * `previousOtpAgeMs` is the age of the most recent OTP (null when no
+ * start timestamp exists). A resend inside the cooldown window is
+ * refused to cut down on overlapping in-flight OTPs, the root cause of
+ * stale-code verification failures.
+ *
+ * The send cap takes precedence over the cooldown so the more permanent
+ * "you're out of sends" signal wins when both apply.
+ */
+export function shouldThrottleResend(
+  previousOtpAgeMs: number | null,
+  previousOtpStartCount: number,
+  limits: ResendThrottleLimits
+): ResendThrottleDecision {
+  if (previousOtpStartCount >= limits.maxSends) {
+    return { throttled: true, reason: "max_sends" };
+  }
+  if (previousOtpAgeMs !== null && previousOtpAgeMs < limits.cooldownMs) {
+    return { throttled: true, reason: "cooldown" };
+  }
+  return { throttled: false };
+}
+
 export function recoveryOtpLogFields(
   candidate: RecoveryCandidate,
   nowMs = Date.now()
