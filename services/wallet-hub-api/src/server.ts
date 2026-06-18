@@ -11,6 +11,7 @@ import { registerAppAuth } from "./plugins/appAuth.js";
 import { registerSessionAuth } from "./plugins/sessionAuth.js";
 import { registerCors } from "./plugins/cors.js";
 import { registerSecurityHeaders } from "./plugins/securityHeaders.js";
+import { registerRequireHttps } from "./plugins/requireHttps.js";
 import { registerRateLimit } from "./plugins/rateLimit.js";
 import { registerAuthSessionRoutes } from "./routes/authSessions.js";
 import { registerHealthRoutes } from "./routes/health.js";
@@ -93,6 +94,9 @@ export async function createServer() {
   // Security headers run before everything so even error responses
   // carry them.
   await server.register(registerSecurityHeaders);
+  // Enforce HTTPS (no-op unless REQUIRE_HTTPS=true) right after headers
+  // so a plaintext request is rejected before any auth / route logic.
+  await server.register(registerRequireHttps);
   // CORS must run before auth so OPTIONS preflights don't get rejected.
   await server.register(registerCors);
   await server.register(registerObservability);

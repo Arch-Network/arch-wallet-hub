@@ -8,6 +8,34 @@
 | **API** | http://wallet-hub-alb-1812078009.us-east-1.elb.amazonaws.com/v1 |
 | **Health check** | http://wallet-hub-alb-1812078009.us-east-1.elb.amazonaws.com/v1/health |
 
+> **Production TLS is required.** The endpoints above are currently
+> served over plain HTTP, which exposes API keys and wallet traffic to
+> network observers. See [Production TLS](#production-tls) before any
+> real / mainnet use.
+
+## Production TLS
+
+All production traffic MUST be served over HTTPS. There are two
+supported topologies:
+
+1. **TLS terminated upstream (ALB / CloudFront) — recommended for ECS.**
+   - Add an HTTPS (443) listener to the ALB with an ACM certificate and
+     redirect the HTTP (80) listener to HTTPS.
+   - The ALB forwards `X-Forwarded-Proto`; the API trusts it
+     (`trustProxy` is on).
+2. **TLS terminated at nginx (single-host / EC2).**
+   - Use [`deploy/nginx-tls.conf.template`](./nginx-tls.conf.template)
+     instead of `nginx.conf.template`. It redirects HTTP→HTTPS, serves
+     443 with your cert, sets HSTS, and forwards `X-Forwarded-Proto: https`.
+   - Obtain a cert (e.g. certbot) and mount it at `/etc/nginx/tls/`.
+
+Once TLS terminates in front of the API, set **`REQUIRE_HTTPS=true`** on
+the API service. With it enabled the API rejects any request that did
+not arrive over HTTPS (`426 Upgrade Required`), except the internal
+`/v1/health` probe. It defaults to `false` so a not-yet-TLS environment
+isn't bricked; flipping it on is a deliberate step taken *after* the
+HTTPS listener exists.
+
 ## Architecture (ECS Fargate)
 
 ```
