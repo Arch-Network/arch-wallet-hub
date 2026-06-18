@@ -466,6 +466,17 @@ export default defineBackground(() => {
           return false;
         }
         (async () => {
+          // SECURITY: bind the approval to a real pending CONNECT
+          // request and take the origin from the STORED request (which
+          // we derived from the dapp's tab URL at request time), never
+          // from the approval message. Otherwise a stray/forged
+          // APPROVE_CONNECT could connect an attacker-chosen origin.
+          const pending = await pendingRequestsStore.get(message.requestId);
+          if (!pending || pending.type !== "CONNECT") {
+            sendResponse({ ok: false, error: "No matching pending connect request" });
+            return;
+          }
+          const origin = pending.origin;
           // Prefer the explicit internal WalletAccount id sent by the
           // approval popup. Older popup builds (pre-fix) only sent the
           // btcAddress under `account.address`, which would silently
@@ -480,17 +491,16 @@ export default defineBackground(() => {
             const match = state.accounts.find((a) => a.btcAddress === legacyAddress);
             accountId = match?.id ?? "";
           }
-          await walletStore.connectSite(message.origin, {
-            origin: message.origin,
+          await walletStore.connectSite(origin, {
+            origin,
             name: message.dappName,
             iconUrl: message.iconUrl,
             connectedAt: Date.now(),
             accountId,
             permissions: message.permissions ?? { ...DEFAULT_SITE_PERMISSIONS },
           });
-          const pending = await pendingRequestsStore.get(message.requestId);
           await pendingRequestsStore.remove(message.requestId);
-          deliverResponseToTab(pending?.sourceTabId, message.requestId, {
+          deliverResponseToTab(pending.sourceTabId, message.requestId, {
             success: true,
             data: message.account,
           });
@@ -505,9 +515,17 @@ export default defineBackground(() => {
           return false;
         }
         (async () => {
+          // SECURITY: only deliver a result for a request that is
+          // actually pending. Without this an APPROVE_REQUEST for an
+          // unknown/already-handled id would silently no-op (or, with a
+          // known id, relay an unvetted result to the dapp tab).
           const pending = await pendingRequestsStore.get(message.requestId);
+          if (!pending) {
+            sendResponse({ ok: false, error: "No matching pending request" });
+            return;
+          }
           await pendingRequestsStore.remove(message.requestId);
-          deliverResponseToTab(pending?.sourceTabId, message.requestId, {
+          deliverResponseToTab(pending.sourceTabId, message.requestId, {
             success: true,
             data: message.result,
           });

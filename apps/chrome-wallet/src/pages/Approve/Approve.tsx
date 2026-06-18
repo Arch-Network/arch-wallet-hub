@@ -1235,6 +1235,11 @@ export default function Approve() {
             // Approve outright; the in-card "Watch-only wallet" risk
             // banner (rendered above) tells the user why.
             isWatchAccount(selectedAccount) ||
+            // Phishing: a `danger` verdict (blocklist hit or close
+            // lookalike of a trusted host) hard-blocks Approve. The
+            // risk banner above explains why; the user must navigate to
+            // the genuine site rather than override here.
+            phishingRisk.level === "danger" ||
             // SIGN_PSBT: decode must have succeeded; gate must not be
             // blocking; if a confirm checkbox is required it must be ticked.
             (request.type === "SIGN_PSBT" &&
