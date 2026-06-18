@@ -38,11 +38,19 @@ const EnvSchema = z.object({
   // to the session principal. Use "*" (or "all") to enforce every opted-in
   // route at once.
   //
-  // Defaults to EMPTY (enforce nothing) so it can't break clients that don't
-  // yet mint/send tokens. Only flip routes on once token-sending wallet
-  // builds dominate the field; un-updated clients on an enforced route get
-  // 401. Roll out one route (or a small batch) at a time, ordered by risk.
-  SESSION_ENFORCED_ROUTES: z.string().default(""),
+  // ENABLED for the money/signing routes that always run post-unlock on an
+  // already-created account (so a 0.6.1+ wallet has minted a session token by
+  // then). Wallet create/import and wallet discovery (turnkey.wallets.list/get)
+  // are deliberately EXCLUDED: a session token can't exist before the wallet
+  // does, so enforcing them would break new-account onboarding. Un-updated
+  // (<0.6.1) clients calling an enforced route get a 401 — accepted tradeoff
+  // given the small user base. Override via env to widen/narrow or roll back
+  // (set to "" to disable) with no code change.
+  SESSION_ENFORCED_ROUTES: z
+    .string()
+    .default(
+      "turnkey.sign-message,arch.transfer,arch.instructions.build,signing-requests.create,signing-requests.submit,btc.build,btc.estimate-fee"
+    ),
 
   // Postgres
   //

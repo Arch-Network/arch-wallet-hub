@@ -39,7 +39,8 @@ follow client adoption, route by route.
 | `POST /auth/session/revoke` | yes (always — `requireSession`) |
 | `POST /signing-requests/:id/sign-with-turnkey` | yes (always — `requireSession`) |
 | `POST /turnkey/indexeddb-keys` | yes (always) — safe because no client calls it |
-| high-risk user-scoped routes (see keys below) | **wired, flag-gated** (default OFF) |
+| money/signing routes (see "Enabled set" below) | **ENFORCED by default** (from 0.6.1) |
+| wallet create/import + `turnkey.wallets.list/get` | wired, flag-gated (default OFF — pre-session) |
 | everything else | not enforced |
 
 ## Phase 2a — client minting (DONE)
@@ -87,15 +88,40 @@ turnkey.wallets.get
 wallet-links.list
 ```
 
-### Enable procedure (after 0.6.1 adoption)
+### Enabled set (live from 0.6.1)
 
-1. Confirm via telemetry that token-sending builds dominate (look for the
-   `Authorization: Bearer whs_v1_` header / a server-side metric).
-2. Turn on a small batch, highest risk first, e.g.
-   `SESSION_ENFORCED_ROUTES=turnkey.sign-message,arch.transfer,arch.instructions.build`,
-   and redeploy. Watch `401`/`403` rates.
-3. Widen in batches; `SESSION_ENFORCED_ROUTES=*` enforces all wired routes.
-4. Roll back instantly by removing keys from the env var (no code change).
+Given the small user base, enforcement was turned on directly via the
+`SESSION_ENFORCED_ROUTES` **code default** (`config/env.ts`) for the
+money/signing routes that always run post-unlock on an already-created
+account — so a 0.6.1+ wallet has minted a session token by the time it calls
+them:
+
+```
+turnkey.sign-message
+arch.transfer
+arch.instructions.build
+signing-requests.create
+signing-requests.submit
+btc.build
+btc.estimate-fee
+```
+
+These are the highest-value IDOR targets (move funds / sign). Un-updated
+(<0.6.1) clients calling them now get a `401` — an accepted tradeoff.
+
+**Deliberately NOT enforced** (would break onboarding — no session can exist
+before the wallet does): `turnkey.passkey-wallets.create`,
+`turnkey.email-wallets.create`, `turnkey.passkey-wallets.import`, and the
+discovery reads `turnkey.wallets.list` / `turnkey.wallets.get` (called during
+recovery/import before a token exists).
+
+### Adjusting enforcement
+
+1. Widen: set `SESSION_ENFORCED_ROUTES` (env, overrides the default) to add
+   more keys, or `*` for all wired routes — only once the create/import flow
+   no longer needs them pre-session.
+2. Roll back instantly by setting `SESSION_ENFORCED_ROUTES=""` in the env (no
+   code change / redeploy of image needed if set on the task def).
 
 ### Exempt (must NEVER be enforced)
 
