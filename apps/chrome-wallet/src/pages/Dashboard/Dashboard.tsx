@@ -792,8 +792,8 @@ export default function Dashboard() {
               <div
                 className="asset-row clickable"
                 key={r.rune_id}
-                onClick={() => navigate(`/send-rune/${encodeURIComponent(r.rune_id)}`)}
-                title={`Send ${r.spaced_name}`}
+                onClick={() => navigate(`/rune/${encodeURIComponent(r.rune_id)}`)}
+                title={`View ${r.spaced_name}`}
               >
                 <div className="asset-icon rune">
                   {r.symbol && r.symbol.trim().length > 0 ? r.symbol : "\u00A4"}

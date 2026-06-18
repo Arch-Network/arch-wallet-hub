@@ -60,6 +60,14 @@ export type IndexerClient = {
   ): Promise<unknown>;
 
   /**
+   * Rune metadata by rune id (`840000:1`) or spaced name. Response:
+   * `{ rune_id, spaced_name, name, number, divisibility, symbol,
+   * etching_txid, etching_height, premine, max_supply, minted, burned,
+   * circulating, mints_remaining }` (supplies are decimal strings).
+   */
+  getBtcRune(rune: string): Promise<unknown>;
+
+  /**
    * Per-inscription metadata: id, number, content_type, satpoint,
    * content_length, genesis_height, owner, etc. Used by the gallery
    * detail view; the per-address list response already carries
@@ -264,6 +272,7 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
           rune_id: params?.rune_id,
         })}`,
       ),
+    getBtcRune: (rune) => getJson(`/bitcoin/runes/${enc(rune)}`),
     getBtcInscription: (id) => getJson(`/bitcoin/inscriptions/${enc(id)}`),
     getBtcInscriptionContent: async (id) => {
       // Inscription content is binary (image/video/text/etc) so we
