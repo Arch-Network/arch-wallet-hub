@@ -24,6 +24,8 @@ import { keystore, KeystoreLockedError } from "../crypto/keystore";
 import { sessionManager } from "../session/SessionManager";
 import { passkeyBootstrap } from "../session/bootstrap-passkey";
 import { EmailBootstrap, type EmailBootstrapArgs } from "../session/bootstrap-email";
+import { ensureHubSession } from "../utils/hub-session";
+import { clearAllHubTokens } from "../utils/hub-session-store";
 
 const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
 /**
@@ -604,6 +606,9 @@ export const walletStore = {
     // an extracted IndexedDB blob could still stamp activities for
     // the remaining server-side expiration window.
     await sessionManager.close();
+    // Drop any cached Hub session tokens so a re-unlock re-mints rather
+    // than reusing a bearer minted for a now-locked wallet.
+    await clearAllHubTokens();
     await keystore.lock();
   },
 
@@ -671,6 +676,10 @@ export const walletStore = {
       ttlSeconds: this.sessionTtlSecondsFromState(state),
       bootstrap: passkeyBootstrap,
     });
+    // Phase 2a: opportunistically mint a Hub session token reusing the
+    // session we just opened. Fire-and-forget + fail-soft: never blocks
+    // or breaks unlock (see utils/hub-session.ts).
+    void ensureHubSession(account);
   },
 
   /**
@@ -700,6 +709,8 @@ export const walletStore = {
       ttlSeconds: this.sessionTtlSecondsFromState(state),
       bootstrap: new EmailBootstrap(args),
     });
+    // Phase 2a: see openPasskeySessionForAccount.
+    void ensureHubSession(account);
   },
 
   /**
