@@ -6,7 +6,8 @@ import {
   getOtpAgeMs,
   getOtpStartCount,
   recordOtpStart,
-  recoveryOtpLogFields
+  recoveryOtpLogFields,
+  shouldThrottleResend
 } from "../otpObservability.js";
 
 function candidate(overrides: Partial<RecoveryCandidate> = {}): RecoveryCandidate {
@@ -104,6 +105,48 @@ describe("classifyRecoveryChallengeAvailability", () => {
         nowMs
       )
     ).toBe("available");
+  });
+});
+
+describe("shouldThrottleResend", () => {
+  const limits = { cooldownMs: 30_000, maxSends: 5 };
+
+  it("allows a resend past the cooldown and under the send cap", () => {
+    expect(shouldThrottleResend(45_000, 2, limits)).toEqual({
+      throttled: false
+    });
+  });
+
+  it("allows a resend when no previous start timestamp exists", () => {
+    expect(shouldThrottleResend(null, 1, limits)).toEqual({ throttled: false });
+  });
+
+  it("allows a resend exactly at the cooldown boundary", () => {
+    // age === cooldownMs is outside the window (strict <).
+    expect(shouldThrottleResend(30_000, 1, limits)).toEqual({
+      throttled: false
+    });
+  });
+
+  it("throttles a resend inside the cooldown window", () => {
+    expect(shouldThrottleResend(5_000, 1, limits)).toEqual({
+      throttled: true,
+      reason: "cooldown"
+    });
+  });
+
+  it("throttles once the send cap is reached", () => {
+    expect(shouldThrottleResend(60_000, 5, limits)).toEqual({
+      throttled: true,
+      reason: "max_sends"
+    });
+  });
+
+  it("prefers the send cap over the cooldown when both apply", () => {
+    expect(shouldThrottleResend(1_000, 5, limits)).toEqual({
+      throttled: true,
+      reason: "max_sends"
+    });
   });
 });
 

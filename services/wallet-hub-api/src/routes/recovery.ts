@@ -75,12 +75,14 @@ import {
   computeCandidateToken,
   countRecentChallenges,
   getRecoveryChallenge,
+  getRecoveryChallengeForUpdate,
   hashEmailForRateLimit,
   incrementRecoveryAttemptIfUnderCap,
   insertRecoveryChallenge,
   markRecoveryChallengeStatus,
   maskAddress,
   maskEmail,
+  resetRecoveryAttempts,
   updateRecoveryChallengeCandidates,
   type RecoveryCandidate
 } from "../db/recovery.js";
@@ -88,10 +90,12 @@ import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
 import {
   classifyRecoveryChallengeAvailability,
+  fingerprintOtpId,
   getOtpAgeMs,
   getOtpStartCount,
   recordOtpStart,
-  recoveryOtpLogFields
+  recoveryOtpLogFields,
+  shouldThrottleResend
 } from "../recovery/otpObservability.js";
 
 /**
@@ -113,6 +117,14 @@ function safeEqualHex(a: string, b: string): boolean {
 const RATE_LIMIT_MAX_INITS = 10;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const VERIFY_MAX_ATTEMPTS = 5;
+// Resend hardening: a resend mints a NEW Turnkey otpId and supersedes
+// the previous one, so a slow-arriving earlier email carries a code that
+// no longer verifies. To keep this from spiralling we (a) cap total OTP
+// sends per challenge candidate -- initial send plus resends -- and (b)
+// require a cooldown between resends to reduce overlapping in-flight
+// OTPs. The send cap also bounds the verify-attempt reset on resend.
+const MAX_OTP_SENDS = 5;
+const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const RECOVERY_API_KEY_TTL_SECONDS = "900"; // 15 minutes
 
@@ -690,6 +702,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       const startRequestedAtMs = Date.now();
       const previousOtpAgeMs = getOtpAgeMs(candidate, startRequestedAtMs);
       const previousOtpStartCount = getOtpStartCount(candidate);
+      const previousOtpId = candidate.otpId;
       const isResend = Boolean(candidate.otpId);
       request.log.info(
         {
@@ -703,6 +716,62 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         "recovery.otp_start.requested"
       );
 
+      // Resend hardening: refuse (without minting a new OTP) when a
+      // resend would exceed the per-challenge send cap or arrives inside
+      // the cooldown window. Both cut down on overlapping in-flight OTPs,
+      // the root cause of the "old OTP / verification fails" reports.
+      if (isResend) {
+        const throttle = shouldThrottleResend(
+          previousOtpAgeMs,
+          previousOtpStartCount,
+          { cooldownMs: RESEND_COOLDOWN_MS, maxSends: MAX_OTP_SENDS }
+        );
+        if (throttle.throttled) {
+          const reason =
+            throttle.reason === "max_sends"
+              ? "max_sends_exceeded"
+              : "resend_cooldown";
+          request.log.warn(
+            {
+              appId,
+              challengeId: challenge.id,
+              ...recoveryOtpLogFields(candidate, startRequestedAtMs),
+              isResend,
+              previousOtpAgeMs,
+              maxOtpSends: MAX_OTP_SENDS,
+              resendCooldownMs: RESEND_COOLDOWN_MS,
+              reason
+            },
+            `recovery.start.${reason}`
+          );
+          await withDbTransaction(db, (client) =>
+            auditEvent({
+              client,
+              appId,
+              requestId: request.id,
+              userId: candidate.userId,
+              eventType: "recovery.otp_start",
+              entityType: "recovery_challenge",
+              entityId: challenge.id,
+              turnkeyActivityId: null,
+              turnkeyRequestId: null,
+              payloadJson: {
+                reason,
+                candidateResourceId: candidate.resourceId,
+                isResend,
+                otpStartCount: previousOtpStartCount
+              },
+              outcome: "failed"
+            })
+          );
+          // Neutral copy: never reveal whether the cap vs cooldown fired
+          // or anything about the underlying wallet/email.
+          return reply.tooManyRequests(
+            "Please wait before requesting another verification code"
+          );
+        }
+      }
+
       try {
         const turnkey = getTurnkeyClient();
         const { otpId, activityId } = await turnkey.initOtpAuth({
@@ -712,16 +781,36 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           emailCustomization: buildOtpEmailCustomization(server.config)
         });
         const turnkeyElapsedMs = Date.now() - startRequestedAtMs;
-        const updatedCandidate = recordOtpStart(candidate, { otpId });
 
-        const candidates = challenge.candidates.map((c, i) =>
-          i === candidateIndex ? updatedCandidate : c
-        );
-        await withDbTransaction(db, async (client) => {
+        // Read-modify-write the candidate under a row lock so concurrent
+        // resends on the same challenge cannot lose each other's otpId /
+        // otpStartCount. Re-resolving the candidate from the locked row
+        // (rather than the pre-Turnkey snapshot) makes last-write-wins
+        // deterministic. On a resend, reset the verify attempt counter in
+        // the SAME tx so the fresh code gets a clean attempt budget; the
+        // send cap above prevents this from granting unlimited verifies.
+        const updatedCandidate = await withDbTransaction(db, async (client) => {
+          const locked = await getRecoveryChallengeForUpdate(client, {
+            appId,
+            id: challenge.id
+          });
+          const lockedCandidates = locked?.candidates ?? challenge.candidates;
+          const lockedIndex = lockedCandidates.findIndex(
+            (c) => c.candidateToken === body.candidateToken
+          );
+          const baseCandidate =
+            lockedIndex >= 0 ? lockedCandidates[lockedIndex]! : candidate;
+          const nextCandidate = recordOtpStart(baseCandidate, { otpId });
+          const candidates = lockedCandidates.map((c, i) =>
+            i === lockedIndex ? nextCandidate : c
+          );
           await updateRecoveryChallengeCandidates(client, {
             id: challenge.id,
             candidates
           });
+          if (isResend) {
+            await resetRecoveryAttempts(client, { id: challenge.id });
+          }
           await auditEvent({
             client,
             appId,
@@ -735,10 +824,12 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             payloadJson: {
               candidateResourceId: candidate.resourceId,
               isResend,
-              otpStartCount: updatedCandidate.otpStartCount
+              otpStartCount: nextCandidate.otpStartCount,
+              attemptsReset: isResend
             },
             outcome: "succeeded"
           });
+          return nextCandidate;
         });
 
         request.log.info(
@@ -748,6 +839,9 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             ...recoveryOtpLogFields(updatedCandidate),
             isResend,
             previousOtpAgeMs,
+            ...(isResend
+              ? { previousOtpIdHash: fingerprintOtpId(previousOtpId) }
+              : {}),
             turnkeyElapsedMs,
             turnkeyActivityId: activityId
           },
@@ -1113,12 +1207,28 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         return reply.tooManyRequests("Too many verification attempts");
       }
 
+      // Close the resend/verify race: a slow-arriving resend may have
+      // overwritten this candidate's otpId after we snapshotted the
+      // challenge at entry. Re-fetch the latest challenge and re-resolve
+      // the candidate by token so we authenticate against the otpId
+      // currently bound to it, not the stale snapshot.
+      const latestChallenge = await withDbTransaction(db, (client) =>
+        getRecoveryChallenge(client, { appId, id: challenge.id })
+      );
+      const latestCandidate =
+        latestChallenge?.candidates.find(
+          (c) => c.candidateToken === body.candidateToken
+        ) ?? candidate;
+      const effectiveOtpId = latestCandidate.otpId ?? candidate.otpId;
+      const otpIdHashDrift =
+        fingerprintOtpId(effectiveOtpId) !== fingerprintOtpId(candidate.otpId);
+
       try {
         const turnkey = getTurnkeyClient();
         const apiKeyName = `recovery-${Date.now().toString(36)}`;
         const otpResult = await turnkey.otpAuth({
           organizationId: candidate.organizationId,
-          otpId: candidate.otpId,
+          otpId: effectiveOtpId,
           otpCode: body.code,
           targetPublicKey: body.ephemeralPublicKey,
           apiKeyName,
@@ -1172,6 +1282,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             challengeId: challenge.id,
             ...recoveryOtpLogFields(candidate),
             attempt: verifyAttempt,
+            ...(otpIdHashDrift ? { otpIdHashDrift: true } : {}),
             turnkeyElapsedMs,
             turnkeyActivityId: otpResult.activityId,
             apiKeyId: otpResult.apiKeyId
@@ -1217,6 +1328,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             challengeId: challenge.id,
             ...recoveryOtpLogFields(candidate),
             attempt: verifyAttempt,
+            ...(otpIdHashDrift ? { otpIdHashDrift: true } : {}),
             codeLength: body.code.length,
             turnkeyElapsedMs: Date.now() - verifyRequestedAtMs,
             err: String(err?.message ?? err)
