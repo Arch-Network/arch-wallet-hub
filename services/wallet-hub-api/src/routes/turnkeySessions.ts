@@ -3,7 +3,6 @@ import { Type } from "@sinclair/typebox";
 import { getDbPool } from "../db/pool.js";
 import { withDbTransaction } from "../db/tx.js";
 import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
-import { getUserByExternalId } from "../db/apps.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 
 const RegisterIndexedDbKeyBody = Type.Object({
@@ -26,6 +25,17 @@ export const registerTurnkeySessionRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/turnkey/indexeddb-keys",
     {
+      // SECURITY: this route registers an arbitrary P-256 public key as
+      // a signing API key on a user's Turnkey sub-org -- i.e. it grants
+      // signing authority. With app-key auth alone, a holder of the
+      // shared app API key could pass a victim's externalUserId +
+      // resourceId and register their OWN key on the victim's sub-org
+      // (the resource-ownership check below passes because both values
+      // are attacker-supplied and internally consistent). Requiring a
+      // per-user session token -- and binding the body to the session
+      // principal -- closes that IDOR. No shipped client calls this
+      // route, so enforcing a session here is non-breaking.
+      preHandler: server.requireSession,
       schema: {
         summary: "Register an IndexedDB session public key as an API key in the parent org (enables passkey read-write sessions for sub-orgs)",
         tags: ["turnkey"],
@@ -36,20 +46,23 @@ export const registerTurnkeySessionRoutes: FastifyPluginAsync = async (server) =
     async (request, reply) => {
       const appId = request.app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
+      const session = request.session;
+      if (!session) return reply.unauthorized("Session required");
 
       const body = request.body as any;
       const externalUserId = String(body.externalUserId);
+      if (externalUserId !== session.externalUserId) {
+        return reply.forbidden("Body externalUserId does not match session principal");
+      }
       const resourceId = String(body.resourceId);
       const publicKey = String(body.publicKey);
       const apiKeyName = String(body.apiKeyName ?? `indexeddb-${publicKey.slice(0, 10)}`);
       const expirationSeconds = body.expirationSeconds ? String(body.expirationSeconds) : undefined;
 
-      const db = getDbPool();
-      const user = await withDbTransaction(db, (client) =>
-        getUserByExternalId(client, { appId, externalUserId })
-      );
-      if (!user) return reply.notFound("Unknown externalUserId");
+      // Identity comes from the authenticated session, not the body.
+      const user = { id: session.userId };
 
+      const db = getDbPool();
       const row = await withDbTransaction(db, (client) =>
         getTurnkeyResourceByIdForApp(client, { id: resourceId, appId })
       );

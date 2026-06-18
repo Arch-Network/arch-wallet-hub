@@ -15,6 +15,10 @@ REGION="us-east-1"
 AMI_ID=""  # Will be auto-detected if empty (Amazon Linux 2023)
 SECURITY_GROUP_NAME="wallet-hub-sg"
 INSTANCE_NAME="wallet-hub-server"
+# CIDR allowed to reach SSH (port 22). Leave empty to auto-detect the
+# public IP of the machine running this script (locked to a /32). Never
+# defaults to 0.0.0.0/0. Override: `export SSH_INGRESS_CIDR=1.2.3.4/32`.
+SSH_INGRESS_CIDR="${SSH_INGRESS_CIDR:-}"
 
 echo "============================================="
 echo "Arch Wallet Hub - EC2 Deployment"
@@ -80,12 +84,26 @@ if [ "$SG_ID" == "None" ] || [ -z "$SG_ID" ]; then
         --query 'GroupId' \
         --output text)
     
-    # Add inbound rules
-    echo "Adding security group rules..."
-    aws ec2 authorize-security-group-ingress --region $REGION --group-id $SG_ID --protocol tcp --port 22 --cidr 0.0.0.0/0
+    # Resolve the SSH ingress CIDR (never world-open). Auto-detect the
+    # operator's public IP when not explicitly provided.
+    if [ -z "$SSH_INGRESS_CIDR" ]; then
+        MY_IP=$(curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
+        if [ -z "$MY_IP" ]; then
+            echo "Could not auto-detect your public IP. Set SSH_INGRESS_CIDR (e.g. 1.2.3.4/32) and re-run."
+            exit 1
+        fi
+        SSH_INGRESS_CIDR="${MY_IP}/32"
+    fi
+
+    # Add inbound rules.
+    #   - 22 (SSH): locked to the operator CIDR only.
+    #   - 80/443: public web (the nginx reverse proxy).
+    #   - The API (3005) is reached THROUGH nginx on 80/443 and is
+    #     intentionally NOT exposed directly to the internet.
+    echo "Adding security group rules (SSH limited to ${SSH_INGRESS_CIDR})..."
+    aws ec2 authorize-security-group-ingress --region $REGION --group-id $SG_ID --protocol tcp --port 22 --cidr "$SSH_INGRESS_CIDR"
     aws ec2 authorize-security-group-ingress --region $REGION --group-id $SG_ID --protocol tcp --port 80 --cidr 0.0.0.0/0
     aws ec2 authorize-security-group-ingress --region $REGION --group-id $SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0
-    aws ec2 authorize-security-group-ingress --region $REGION --group-id $SG_ID --protocol tcp --port 3005 --cidr 0.0.0.0/0
 fi
 echo "✓ Security group: $SG_ID"
 
@@ -176,5 +194,5 @@ echo "   docker-compose up -d --build"
 echo ""
 echo "5. Access the application:"
 echo "   Frontend: http://$PUBLIC_IP"
-echo "   API:      http://$PUBLIC_IP:3005/v1"
+echo "   API:      http://$PUBLIC_IP/v1   (proxied by nginx; port 3005 is not public)"
 echo "============================================="

@@ -30,7 +30,7 @@
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^7.1.1",
+    "react-router-dom": "^7.18.0",
     "reflect-metadata": "^0.2.2",
     "sats-connect": "^4.2.1"
   },
@@ -47,6 +47,10 @@
   },
   "overrides": {
     "@noble/curves": "^1.9.7",
-    "@noble/hashes": "^1.8.0"
+    "@noble/hashes": "^1.8.0",
+    "axios": "^1.15.2",
+    "form-data": "^4.0.6",
+    "valibot": "^1.2.0",
+    "ws": "^8.21.0"
   }
 }

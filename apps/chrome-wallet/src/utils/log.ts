@@ -94,17 +94,20 @@ export const log = {
     if (!debugEnabled) return;
     const entry: LogEntry = { ts: Date.now(), level: "debug", msg, extra: sanitize(extra) };
     push(entry);
-    console.debug("[arch-wallet]", msg, extra);
+    // Emit the SANITIZED payload to console too: raw `extra` can carry
+    // PSBTs, addresses, and response bodies that should not land in
+    // devtools / captured console transcripts.
+    console.debug("[arch-wallet]", msg, entry.extra);
   },
   info(msg: string, extra?: unknown) {
     const entry: LogEntry = { ts: Date.now(), level: "info", msg, extra: sanitize(extra) };
     push(entry);
-    if (debugEnabled) console.info("[arch-wallet]", msg, extra);
+    if (debugEnabled) console.info("[arch-wallet]", msg, entry.extra);
   },
   warn(msg: string, extra?: unknown) {
     const entry: LogEntry = { ts: Date.now(), level: "warn", msg, extra: sanitize(extra) };
     push(entry);
-    console.warn("[arch-wallet]", msg, extra);
+    console.warn("[arch-wallet]", msg, entry.extra);
   },
   error(msg: string, err?: unknown) {
     const safeExtra = err instanceof Error ? { name: err.name, message: err.message } : sanitize(err);
