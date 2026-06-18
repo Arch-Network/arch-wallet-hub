@@ -37,9 +37,15 @@ jobs:
 
       - name: Determine version
         id: version
+        # SECURITY: route the user-controlled `inputs.version` through
+        # `env` rather than interpolating `${{ inputs.version }}` into
+        # the script body, which would be a shell-injection sink.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#wallet-hub-sdk-v}"
           fi
@@ -49,7 +55,9 @@ jobs:
         run: npm ci || npm install
 
       - name: Set package version
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version
 
       - name: Typecheck
         run: npm run typecheck

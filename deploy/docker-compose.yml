@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-wallet_hub}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set (no insecure default)}
       POSTGRES_DB: ${DB_NAME:-wallet_hub}
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -31,7 +31,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3005
-      DATABASE_URL: postgresql://${DB_USER:-wallet_hub}:${DB_PASSWORD:-changeme}@postgres:5432/${DB_NAME:-wallet_hub}
+      DATABASE_URL: postgresql://${DB_USER:-wallet_hub}:${DB_PASSWORD:?DB_PASSWORD must be set (no insecure default)}@postgres:5432/${DB_NAME:-wallet_hub}
       PLATFORM_ADMIN_API_KEY: ${API_KEY}
       TURNKEY_API_PUBLIC_KEY: ${TURNKEY_API_PUBLIC_KEY}
       TURNKEY_API_PRIVATE_KEY: ${TURNKEY_API_PRIVATE_KEY}
@@ -51,7 +51,9 @@ services:
       INDEXER_API_KEY: ${INDEXER_API_KEY:-}
       INDEXER_TIMEOUT_MS: ${INDEXER_TIMEOUT_MS:-30000}
       ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: ${ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO:-false}
-      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-*}
+      # No wildcard default: a production deployment must declare the
+      # exact origins it serves (comma-separated).
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:?set explicit allowed origins (no wildcard default)}
     ports:
       - "3005:3005"
 
