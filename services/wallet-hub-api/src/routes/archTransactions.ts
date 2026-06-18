@@ -97,6 +97,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
   server.post(
     "/arch/transfer",
     {
+      preHandler: server.enforceSessionForRoute("arch.transfer"),
       schema: {
         summary: "Transfer ARCH native tokens (system transfer)",
         tags: ["arch-transactions"],
@@ -277,6 +278,7 @@ export const registerArchTransactionRoutes: FastifyPluginAsync = async (server) 
   server.post(
     "/arch/instructions/build",
     {
+      preHandler: server.enforceSessionForRoute("arch.instructions.build"),
       schema: {
         summary: "Build and submit Arch transaction from custom instructions",
         tags: ["arch-transactions"],

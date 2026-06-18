@@ -204,6 +204,7 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/btc/build",
     {
+      preHandler: server.enforceSessionForRoute("btc.build"),
       schema: {
         summary:
           "Build an unsigned BTC PSBT from the indexer's UTXO snapshot. The client signs and broadcasts.",
@@ -302,6 +303,7 @@ export const registerBtcTransactionRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/btc/estimate-fee",
     {
+      preHandler: server.enforceSessionForRoute("btc.estimate-fee"),
       schema: {
         summary:
           "Estimate the fee for a planned BTC send using the actual UTXO set the indexer can see.",
