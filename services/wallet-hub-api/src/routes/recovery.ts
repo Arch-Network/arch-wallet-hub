@@ -87,6 +87,7 @@ import {
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
 import {
+  classifyRecoveryChallengeAvailability,
   getOtpAgeMs,
   getOtpStartCount,
   recordOtpStart,
@@ -276,6 +277,27 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             windowMs: RATE_LIMIT_WINDOW_MS
           },
           "recovery.init.rate_limited"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.init",
+            entityType: "recovery_challenge",
+            entityId: null,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              reason: "rate_limited",
+              emailHash,
+              recentCount,
+              limit: RATE_LIMIT_MAX_INITS,
+              windowMs: RATE_LIMIT_WINDOW_MS
+            },
+            outcome: "failed"
+          })
         );
         // Synthesise a non-existent challenge id so the client UX
         // shape is identical to the success path.
@@ -522,17 +544,76 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       const challenge = await withDbTransaction(db, (client) =>
         getRecoveryChallenge(client, { appId, id: body.challengeId })
       );
-      if (!challenge) return reply.notFound("Unknown challenge");
-      if (challenge.status !== "pending") {
-        return reply.gone("Challenge already consumed or expired");
-      }
-      if (new Date(challenge.expires_at).getTime() < Date.now()) {
+      if (!challenge) {
+        request.log.warn(
+          { appId, challengeId: body.challengeId },
+          "recovery.start.unknown_challenge"
+        );
         await withDbTransaction(db, (client) =>
-          markRecoveryChallengeStatus(client, {
-            id: challenge.id,
-            status: "expired"
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.otp_start",
+            entityType: "recovery_challenge",
+            entityId: body.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "unknown_challenge" },
+            outcome: "failed"
           })
         );
+        return reply.notFound("Unknown challenge");
+      }
+
+      const startAvailability = classifyRecoveryChallengeAvailability(challenge);
+      if (startAvailability === "not_pending") {
+        request.log.warn(
+          { appId, challengeId: challenge.id, status: challenge.status },
+          "recovery.start.not_pending"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.otp_start",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "not_pending", status: challenge.status },
+            outcome: "failed"
+          })
+        );
+        return reply.gone("Challenge already consumed or expired");
+      }
+      if (startAvailability === "expired") {
+        request.log.warn(
+          { appId, challengeId: challenge.id },
+          "recovery.start.expired"
+        );
+        await withDbTransaction(db, async (client) => {
+          await markRecoveryChallengeStatus(client, {
+            id: challenge.id,
+            status: "expired"
+          });
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.otp_start",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "expired", expiresAt: challenge.expires_at },
+            outcome: "failed"
+          });
+        });
         return reply.gone("Challenge expired");
       }
 
@@ -546,16 +627,63 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           { appId, challengeId: challenge.id },
           "recovery.start.email_mismatch"
         );
+        // SECURITY: an email mismatch here is an attempted OTP redirect
+        // (caller knows a victim's challengeId but supplies a different
+        // recovery email). Audit it on the tamper-evident chain.
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.otp_start",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "email_mismatch" },
+            outcome: "failed"
+          })
+        );
         return reply.badRequest("Recovery email does not match this challenge");
       }
 
       const candidateIndex = challenge.candidates.findIndex(
         (c) => c.candidateToken === body.candidateToken
       );
-      if (candidateIndex < 0) return reply.badRequest("Unknown candidateToken");
+      if (candidateIndex < 0) {
+        request.log.warn(
+          { appId, challengeId: challenge.id },
+          "recovery.start.unknown_candidate"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.otp_start",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "unknown_candidate" },
+            outcome: "failed"
+          })
+        );
+        return reply.badRequest("Unknown candidateToken");
+      }
 
       const candidate = challenge.candidates[candidateIndex]!;
       if (!candidate.rootUserId) {
+        request.log.warn(
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(candidate)
+          },
+          "recovery.start.missing_root_user_id"
+        );
         return reply.badRequest("Selected wallet cannot receive OTP recovery");
       }
 
@@ -689,33 +817,141 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       const challenge = await withDbTransaction(db, (client) =>
         getRecoveryChallenge(client, { appId, id: body.challengeId })
       );
-      if (!challenge) return reply.notFound("Unknown challenge");
-      if (challenge.status !== "pending") {
-        return reply.gone("Challenge already consumed or expired");
-      }
-      if (new Date(challenge.expires_at).getTime() < Date.now()) {
+      if (!challenge) {
+        request.log.warn(
+          { appId, challengeId: body.challengeId },
+          "recovery.verify.unknown_challenge"
+        );
         await withDbTransaction(db, (client) =>
-          markRecoveryChallengeStatus(client, {
-            id: challenge.id,
-            status: "expired"
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: body.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "unknown_challenge" },
+            outcome: "failed"
           })
         );
+        return reply.notFound("Unknown challenge");
+      }
+
+      const verifyAvailability = classifyRecoveryChallengeAvailability(challenge);
+      if (verifyAvailability === "not_pending") {
+        request.log.warn(
+          { appId, challengeId: challenge.id, status: challenge.status },
+          "recovery.verify.not_pending"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "not_pending", status: challenge.status },
+            outcome: "failed"
+          })
+        );
+        return reply.gone("Challenge already consumed or expired");
+      }
+      if (verifyAvailability === "expired") {
+        request.log.warn(
+          { appId, challengeId: challenge.id },
+          "recovery.verify.expired"
+        );
+        await withDbTransaction(db, async (client) => {
+          await markRecoveryChallengeStatus(client, {
+            id: challenge.id,
+            status: "expired"
+          });
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "expired", expiresAt: challenge.expires_at },
+            outcome: "failed"
+          });
+        });
         return reply.gone("Challenge expired");
       }
       if (challenge.attempts >= VERIFY_MAX_ATTEMPTS) {
-        await withDbTransaction(db, (client) =>
-          markRecoveryChallengeStatus(client, {
+        // SECURITY: attempts cap reached on the fast-path read. This is
+        // a brute-force signal -- audit it on the tamper-evident chain.
+        request.log.warn(
+          {
+            appId,
+            challengeId: challenge.id,
+            attempts: challenge.attempts,
+            maxAttempts: VERIFY_MAX_ATTEMPTS
+          },
+          "recovery.verify.attempts_exceeded"
+        );
+        await withDbTransaction(db, async (client) => {
+          await markRecoveryChallengeStatus(client, {
             id: challenge.id,
             status: "failed"
-          })
-        );
+          });
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              reason: "attempts_exceeded",
+              attempts: challenge.attempts,
+              maxAttempts: VERIFY_MAX_ATTEMPTS
+            },
+            outcome: "failed"
+          });
+        });
         return reply.tooManyRequests("Too many verification attempts");
       }
 
       const candidate = challenge.candidates.find(
         (c) => c.candidateToken === body.candidateToken
       );
-      if (!candidate) return reply.badRequest("Unknown candidateToken");
+      if (!candidate) {
+        request.log.warn(
+          { appId, challengeId: challenge.id },
+          "recovery.verify.unknown_candidate"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reason: "unknown_candidate" },
+            outcome: "failed"
+          })
+        );
+        return reply.badRequest("Unknown candidateToken");
+      }
       if (!candidate.otpId) {
         request.log.warn(
           {
@@ -725,6 +961,24 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             codeLength: body.code.length
           },
           "recovery.verify.no_otp_started"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: candidate.userId,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              reason: "no_otp_started",
+              candidateResourceId: candidate.resourceId
+            },
+            outcome: "failed"
+          })
         );
         return reply.badRequest("Verification code has not been sent for this wallet");
       }
@@ -738,6 +992,35 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         candidate.externalUserId &&
         body.externalUserId !== candidate.externalUserId
       ) {
+        // SECURITY: client asserted an externalUserId that does not own
+        // this candidate -- a stale client or an attempted cross-user
+        // recovery. Audit on the tamper-evident chain.
+        request.log.warn(
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(candidate)
+          },
+          "recovery.verify.external_user_mismatch"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: candidate.userId,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              reason: "external_user_mismatch",
+              candidateResourceId: candidate.resourceId
+            },
+            outcome: "failed"
+          })
+        );
         return reply.badRequest("externalUserId does not match candidate");
       }
 
@@ -788,12 +1071,45 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       });
 
       if (!attemptRow) {
-        await withDbTransaction(db, (client) =>
-          markRecoveryChallengeStatus(client, {
+        // SECURITY: the atomic guard refused to count this attempt
+        // (cap reached or challenge no longer pending under concurrency).
+        // This is a brute-force signal -- audit on the tamper-evident
+        // chain. Distinct from the fast-path `attempts_exceeded` above so
+        // we can tell the race-loser path apart in downstream analysis.
+        request.log.warn(
+          {
+            appId,
+            challengeId: challenge.id,
+            ...recoveryOtpLogFields(candidate),
+            attempt: verifyAttempt,
+            maxAttempts: VERIFY_MAX_ATTEMPTS
+          },
+          "recovery.verify.attempts_exceeded_atomic"
+        );
+        await withDbTransaction(db, async (client) => {
+          await markRecoveryChallengeStatus(client, {
             id: challenge.id,
             status: "failed"
-          })
-        );
+          });
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: candidate.userId,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: challenge.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              reason: "attempts_exceeded_atomic",
+              candidateResourceId: candidate.resourceId,
+              attempt: verifyAttempt,
+              maxAttempts: VERIFY_MAX_ATTEMPTS
+            },
+            outcome: "failed"
+          });
+        });
         return reply.tooManyRequests("Too many verification attempts");
       }
 
