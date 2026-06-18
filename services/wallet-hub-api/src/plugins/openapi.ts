@@ -18,11 +18,17 @@ export const registerOpenApi: FastifyPluginAsync<{ basePath: string }> = async (
     }
   });
 
-  await server.register(swaggerUi, {
-    routePrefix: `${opts.basePath}/docs`,
-    uiConfig: {
-      docExpansion: "list",
-      deepLinking: false
-    }
-  });
+  // The Swagger UI (and its /docs/json spec route) exposes the full
+  // API surface to unauthenticated callers. Only mount it outside
+  // production so prod scanners can't enumerate routes; the spec is
+  // still generated in-memory for tests/tooling.
+  if (server.config.NODE_ENV !== "production") {
+    await server.register(swaggerUi, {
+      routePrefix: `${opts.basePath}/docs`,
+      uiConfig: {
+        docExpansion: "list",
+        deepLinking: false
+      }
+    });
+  }
 };

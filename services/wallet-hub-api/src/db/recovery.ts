@@ -131,6 +131,33 @@ export async function incrementRecoveryAttempts(
   return res.rows[0] ?? null;
 }
 
+/**
+ * Atomically increment the attempt counter only if the challenge is
+ * still pending and under the cap. Returns the updated row when the
+ * attempt was counted, or null when the challenge is gone, already
+ * consumed/expired, or the cap was reached. Doing the check and the
+ * increment in a single UPDATE closes the race where two concurrent
+ * verifies both read `attempts` below the cap and both proceed.
+ */
+export async function incrementRecoveryAttemptIfUnderCap(
+  client: PoolClient,
+  params: { id: string; appId: string; maxAttempts: number }
+): Promise<RecoveryChallengeRow | null> {
+  const res = await client.query<RecoveryChallengeRow>(
+    `
+      UPDATE recovery_challenges
+      SET attempts = attempts + 1
+      WHERE id = $1
+        AND app_id = $2
+        AND status = 'pending'
+        AND attempts < $3
+      RETURNING *
+    `,
+    [params.id, params.appId, params.maxAttempts]
+  );
+  return res.rows[0] ?? null;
+}
+
 export async function updateRecoveryChallengeCandidates(
   client: PoolClient,
   params: { id: string; candidates: RecoveryCandidate[] }

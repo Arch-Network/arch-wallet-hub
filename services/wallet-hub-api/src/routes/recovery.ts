@@ -66,6 +66,7 @@
 
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
+import { timingSafeEqual } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
@@ -75,7 +76,7 @@ import {
   countRecentChallenges,
   getRecoveryChallenge,
   hashEmailForRateLimit,
-  incrementRecoveryAttempts,
+  incrementRecoveryAttemptIfUnderCap,
   insertRecoveryChallenge,
   markRecoveryChallengeStatus,
   maskAddress,
@@ -85,6 +86,15 @@ import {
 } from "../db/recovery.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
+
+/**
+ * Constant-time comparison of two equal-length lowercase hex digests.
+ * Returns false on length mismatch instead of throwing.
+ */
+function safeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a, "utf8"), Buffer.from(b, "utf8"));
+}
 
 // Bumped from the original 3/hour after early field reports of
 // legitimate users (and our own QA) hitting the cap during a single
@@ -484,6 +494,19 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         return reply.gone("Challenge expired");
       }
 
+      // SECURITY: bind the OTP target email to the address proven at
+      // /init. The challenge persists sha256(lowercased email); without
+      // this check an attacker who knows a victim's recovery email could
+      // /init, then /start with their OWN email and have Turnkey deliver
+      // the recovery OTP to an address they control.
+      if (!safeEqualHex(hashEmailForRateLimit(email), challenge.email_hash)) {
+        request.log.warn(
+          { appId, challengeId: challenge.id },
+          "recovery.start.email_mismatch"
+        );
+        return reply.badRequest("Recovery email does not match this challenge");
+      }
+
       const candidateIndex = challenge.candidates.findIndex(
         (c) => c.candidateToken === body.candidateToken
       );
@@ -622,8 +645,16 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         return reply.badRequest("externalUserId does not match candidate");
       }
 
-      await withDbTransaction(db, async (client) => {
-        await incrementRecoveryAttempts(client, { id: challenge.id });
+      // Count the attempt atomically: the UPDATE only succeeds while
+      // the challenge is pending AND under the cap, so concurrent
+      // verifies can't both slip past the earlier fast-path check.
+      const attemptRow = await withDbTransaction(db, async (client) => {
+        const incremented = await incrementRecoveryAttemptIfUnderCap(client, {
+          id: challenge.id,
+          appId,
+          maxAttempts: VERIFY_MAX_ATTEMPTS
+        });
+        if (!incremented) return null;
         await auditEvent({
           client,
           appId,
@@ -636,11 +667,22 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           turnkeyRequestId: null,
           payloadJson: {
             candidateResourceId: candidate.resourceId,
-            attempt: challenge.attempts + 1
+            attempt: incremented.attempts
           },
           outcome: "requested"
         });
+        return incremented;
       });
+
+      if (!attemptRow) {
+        await withDbTransaction(db, (client) =>
+          markRecoveryChallengeStatus(client, {
+            id: challenge.id,
+            status: "failed"
+          })
+        );
+        return reply.tooManyRequests("Too many verification attempts");
+      }
 
       try {
         const turnkey = getTurnkeyClient();

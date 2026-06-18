@@ -871,7 +871,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             entityId: resourceId,
             turnkeyActivityId: signed.activityId,
             turnkeyRequestId: null,
-            payloadJson: { signature64Hex },
+            // Persist only a hash of the signature in the durable audit
+            // row; the raw signature is a sensitive artifact and the
+            // hash is sufficient to correlate with the response.
+            payloadJson: { signatureSha256: sha256Hex(signature64Hex) },
             outcome: "succeeded"
           });
 

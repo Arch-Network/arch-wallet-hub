@@ -47,16 +47,16 @@ export const registerHealthRoutes: FastifyPluginAsync = async (server) => {
         response: {
           200: Type.Object({
             ok: Type.Boolean(),
-            service: Type.String(),
-            env: Type.String()
+            service: Type.String()
           })
         }
       }
     },
+    // Intentionally minimal: do not leak NODE_ENV or other deployment
+    // metadata from an unauthenticated endpoint.
     async () => ({
       ok: true,
-      service: "wallet-hub-api",
-      env: server.config.NODE_ENV
+      service: "wallet-hub-api"
     })
   );
 
