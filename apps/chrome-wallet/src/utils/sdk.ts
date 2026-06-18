@@ -5,6 +5,7 @@ import { walletStore } from "../state/wallet-store";
 import type { NetworkId } from "../state/types";
 import { DEFAULT_HUB_API_KEY, DEFAULT_HUB_BASE_URL } from "../state/types";
 import { invalidateIndexerCache } from "./indexer";
+import { readHubToken } from "./hub-session-store";
 
 let cachedClient: WalletHubClient | null = null;
 let cachedBaseUrl: string | null = null;
@@ -43,6 +44,7 @@ export async function getClient(): Promise<WalletHubClient> {
   assertSecureUrl(baseUrl, network);
 
   if (cachedClient && cachedBaseUrl === baseUrl && cachedApiKey === apiKey && cachedNetwork === network) {
+    await attachActiveSessionToken(cachedClient, state.activeAccountId);
     return cachedClient;
   }
 
@@ -54,7 +56,32 @@ export async function getClient(): Promise<WalletHubClient> {
   cachedBaseUrl = baseUrl;
   cachedApiKey = apiKey;
   cachedNetwork = network;
+  await attachActiveSessionToken(cachedClient, state.activeAccountId);
   return cachedClient;
+}
+
+/**
+ * Attach the cached per-user Hub session token for the active account
+ * (Phase 2a). Read-through from chrome.storage.session so any extension
+ * context's client carries the bearer once it's been minted, and so the
+ * token survives client-cache invalidation. Clears the token when none
+ * is cached (e.g. after lock or expiry) so a stale bearer is never sent.
+ */
+async function attachActiveSessionToken(
+  client: WalletHubClient,
+  activeAccountId: string | null | undefined,
+): Promise<void> {
+  if (!activeAccountId) {
+    client.setSessionToken(undefined);
+    return;
+  }
+  try {
+    const externalUserId = await getExternalUserId();
+    const token = await readHubToken(externalUserId, activeAccountId);
+    client.setSessionToken(token ?? undefined);
+  } catch {
+    client.setSessionToken(undefined);
+  }
 }
 
 /**
