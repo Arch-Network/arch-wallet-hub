@@ -50,6 +50,10 @@ paths = [
   '''docs/security/.*''',
   '''.gitleaks\.toml''',
   '''apps/chrome-wallet/src/state/wallet-store\.ts''',
+  # Migration test asserts the verbatim rotated LEAKED_INDEXER_API_KEY
+  # constant defined in wallet-store.ts (allowlisted above) so a future
+  # edit to the constant shows up as a test diff.
+  '''apps/chrome-wallet/src/state/__tests__/indexer-key-migration\.test\.ts''',
   # Swap-engine network configs hold only public on-chain identifiers
   # (program IDs, vault pubkeys, quote-signer pubkeys). Anything
   # actually secret in this package would be loaded from env.
