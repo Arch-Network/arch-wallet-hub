@@ -114,6 +114,12 @@ export default function SessionBootstrapper({
   const [emailMasked, setEmailMasked] = useState<string>("");
   const [confirmingForget, setConfirmingForget] = useState(false);
   const [forgetting, setForgetting] = useState(false);
+  const [resending, setResending] = useState(false);
+  // Seconds left before another resend is allowed. The Hub enforces a
+  // real per-challenge cooldown/cap; this is a courtesy throttle so the
+  // user can't hammer the button (and so a 429 isn't the first thing
+  // they hit).
+  const [resendCooldown, setResendCooldown] = useState(0);
 
   const forgetCurrentAccount = useCallback(async () => {
     if (forgetting) return;
@@ -319,6 +325,60 @@ export default function SessionBootstrapper({
     }
   }, [challengeId, candidateToken, otp, account.organizationId, buildClient, onReady]);
 
+  // Tick the resend cooldown down to zero.
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setTimeout(() => setResendCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendCooldown]);
+
+  // Resend re-sends the OTP on the *existing* challenge instead of
+  // re-running init. Re-initing would mint a fresh challengeId and
+  // orphan the in-flight OTP, defeating the Hub's per-challenge send
+  // cap + cooldown (see issue #57).
+  const resend = useCallback(async () => {
+    if (!challengeId || !candidateToken || resending || resendCooldown > 0) {
+      return;
+    }
+    setResending(true);
+    setError(null);
+    try {
+      const client = await buildClient();
+      const started = await withTimeout(
+        client.startRecoveryEmailOtp({
+          challengeId,
+          candidateToken,
+          email: recoveryEmail,
+        }),
+        20_000,
+        "resend-timeout",
+      );
+      setEmailMasked(started.emailMasked || emailMasked);
+      setOtp("");
+      setResendCooldown(30);
+    } catch (e: any) {
+      // The Hub returns a neutral 429 when resends are too frequent or
+      // exceed the cap; surface its message and keep the user on the
+      // OTP screen rather than crashing.
+      setError(
+        e?.message === "resend-timeout"
+          ? "Couldn't reach the recovery server to resend. Check your connection and try again."
+          : e?.message || "Failed to resend verification code",
+      );
+      setResendCooldown(30);
+    } finally {
+      setResending(false);
+    }
+  }, [
+    challengeId,
+    candidateToken,
+    recoveryEmail,
+    emailMasked,
+    resending,
+    resendCooldown,
+    buildClient,
+  ]);
+
   // Subheader is context-sensitive: showing "we just sent a code
   // to ." is worse than showing nothing, and outright wrong when
   // the account has no email on file.
@@ -422,6 +482,30 @@ export default function SessionBootstrapper({
             disabled={stage === "verifying" || !otp}
           >
             {stage === "verifying" ? "Verifying..." : "Unlock signing"}
+          </button>
+          <button
+            className="btn btn-link"
+            type="button"
+            onClick={resend}
+            disabled={stage === "verifying" || resending || resendCooldown > 0}
+            style={{
+              marginTop: 8,
+              background: "none",
+              border: "none",
+              color: "var(--text-muted)",
+              cursor:
+                stage === "verifying" || resending || resendCooldown > 0
+                  ? "default"
+                  : "pointer",
+              fontSize: 12,
+              textDecoration: "underline",
+            }}
+          >
+            {resending
+              ? "Resending..."
+              : resendCooldown > 0
+                ? `Resend code in ${resendCooldown}s`
+                : "Resend code"}
           </button>
           <button
             className="btn btn-link"
