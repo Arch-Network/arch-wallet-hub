@@ -21,6 +21,17 @@ const EnvSchema = z.object({
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
 
+  // When true, reject any request that did not arrive over HTTPS
+  // (judged by X-Forwarded-Proto, which the ALB / nginx sets; trustProxy
+  // is enabled). Defaults to false so local/dev over plain HTTP keeps
+  // working AND so enabling it can't silently break a not-yet-TLS
+  // deployment. Production deployments MUST set REQUIRE_HTTPS=true once
+  // TLS terminates in front of the API (see deploy/README.md).
+  REQUIRE_HTTPS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+
   // Postgres
   //
   // Two ways to configure the DB:
