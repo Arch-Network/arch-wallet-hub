@@ -1,7 +1,37 @@
 import { createHash } from "node:crypto";
-import type { RecoveryCandidate } from "../db/recovery.js";
+import type { RecoveryCandidate, RecoveryChallengeRow } from "../db/recovery.js";
 
 const OTP_ID_FINGERPRINT_LENGTH = 12;
+
+/**
+ * Why a non-pending/expired challenge is being rejected. Shared by
+ * /recovery/email/start and /recovery/email/verify so the rejection
+ * reason logged + audited is consistent across both endpoints. The
+ * "unknown" (challenge not found) case is handled by the routes
+ * directly since it has no row to classify.
+ */
+export type RecoveryChallengeAvailability =
+  | "available"
+  | "not_pending"
+  | "expired";
+
+/**
+ * Pure classification of a loaded challenge row: is it still usable,
+ * already consumed/expired by status, or pending-but-past-TTL. Kept
+ * free of DB/IO so it can be unit-tested and reused by both the start
+ * and verify routes. `not_pending` takes precedence over `expired`,
+ * matching the original guard order (a status check before the TTL
+ * check) so reply semantics are preserved.
+ */
+export function classifyRecoveryChallengeAvailability(
+  challenge: Pick<RecoveryChallengeRow, "status" | "expires_at">,
+  nowMs = Date.now()
+): RecoveryChallengeAvailability {
+  if (challenge.status !== "pending") return "not_pending";
+  const expiresMs = Date.parse(challenge.expires_at);
+  if (Number.isFinite(expiresMs) && expiresMs < nowMs) return "expired";
+  return "available";
+}
 
 function parseIsoMs(value: string | null | undefined): number | null {
   if (!value) return null;
