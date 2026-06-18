@@ -36,32 +36,77 @@ follow client adoption, route by route.
 
 | Route | Enforced? |
 |-------|-----------|
-| `POST /auth/session/revoke` | yes (by definition) |
-| `POST /signing-requests/:id/sign-with-turnkey` | yes |
-| `POST /turnkey/indexeddb-keys` | **yes (this PR)** — safe because no client calls it |
-| everything else user-scoped | not yet (clients don't send tokens) |
+| `POST /auth/session/revoke` | yes (always — `requireSession`) |
+| `POST /signing-requests/:id/sign-with-turnkey` | yes (always — `requireSession`) |
+| `POST /turnkey/indexeddb-keys` | yes (always) — safe because no client calls it |
+| high-risk user-scoped routes (see keys below) | **wired, flag-gated** (default OFF) |
+| everything else | not enforced |
 
-## Staged rollout (one route per PR)
+## Phase 2a — client minting (DONE)
 
-1. **Client groundwork (prerequisite):** after wallet unlock / passkey
-   bootstrap, have chrome-wallet (and demo-dapp) call
-   `createSessionChallenge` → sign → `mintSessionToken` →
-   `client.setSessionToken(token)`. Refresh on 401 / expiry.
-2. **Per route, in risk order**, add `preHandler: server.requireSession`
-   + the `externalUserId === session.externalUserId` guard:
-   1. `POST /turnkey/sign-message`
-   2. `POST /arch/transfer`, `POST /arch/instructions/build`
-   3. `POST /signing-requests`, `POST /signing-requests/:id/submit`
-   4. `POST /turnkey/passkey-wallets`, `/email-wallets`,
-      `/passkey-wallets/import`
-   5. `POST /btc/build`, `/btc/estimate-fee`
-   6. Reads: `GET /turnkey/wallets`, `/turnkey/wallets/:resourceId`,
-      `GET /wallet-links`
-3. **Exempt (must NOT require a session):** `/auth/session/challenge`,
-   `/auth/session`, `/health`, `/extension/connect`, `/platform/*`.
-4. **Special cases:** `GET /signing-requests/:id` and
-   `POST /btc/broadcast` have no `externalUserId` today; bind them to a
-   session + resource-ownership check when migrated.
+`apps/chrome-wallet` mints + sends a `whs_v1_` session token (see
+`apps/chrome-wallet/src/utils/hub-session.ts`): on signing-session open it
+runs `createSessionChallenge` → schnorr-sign the payload → `mintSessionToken`
+→ caches + attaches the bearer to every request. Strictly fail-soft.
+**Shipped from 0.6.1 onward; 0.6.0 does NOT send tokens** — which is why
+2b enforcement stays OFF until 0.6.0 has aged out. (`demo-dapp` is out of
+scope and never sends tokens.)
+
+## Phase 2b — flag-gated enforcement (this PR)
+
+Instead of one-route-per-PR code churn, enforcement is wired onto the
+high-risk routes now but is a **zero-cost no-op until enabled** via the
+`SESSION_ENFORCED_ROUTES` env var (default empty). When a route key is
+enabled, `server.enforceSessionForRoute(key)`:
+
+1. requires a valid `whs_v1_` session token (else `401`), and
+2. binds the request: if the body/query carries an `externalUserId` that
+   differs from the session principal, `403`.
+
+The decision logic is unit-tested in pure form
+(`plugins/__tests__/sessionEnforcement.test.ts`); see
+`sessionEnforcementDecision` / `parseEnforcedRoutes`.
+
+### Wired route keys (risk order)
+
+```
+turnkey.sign-message
+arch.transfer
+arch.instructions.build
+signing-requests.create
+signing-requests.submit
+turnkey.passkey-wallets.create
+turnkey.email-wallets.create
+turnkey.passkey-wallets.import
+btc.build
+btc.estimate-fee
+wallet-links.challenge
+wallet-links.verify
+turnkey.wallets.list
+turnkey.wallets.get
+wallet-links.list
+```
+
+### Enable procedure (after 0.6.1 adoption)
+
+1. Confirm via telemetry that token-sending builds dominate (look for the
+   `Authorization: Bearer whs_v1_` header / a server-side metric).
+2. Turn on a small batch, highest risk first, e.g.
+   `SESSION_ENFORCED_ROUTES=turnkey.sign-message,arch.transfer,arch.instructions.build`,
+   and redeploy. Watch `401`/`403` rates.
+3. Widen in batches; `SESSION_ENFORCED_ROUTES=*` enforces all wired routes.
+4. Roll back instantly by removing keys from the env var (no code change).
+
+### Exempt (must NEVER be enforced)
+
+`/auth/session/challenge`, `/auth/session`, `/health`,
+`/extension/connect`, `/platform/*` (bootstrap / public / admin).
+
+### Special cases (not yet wired)
+
+`GET /signing-requests/:id` and `POST /btc/broadcast` carry no
+`externalUserId`; they need a session + resource/output-ownership check
+rather than the externalUserId binding, so they're deferred.
 
 ## SDK / docs cleanup (tracked separately)
 

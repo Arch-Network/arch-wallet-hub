@@ -32,6 +32,18 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // Phase 2b of the session-auth rollout (docs/security/session-auth-rollout.md).
+  // Comma-separated list of route keys (see plugins/sessionAuth.ts) on which
+  // to ENFORCE a per-user session token + bind the body/query externalUserId
+  // to the session principal. Use "*" (or "all") to enforce every opted-in
+  // route at once.
+  //
+  // Defaults to EMPTY (enforce nothing) so it can't break clients that don't
+  // yet mint/send tokens. Only flip routes on once token-sending wallet
+  // builds dominate the field; un-updated clients on an enforced route get
+  // 401. Roll out one route (or a small batch) at a time, ordered by risk.
+  SESSION_ENFORCED_ROUTES: z.string().default(""),
+
   // Postgres
   //
   // Two ways to configure the DB:

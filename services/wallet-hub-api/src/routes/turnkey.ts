@@ -157,6 +157,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/passkey-wallets/import",
     {
+      preHandler: server.enforceSessionForRoute("turnkey.passkey-wallets.import"),
       schema: {
         summary: "Register an existing passkey wallet metadata row for this Hub app",
         tags: ["turnkey"],
@@ -231,6 +232,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/passkey-wallets",
     {
+      preHandler: server.enforceSessionForRoute("turnkey.passkey-wallets.create"),
       schema: {
         summary: "Create a non-custodial embedded wallet (sub-org + passkey root user + wallet)",
         tags: ["turnkey"],
@@ -444,6 +446,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/email-wallets",
     {
+      preHandler: server.enforceSessionForRoute("turnkey.email-wallets.create"),
       schema: {
         summary:
           "Create a non-custodial email-only embedded wallet (sub-org + email root user + wallet)",
@@ -674,6 +677,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.get(
     "/turnkey/wallets",
     {
+      preHandler: server.enforceSessionForRoute("turnkey.wallets.list"),
       schema: {
         summary: "List stored Turnkey wallet resources for a user",
         tags: ["turnkey"],
@@ -722,6 +726,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.get(
     "/turnkey/wallets/:resourceId",
     {
+      preHandler: server.enforceSessionForRoute("turnkey.wallets.get"),
       schema: {
         summary: "Get stored Turnkey wallet resource metadata",
         tags: ["turnkey"],
@@ -769,6 +774,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/sign-message",
     {
+      preHandler: server.enforceSessionForRoute("turnkey.sign-message"),
       schema: {
         summary: "Sign a message via Turnkey (Phase 0)",
         tags: ["turnkey"],
