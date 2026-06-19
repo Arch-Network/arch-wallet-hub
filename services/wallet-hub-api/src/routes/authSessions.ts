@@ -23,6 +23,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { withDbTransaction } from "../db/tx.js";
+import { getDbPool } from "../db/pool.js";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
 import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
 import {
@@ -77,7 +78,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
       // Ensure the user exists. This is the same upsert the rest of
       // the API uses; the proof-of-control comes from the Turnkey
       // signature on the challenge, not from this lookup.
-      const challenge = await withDbTransaction(server.db, async (client) => {
+      const challenge = await withDbTransaction(getDbPool(), async (client) => {
         const user = await getOrCreateUserByExternalId(client, {
           appId,
           externalUserId: body.externalUserId,
@@ -124,7 +125,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
       const appId = request.app!.appId;
       const body = request.body as typeof MintBody.static;
 
-      const result = await withDbTransaction(server.db, async (client) => {
+      const result = await withDbTransaction(getDbPool(), async (client) => {
         const challenge = await loadConsumableChallenge(client, {
           challengeId: body.challengeId,
           appId,
@@ -206,7 +207,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
       },
     },
     async (request) => {
-      await withDbTransaction(server.db, (client) =>
+      await withDbTransaction(getDbPool(), (client) =>
         revokeSession(client, {
           sessionId: request.session!.sessionId,
           appId: request.session!.appId,
