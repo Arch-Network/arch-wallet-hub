@@ -36,7 +36,10 @@ import {
 
 const ChallengeBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
-  turnkeyResourceId: Type.String({ minLength: 1 }),
+  // `turnkey_resources.id` is a Postgres uuid column. Constrain the input to
+  // a UUID so a malformed id is rejected with a clean 400 by the schema
+  // validator instead of reaching the DB and surfacing as a 22P02 500.
+  turnkeyResourceId: Type.String({ format: "uuid" }),
 });
 
 const ChallengeResponse = Type.Object({

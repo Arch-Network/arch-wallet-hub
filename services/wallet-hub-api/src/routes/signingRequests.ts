@@ -31,7 +31,9 @@ const CreateSigningRequestBody = Type.Object({
     }),
     Type.Object({
       kind: Type.Literal("turnkey"),
-      resourceId: Type.String({ minLength: 1 })
+      // UUID-constrained: maps to `turnkey_resources.id` (Postgres uuid), so
+      // a malformed id 400s at validation instead of 22P02-500 at the DB.
+      resourceId: Type.String({ format: "uuid" })
     })
   ]),
   action: Type.Union([
