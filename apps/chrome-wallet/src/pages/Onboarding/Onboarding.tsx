@@ -847,7 +847,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       {error && <div className="error-banner">{error}</div>}
 
       {wizardStep === 0 && (
-        <MethodChoiceStep onPick={chooseMethod} />
+        <MethodChoiceStep onPick={chooseMethod} onSignIn={() => navigate("/recover")} />
       )}
 
       {/* Steps 1 and 2 wrap their inputs + nav in a <form> so the
@@ -952,9 +952,14 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
 interface MethodChoiceStepProps {
   onPick: (method: "passkey" | "email" | "external") => void;
+  /** Cross-device sign-in: route to the existing /recover flow, which for
+      passkey wallets verifies email then attaches this device to the
+      already-existing sub-org. Separate from onPick because it doesn't
+      start the create-new-wallet wizard. */
+  onSignIn: () => void;
 }
 
-function MethodChoiceStep({ onPick }: MethodChoiceStepProps) {
+function MethodChoiceStep({ onPick, onSignIn }: MethodChoiceStepProps) {
   return (
     <div className="onboarding-choice">
       <button
@@ -1028,6 +1033,31 @@ function MethodChoiceStep({ onPick }: MethodChoiceStepProps) {
           <p className="onboarding-choice-card-sub">
             Keep funds in Xverse or UniSat while using Arch balances
             and supported signing flows.
+          </p>
+        </div>
+      </button>
+
+      <button
+        type="button"
+        className="onboarding-choice-card"
+        onClick={onSignIn}
+      >
+        <span className="onboarding-choice-card-icon" aria-hidden="true">
+          {/* arrow-into-door glyph: signals signing in to something that
+              already exists, distinct from the create-new method icons. */}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+            <path d="M10 17l5-5-5-5" />
+            <path d="M15 12H3" />
+          </svg>
+        </span>
+        <div className="onboarding-choice-card-body">
+          <p className="onboarding-choice-card-title">Sign in to an existing wallet</p>
+          <p className="onboarding-choice-card-sub">
+            Already set up Arch on your phone or another device? Verify
+            your email to add this device.
           </p>
         </div>
       </button>
