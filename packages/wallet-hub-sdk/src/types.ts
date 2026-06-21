@@ -36,6 +36,16 @@ export type WalletHubClientOptions = {
    * accepts a user-scoped `externalUserId`.
    */
   sessionToken?: string;
+  /**
+   * Optional signer the client uses to mint (and silently refresh) a
+   * per-user session token on demand. When set, money/signing routes
+   * (which the Hub enforces a session on) "just work" without the
+   * caller managing tokens by hand: the client mints on first need,
+   * caches the token, and re-mints once on a session 401. Leave unset
+   * to keep the legacy behaviour of supplying `sessionToken` /
+   * `setSessionToken` yourself. See {@link SessionSignerSource}.
+   */
+  sessionSigner?: SessionSignerSource;
   network?: ArchNetwork;
   /**
    * Hard timeout per request in milliseconds. Defaults to 30s.
@@ -44,6 +54,50 @@ export type WalletHubClientOptions = {
   requestTimeoutMs?: number;
   fetchImpl?: typeof fetch;
 };
+
+// ── Automatic session minting ────────────────────────────────────────────
+
+/**
+ * A signer for a Turnkey-custodied wallet. The client requests a
+ * challenge, hands you its 32-byte `payloadHex`, and you return a
+ * 64-byte (r||s) BIP-340 schnorr signature in lowercase hex, signed
+ * with the resource's default Taproot key (HASH_FUNCTION_NO_OP).
+ */
+export type TurnkeySessionSigner = {
+  kind: "turnkey";
+  externalUserId: string;
+  turnkeyResourceId: string;
+  signChallenge: (payloadHex: string) => string | Promise<string>;
+};
+
+/**
+ * A signer for an external / linked wallet (Xverse, UniSat, ...). The
+ * client requests a challenge, hands you its human-readable `message`,
+ * and you return the wallet's BIP-322 signature over it (whatever the
+ * wallet produces -- typically a base64 witness blob). The `address`
+ * must already be linked for `externalUserId` (see
+ * `verifyWalletLinkChallenge`).
+ */
+export type ExternalSessionSigner = {
+  kind: "external";
+  externalUserId: string;
+  walletProvider: string;
+  address: string;
+  signMessage: (message: string) => string | Promise<string>;
+};
+
+export type SessionSigner = TurnkeySessionSigner | ExternalSessionSigner;
+
+/**
+ * Either a static signer or a resolver invoked lazily whenever a mint
+ * is needed. The resolver form lets a host (e.g. a browser extension)
+ * swap the active account without rebuilding the client; return
+ * `undefined` when no signer is currently available (the request then
+ * proceeds without a freshly-minted token, exactly as before).
+ */
+export type SessionSignerSource =
+  | SessionSigner
+  | (() => SessionSigner | undefined | null | Promise<SessionSigner | undefined | null>);
 
 // ── Wallet linking (dapp connect) ────────────────────────────────────────
 
@@ -501,6 +555,31 @@ export type MintSessionResponse = {
   /** Opaque bearer (prefix `whs_v1_`). Returned exactly once. */
   sessionToken: string;
   expiresAt: string;
+};
+
+/**
+ * Request a proof-of-control challenge for an EXTERNAL (linked /
+ * BIP-322) wallet. The `address` must already be linked for
+ * `externalUserId`. The returned `message` is what the wallet
+ * BIP-322-signs (not a payload hash).
+ */
+export type CreateExternalSessionChallengeRequest = {
+  externalUserId: string;
+  walletProvider: string;
+  address: string;
+};
+
+export type CreateExternalSessionChallengeResponse = {
+  challengeId: string;
+  /** Human-readable message the wallet must BIP-322-sign. */
+  message: string;
+  expiresAt: string;
+};
+
+export type MintExternalSessionRequest = {
+  challengeId: string;
+  /** BIP-322 signature over the challenge `message` (wallet-produced). */
+  signature: string;
 };
 
 export type RevokeSessionResponse = {
