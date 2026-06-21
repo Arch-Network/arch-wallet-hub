@@ -679,7 +679,7 @@ export const walletStore = {
     // Phase 2a: opportunistically mint a Hub session token reusing the
     // session we just opened. Fire-and-forget + fail-soft: never blocks
     // or breaks unlock (see utils/hub-session.ts).
-    void ensureHubSession(account);
+    void ensureHubSession(account, state.network);
   },
 
   /**
@@ -710,7 +710,7 @@ export const walletStore = {
       bootstrap: new EmailBootstrap(args),
     });
     // Phase 2a: see openPasskeySessionForAccount.
-    void ensureHubSession(account);
+    void ensureHubSession(account, state.network);
   },
 
   /**

@@ -106,10 +106,47 @@ export async function getExternalUserId(): Promise<string> {
   return walletStore.getInstallId();
 }
 
-export function isWalletHubAuthError(err: unknown): boolean {
+/**
+ * Extract the HTTP status the SDK embeds in its error message
+ * (`WalletHub error <status> <statusText>: <body>`), or null when the
+ * error isn't an HTTP one (e.g. a network/timeout error). Threading the
+ * real status lets us tell a session 401 apart from an app-key 401
+ * instead of blindly matching the substring "401" anywhere in a body.
+ */
+export function walletHubErrorStatus(err: unknown): number | null {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  const m = message.match(/WalletHub error (\d{3})\b/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * True when a 401 was caused by a missing/expired/invalid per-user
+ * SESSION token (the Hub's `plugins/sessionAuth.ts` messages). The fix
+ * is to re-unlock / reconnect the wallet, NOT to touch the Hub URL/key.
+ */
+export function isWalletHubSessionError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? "");
   const lower = message.toLowerCase();
-  return message.includes("401") || lower.includes("invalid api key") || lower.includes("unauthorized");
+  const is401 = walletHubErrorStatus(err) === 401;
+  return (
+    is401 &&
+    (lower.includes("session bearer") ||
+      lower.includes("session token") ||
+      lower.includes("expired session"))
+  );
+}
+
+/**
+ * True when a 401 was caused by the app API key being wrong/revoked
+ * (fix: Hub URL/key in Settings). Deliberately excludes session errors
+ * so a session expiry never triggers an app-key reset.
+ */
+export function isWalletHubAuthError(err: unknown): boolean {
+  if (isWalletHubSessionError(err)) return false;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  const lower = message.toLowerCase();
+  const is401 = walletHubErrorStatus(err) === 401 || message.includes("401");
+  return (is401 && !lower.includes("session")) || lower.includes("invalid api key");
 }
 
 export function isWalletHubUnknownResourceError(err: unknown): boolean {
@@ -124,6 +161,10 @@ export async function resetHubConfigToDefaults(): Promise<void> {
 
 export function formatWalletHubError(err: unknown, fallback = "Wallet Hub request failed"): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
+
+  if (isWalletHubSessionError(err)) {
+    return "Your Wallet Hub session expired or is missing. Re-unlock your wallet (for a linked external wallet, reconnect the source wallet) and try again.";
+  }
 
   if (isWalletHubAuthError(err)) {
     return "Wallet Hub rejected the API key. Open Wallet Hub API in Settings and enter the current Hub URL and API key.";
