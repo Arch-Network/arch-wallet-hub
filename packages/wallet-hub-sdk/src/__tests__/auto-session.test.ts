@@ -63,7 +63,7 @@ describe("auto session minting (Turnkey)", () => {
     const { fetchImpl, calls } = makeFetch({
       "/auth/session/challenge": () =>
         json({ challengeId: "c1", message: "m", payloadHex: "00".repeat(32), expiresAt: "2099" }),
-      "/auth/session": () => json({ sessionToken: "whs_v1_minted", expiresAt: "2099" }),
+      "/auth/session": () => json({ sessionToken: "whs_v1_test_minted", expiresAt: "2099" }),
       "/signing-requests": () => json(SIGNING_OK),
     });
     const client = new WalletHubClient({
@@ -88,7 +88,7 @@ describe("auto session minting (Turnkey)", () => {
       "/auth/session",
       "/signing-requests",
     ]);
-    expect(calls[2]!.auth).toBe("Bearer whs_v1_minted");
+    expect(calls[2]!.auth).toBe("Bearer whs_v1_test_minted");
   });
 
   it("does not re-mint when a token is already present", async () => {
