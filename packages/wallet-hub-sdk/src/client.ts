@@ -36,7 +36,12 @@ import type {
   CreateSessionChallengeResponse,
   MintSessionRequest,
   MintSessionResponse,
-  RevokeSessionResponse
+  RevokeSessionResponse,
+  CreateExternalSessionChallengeRequest,
+  CreateExternalSessionChallengeResponse,
+  MintExternalSessionRequest,
+  SessionSigner,
+  SessionSignerSource
 } from "./types.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -83,6 +88,22 @@ function summarizeErrorBody(text: string): string {
 }
 
 /**
+ * Distinguish a session-token 401 (the bearer is missing / expired /
+ * invalid, which re-minting can fix) from any other 401 (e.g. a bad
+ * app API key, which re-minting cannot). Matches the Hub's session
+ * rejection messages from `plugins/sessionAuth.ts`. Only a session
+ * failure is worth a refresh-and-retry.
+ */
+function isSessionAuthFailure(bodyText: string): boolean {
+  const lower = bodyText.toLowerCase();
+  return (
+    lower.includes("session bearer") ||
+    lower.includes("session token") ||
+    lower.includes("expired session")
+  );
+}
+
+/**
  * Wallet Hub client.
  *
  * Scope after the Indexer migration:
@@ -98,6 +119,9 @@ export class WalletHubClient {
   private baseUrl: string;
   private apiKey: string | undefined;
   private sessionToken: string | undefined;
+  private sessionSigner: SessionSignerSource | undefined;
+  /** De-dupes concurrent mints so N parallel enforced calls mint once. */
+  private mintInFlight: Promise<void> | null = null;
   private network: string;
   private fetchImpl: typeof fetch;
   private requestTimeoutMs: number;
@@ -108,6 +132,7 @@ export class WalletHubClient {
     this.baseUrl = /\/v1$/.test(trimmed) ? trimmed : `${trimmed}/v1`;
     this.apiKey = opts.apiKey;
     this.sessionToken = opts.sessionToken;
+    this.sessionSigner = opts.sessionSigner;
     this.network = opts.network ?? "testnet";
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const f = (opts.fetchImpl ?? fetch) as any;
@@ -122,12 +147,91 @@ export class WalletHubClient {
     this.sessionToken = token;
   }
 
+  /**
+   * Configure (or clear) the signer used to auto-mint a session token
+   * on demand. Pass `undefined` to disable auto-minting. See
+   * {@link SessionSignerSource}.
+   */
+  setSessionSigner(source: SessionSignerSource | undefined): void {
+    this.sessionSigner = source;
+  }
+
   /** Returns true when a session token is currently set. */
   hasSession(): boolean {
     return Boolean(this.sessionToken);
   }
 
-  private async requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
+  /** Whether the client can mint a token (a signer source is configured). */
+  private canRefresh(): boolean {
+    return Boolean(this.sessionSigner);
+  }
+
+  private async resolveSigner(): Promise<SessionSigner | undefined> {
+    const src = this.sessionSigner;
+    if (!src) return undefined;
+    const signer = typeof src === "function" ? await src() : src;
+    return signer ?? undefined;
+  }
+
+  /**
+   * Mint a fresh session token using the configured signer and attach
+   * it. Concurrent callers share one in-flight mint. No-op (resolves)
+   * when no signer is configured.
+   */
+  private async refreshSession(): Promise<void> {
+    if (this.mintInFlight) return this.mintInFlight;
+    this.mintInFlight = (async () => {
+      const signer = await this.resolveSigner();
+      if (!signer) return;
+      let token: string;
+      if (signer.kind === "turnkey") {
+        const challenge = await this.createSessionChallenge({
+          externalUserId: signer.externalUserId,
+          turnkeyResourceId: signer.turnkeyResourceId,
+        });
+        const signatureHex = await signer.signChallenge(challenge.payloadHex);
+        const minted = await this.mintSessionToken({
+          challengeId: challenge.challengeId,
+          signatureHex,
+        });
+        token = minted.sessionToken;
+      } else {
+        const challenge = await this.createExternalSessionChallenge({
+          externalUserId: signer.externalUserId,
+          walletProvider: signer.walletProvider,
+          address: signer.address,
+        });
+        const signature = await signer.signMessage(challenge.message);
+        const minted = await this.mintExternalSessionToken({
+          challengeId: challenge.challengeId,
+          signature,
+        });
+        token = minted.sessionToken;
+      }
+      this.sessionToken = token;
+    })();
+    try {
+      await this.mintInFlight;
+    } finally {
+      this.mintInFlight = null;
+    }
+  }
+
+  /**
+   * Ensure a session token is attached before an enforced request.
+   * Mints one if we don't have a token and a signer is configured;
+   * otherwise leaves things as-is (the request proceeds without one,
+   * preserving the legacy explicit-token behaviour).
+   */
+  private async ensureSession(): Promise<void> {
+    if (this.sessionToken) return;
+    if (!this.canRefresh()) return;
+    await this.refreshSession();
+  }
+
+  /** One network round-trip with auth headers + timeout. Returns the
+   *  raw Response (ok or not) so callers can branch on status. */
+  private async fetchOnce(path: string, init: RequestInit): Promise<Response> {
     const headers = new Headers(init.headers);
     if (this.apiKey) headers.set("x-api-key", this.apiKey);
     if (this.sessionToken) {
@@ -141,9 +245,8 @@ export class WalletHubClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 
-    let res: Response;
     try {
-      res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+      return await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
         headers,
         signal: init.signal ?? controller.signal,
@@ -157,6 +260,49 @@ export class WalletHubClient {
       throw new Error(`WalletHub network error: ${err?.message ?? String(err)}`);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Issue a request and parse JSON. When `opts.enforced` is set (a
+   * route the Hub requires a session token on), the client first
+   * ensures a token (minting via the configured signer if needed) and,
+   * on a session-shaped 401, re-mints once and retries. Routes that
+   * don't enforce a session, and clients without a signer, behave
+   * exactly as before.
+   */
+  private async requestJson<T>(
+    path: string,
+    init: RequestInit = {},
+    opts: { enforced?: boolean } = {},
+  ): Promise<T> {
+    if (opts.enforced) await this.ensureSession();
+
+    let res = await this.fetchOnce(path, init);
+
+    if (!res.ok && opts.enforced && res.status === 401 && this.canRefresh()) {
+      const firstBody = await res.text().catch(() => "");
+      if (isSessionAuthFailure(firstBody)) {
+        // The bearer was missing/expired/invalid. Drop it, re-mint, and
+        // retry the request exactly once.
+        this.sessionToken = undefined;
+        try {
+          await this.refreshSession();
+        } catch {
+          /* fall through to surface the original 401 below */
+        }
+        if (this.sessionToken) {
+          res = await this.fetchOnce(path, init);
+        } else {
+          throw new Error(
+            `WalletHub error ${res.status} ${res.statusText}: ${summarizeErrorBody(firstBody)}`,
+          );
+        }
+      } else {
+        throw new Error(
+          `WalletHub error ${res.status} ${res.statusText}: ${summarizeErrorBody(firstBody)}`,
+        );
+      }
     }
 
     if (!res.ok) {
@@ -194,6 +340,35 @@ export class WalletHubClient {
    */
   async mintSessionToken(body: MintSessionRequest): Promise<MintSessionResponse> {
     return await this.requestJson(`/auth/session`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Step 1 of the EXTERNAL (linked / BIP-322) wallet handshake. The
+   * server returns a challenge whose `message` the wallet must
+   * BIP-322-sign with the linked Taproot key. The address must already
+   * be linked for `externalUserId`.
+   */
+  async createExternalSessionChallenge(
+    body: CreateExternalSessionChallengeRequest,
+  ): Promise<CreateExternalSessionChallengeResponse> {
+    return await this.requestJson(`/auth/session/external/challenge`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Step 2 (external): submit the BIP-322 signature over the
+   * challenge's `message`. Returns the same opaque `sessionToken`
+   * shape as {@link mintSessionToken}.
+   */
+  async mintExternalSessionToken(
+    body: MintExternalSessionRequest,
+  ): Promise<MintSessionResponse> {
+    return await this.requestJson(`/auth/session/external`, {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -317,7 +492,7 @@ export class WalletHubClient {
     return await this.requestJson(`/signing-requests`, {
       method: "POST",
       body: JSON.stringify(body)
-    });
+    }, { enforced: true });
   }
 
   async getSigningRequest(id: string): Promise<GetSigningRequestResponse> {
@@ -328,23 +503,23 @@ export class WalletHubClient {
     return await this.requestJson(`/signing-requests/${encodeURIComponent(id)}/submit`, {
       method: "POST",
       body: JSON.stringify(body)
-    });
+    }, { enforced: true });
   }
 
   async signWithTurnkey(id: string, body: { externalUserId: string }): Promise<SubmitSigningResponse> {
-    // Defence-in-depth: refuse to ask the server to sign on a user's
-    // behalf without a session token bound to that user. The server
-    // will also enforce this; the client-side check prevents the
-    // wrong assumption from silently shipping into production code.
-    if (!this.sessionToken) {
+    // Defence-in-depth: this route always requires a session bound to
+    // the user. Surface a clear error early when we can neither use a
+    // pre-set token nor mint one (no signer configured). When a signer
+    // IS configured, `enforced` below mints it transparently.
+    if (!this.sessionToken && !this.canRefresh()) {
       throw new Error(
-        "WalletHubClient.signWithTurnkey requires a session token; call setSessionToken() after verifyWalletLinkChallenge",
+        "WalletHubClient.signWithTurnkey requires a session token; call setSessionToken() or configure a sessionSigner",
       );
     }
     return await this.requestJson(`/signing-requests/${encodeURIComponent(id)}/sign-with-turnkey`, {
       method: "POST",
       body: JSON.stringify(body)
-    });
+    }, { enforced: true });
   }
 
   // ── Custodial BTC send (server-side construction + Turnkey signing) ──────
@@ -360,7 +535,7 @@ export class WalletHubClient {
     return await this.requestJson("/btc/build", {
       method: "POST",
       body: JSON.stringify(params)
-    });
+    }, { enforced: true });
   }
 
   /**
@@ -387,7 +562,7 @@ export class WalletHubClient {
     return await this.requestJson("/btc/estimate-fee", {
       method: "POST",
       body: JSON.stringify(params)
-    });
+    }, { enforced: true });
   }
 
   // ── Recovery (Email OTP -> add new authenticator) ────────────────────────
