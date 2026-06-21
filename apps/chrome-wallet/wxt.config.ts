@@ -102,6 +102,24 @@ export default defineConfig({
         process.env.WXT_USE_DIRECT_INDEXER === "true",
       ),
     },
+    // Keep `buffer`/`process` out of Vite's dependency optimizer (dev only).
+    //
+    // `vite-plugin-node-polyfills` aliases the `buffer`/`process` bare
+    // specifiers to its own shims (`shims/{buffer,process}`) AND lists the
+    // resolved shim paths in `optimizeDeps.exclude` (so they stay external).
+    // On Vite 8 + Rolldown the dep scanner discovers `buffer` (imported by
+    // `src/utils/buffer-polyfill.ts`) and `process` as bare entry points, so
+    // the optimizer tries to make the shim an *entry* while the plugin's
+    // exclude marks the same module *external* -- Rolldown rejects that with
+    // `[UNRESOLVED_ENTRY] ... shims/buffer/dist/index.cjs cannot be external`,
+    // crashing `wxt dev` during dependency optimization. Excluding the two
+    // packages here stops them from becoming optimizer entries; their bare
+    // imports still resolve through the plugin's alias -> shim at load time.
+    // `global` is not a resolvable bare package, so it never hits this path.
+    // (https://github.com/davidmyersdev/vite-plugin-node-polyfills/issues/81)
+    optimizeDeps: {
+      exclude: ["buffer", "process"],
+    },
     plugins: [
       // bitcoinjs-lib (and its CJS deps) call `require('buffer'|'events'|'stream')`
       // at module-init time -- e.g. `var t = require('buffer'); var n = t.Buffer.alloc(32, 0);`
