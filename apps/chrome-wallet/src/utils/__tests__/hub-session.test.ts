@@ -2,13 +2,14 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { WalletAccount } from "../../state/types";
 
 /**
- * Unit tests for `ensureHubSession` (Phase 2a session minting).
+ * Unit tests for `ensureHubSession` session minting.
  *
- * The Turnkey signing + server verification contract is covered by
- * `session-token-verify.test.ts`; here we lock the orchestration:
- *   - mints exactly once and caches,
+ * Locks the orchestration for both wallet kinds:
+ *   - Turnkey: schnorr-signs the challenge payload, mints, caches.
+ *   - External (Xverse/UniSat): BIP-322-signs the challenge message via
+ *     the source-wallet adapter, mints via the external endpoints.
  *   - reuses a cached token without re-minting,
- *   - is a no-op for accounts that can't sign locally,
+ *   - is a no-op for watch-only accounts,
  *   - is strictly fail-soft (never throws, never persists on failure).
  */
 
@@ -16,16 +17,28 @@ const mocks = vi.hoisted(() => {
   const setSessionToken = vi.fn();
   const createSessionChallenge = vi.fn();
   const mintSessionToken = vi.fn();
+  const createExternalSessionChallenge = vi.fn();
+  const mintExternalSessionToken = vi.fn();
   const signArchPayload = vi.fn();
+  const signMessage = vi.fn();
   const getExternalUserId = vi.fn();
   const readHubToken = vi.fn();
   const writeHubToken = vi.fn();
   return {
-    client: { setSessionToken, createSessionChallenge, mintSessionToken },
+    client: {
+      setSessionToken,
+      createSessionChallenge,
+      mintSessionToken,
+      createExternalSessionChallenge,
+      mintExternalSessionToken,
+    },
     setSessionToken,
     createSessionChallenge,
     mintSessionToken,
+    createExternalSessionChallenge,
+    mintExternalSessionToken,
     signArchPayload,
+    signMessage,
     getExternalUserId,
     readHubToken,
     writeHubToken,
@@ -39,6 +52,10 @@ vi.mock("../sdk", () => ({
 
 vi.mock("../../signers/Signer", () => ({
   signerForAccount: vi.fn(() => ({ signArchPayload: mocks.signArchPayload })),
+}));
+
+vi.mock("../../wallets/external-wallets", () => ({
+  getExternalWalletAdapter: vi.fn(() => ({ signMessage: mocks.signMessage })),
 }));
 
 vi.mock("../hub-session-store", () => ({
@@ -65,12 +82,21 @@ const passkeyAccount: WalletAccount = {
   createdAt: 0,
 };
 
+const externalAccount: WalletAccount = {
+  ...passkeyAccount,
+  id: "acct-ext",
+  kind: "external",
+  authMethod: "external" as WalletAccount["authMethod"],
+  externalProvider: "xverse",
+  btcAddress: "bc1pext",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.getExternalUserId.mockResolvedValue("ext-1");
 });
 
-describe("ensureHubSession", () => {
+describe("ensureHubSession (Turnkey)", () => {
   it("mints, persists, and attaches a token when none is cached", async () => {
     mocks.readHubToken.mockResolvedValue(null);
     mocks.createSessionChallenge.mockResolvedValue({
@@ -85,7 +111,7 @@ describe("ensureHubSession", () => {
       expiresAt: "2026-01-02T00:00:00.000Z",
     });
 
-    await ensureHubSession(passkeyAccount);
+    await ensureHubSession(passkeyAccount, "mainnet");
 
     expect(mocks.createSessionChallenge).toHaveBeenCalledWith({
       externalUserId: "ext-1",
@@ -111,24 +137,16 @@ describe("ensureHubSession", () => {
   it("reuses a cached token without minting", async () => {
     mocks.readHubToken.mockResolvedValue("whs_v1_cached");
 
-    await ensureHubSession(passkeyAccount);
+    await ensureHubSession(passkeyAccount, "mainnet");
 
     expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
     expect(mocks.mintSessionToken).not.toHaveBeenCalled();
     expect(mocks.setSessionToken).toHaveBeenCalledWith("whs_v1_cached");
   });
 
-  it("is a no-op for external accounts (no local Turnkey key)", async () => {
-    const external = { ...passkeyAccount, kind: "external", authMethod: "external" } as WalletAccount;
-
-    await ensureHubSession(external);
-
-    expect(mocks.getExternalUserId).not.toHaveBeenCalled();
-    expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
-  });
-
   it("is a no-op when the account has no turnkeyResourceId", async () => {
-    await ensureHubSession({ ...passkeyAccount, turnkeyResourceId: "" });
+    mocks.readHubToken.mockResolvedValue(null);
+    await ensureHubSession({ ...passkeyAccount, turnkeyResourceId: "" }, "mainnet");
     expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
   });
 
@@ -136,8 +154,54 @@ describe("ensureHubSession", () => {
     mocks.readHubToken.mockResolvedValue(null);
     mocks.createSessionChallenge.mockRejectedValue(new Error("hub offline"));
 
-    await expect(ensureHubSession(passkeyAccount)).resolves.toBeUndefined();
+    await expect(ensureHubSession(passkeyAccount, "mainnet")).resolves.toBeUndefined();
     expect(mocks.writeHubToken).not.toHaveBeenCalled();
     expect(mocks.setSessionToken).not.toHaveBeenCalled();
+  });
+});
+
+describe("ensureHubSession (external / BIP-322)", () => {
+  it("mints via the external endpoints using a BIP-322 signature", async () => {
+    mocks.readHubToken.mockResolvedValue(null);
+    mocks.createExternalSessionChallenge.mockResolvedValue({
+      challengeId: "ext-chal",
+      message: "please sign this",
+      expiresAt: "2026-01-02T00:00:00.000Z",
+    });
+    mocks.signMessage.mockResolvedValue({ signature: "base64sig", schemeHint: "bip322" });
+    mocks.mintExternalSessionToken.mockResolvedValue({
+      sessionToken: "whs_v1_ext",
+      expiresAt: "2026-01-02T00:00:00.000Z",
+    });
+
+    await ensureHubSession(externalAccount, "mainnet");
+
+    expect(mocks.createExternalSessionChallenge).toHaveBeenCalledWith({
+      externalUserId: "ext-1",
+      walletProvider: "xverse",
+      address: "bc1pext",
+    });
+    expect(mocks.signMessage).toHaveBeenCalledWith({
+      address: "bc1pext",
+      message: "please sign this",
+      network: "mainnet",
+    });
+    expect(mocks.mintExternalSessionToken).toHaveBeenCalledWith({
+      challengeId: "ext-chal",
+      signature: "base64sig",
+    });
+    // The Turnkey path must not be touched for an external wallet.
+    expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
+    expect(mocks.setSessionToken).toHaveBeenCalledWith("whs_v1_ext");
+  });
+});
+
+describe("ensureHubSession (watch-only)", () => {
+  it("is a no-op for watch-only accounts", async () => {
+    const watch = { ...passkeyAccount, kind: "watch" } as WalletAccount;
+    await ensureHubSession(watch, "mainnet");
+    expect(mocks.getExternalUserId).not.toHaveBeenCalled();
+    expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
+    expect(mocks.createExternalSessionChallenge).not.toHaveBeenCalled();
   });
 });

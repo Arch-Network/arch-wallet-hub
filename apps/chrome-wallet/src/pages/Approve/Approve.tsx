@@ -31,6 +31,7 @@ import {
 import { signerForAccount } from "../../signers/Signer";
 import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { ensureHubSession, buildSessionSigner } from "../../utils/hub-session";
 import {
   ensureSigningSessionForAccount,
   EmailSessionNeededError,
@@ -91,14 +92,17 @@ async function assertDisplayHashMatches(sr: {
 
 // Returns the raw `result` object from the Hub so callers can pick the field they need
 async function signAndSubmitRequest(
+  client: Awaited<ReturnType<typeof getClient>>,
   activeAccount: WalletAccount,
   signingRequestId: string,
   payloadToSign: any,
   externalUserId: string,
   network: NetworkId,
 ): Promise<any> {
-  const client = await getClient();
-
+  // Reuse the client the caller already prepared with this account's
+  // session token. Calling getClient() here again would re-attach the
+  // *active* account's cached token (clobbering the selected account's)
+  // between create and submit.
   if (isExternalAccount(activeAccount)) {
     const psbtBase64 = payloadToSign?.psbtBase64;
     if (!psbtBase64) throw new Error("No PSBT available for external wallet signing");
@@ -834,6 +838,31 @@ export default function Approve() {
       const client = await getClient();
       const externalUserId = await getExternalUserId();
 
+      // Session enforcement is ON for the Hub money/signing routes
+      // (signing-requests.create / .submit). Only these request types
+      // reach them; SIGN_PSBT and SIGN_ARCH_MESSAGE_HASH sign locally
+      // with no Hub round-trip, so we don't mint (and don't prompt an
+      // external wallet) for them.
+      const needsHubSession =
+        request.type === "SEND_TRANSFER" ||
+        request.type === "SEND_TOKEN_TRANSFER" ||
+        request.type === "SIGN_MESSAGE";
+
+      // Ensure a valid Hub session token for the EXACT account we're
+      // about to sign with (not whichever account happens to be
+      // "active" in the store) and attach it to THIS client before the
+      // enforced createSigningRequest/submit calls. We await it (no
+      // fire-and-forget race) and don't rely on the unlock-time mint,
+      // which the signing-session fast path can skip. Also register the
+      // signer so the SDK can transparently re-mint if the token
+      // expires mid-flight.
+      if (needsHubSession) {
+        client.setSessionSigner(
+          buildSessionSigner(selectedAccount, externalUserId, state.network),
+        );
+        await ensureHubSession(selectedAccount, state.network);
+      }
+
       if (request.type === "CONNECT") {
         await chrome.runtime.sendMessage({
           type: "APPROVE_CONNECT",
@@ -889,7 +918,7 @@ export default function Approve() {
           action,
         });
         await assertDisplayHashMatches(sr);
-        const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
+        const submitResult = await signAndSubmitRequest(client, selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const txid = extractTxid(submitResult, sr.signingRequestId);
         sendApproved({ txid });
 
@@ -945,7 +974,7 @@ export default function Approve() {
           action: { type: "arch.sign_message", messageHex },
         });
         await assertDisplayHashMatches(sr);
-        const submitResult = await signAndSubmitRequest(selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
+        const submitResult = await signAndSubmitRequest(client, selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
         const signature = submitResult?.signature64Hex || submitResult?.signature;
         if (!signature) throw new Error("Hub did not return a signature");
         sendApproved({ signature });
