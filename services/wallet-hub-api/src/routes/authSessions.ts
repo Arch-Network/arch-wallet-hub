@@ -79,7 +79,10 @@ const ExternalChallengeResponse = Type.Object({
 });
 
 const ExternalMintBody = Type.Object({
-  challengeId: Type.String({ minLength: 1 }),
+  // `auth_challenges.id` is a Postgres uuid column. Constrain the input to
+  // a UUID so a malformed id is rejected with a clean 400 by the schema
+  // validator instead of reaching the DB and surfacing as a 22P02 500.
+  challengeId: Type.String({ format: "uuid" }),
   // BIP-322 signatures are conventionally base64 (witness blob); accept
   // whatever the wallet returns and let the Verifier decide.
   signature: Type.String({ minLength: 1 }),
