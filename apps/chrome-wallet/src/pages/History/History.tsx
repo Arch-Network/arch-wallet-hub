@@ -135,6 +135,12 @@ export default function History() {
       // the user's archAddress), so without this set we'd miss the
       // incoming leg of a swap entirely.
       const tokenAccounts: string[] = [];
+      // Inbound APL transfers are recorded against the destination token
+      // account (ATA); the recipient's archAddress is not a participant, so
+      // those transfers never appear in the archAddr feed above. Keep the
+      // raw per-ATA transactions (deduped by txid) so we can merge them in as
+      // their own rows below, mirroring TokenDetail's ATA-based history.
+      const ataTxById = new Map<string, any>();
       try {
         const tokensRes = await indexer.getAccountTokens(archAddr);
         for (const t of tokensRes?.tokens ?? []) {
@@ -142,14 +148,22 @@ export default function History() {
           if (acct) tokenAccounts.push(acct);
         }
 
+        // Prefer v2 (inline chip labels + token_transfer summaries) with the
+        // same fallback-to-v1 pattern used for archAddr.
         const tokenTxResults = await Promise.allSettled(
-          tokenAccounts.map((acct) => indexer.getAccountTransactions(acct, 50))
+          tokenAccounts.map((acct) =>
+            indexer
+              .getAccountTransactionsV2(acct, 50)
+              .catch(() => indexer.getAccountTransactions(acct, 50))
+          )
         );
         for (const r of tokenTxResults) {
           if (r.status === "fulfilled") {
             for (const tx of (r.value?.transactions ?? [])) {
               const txid = (tx as any)?.txid;
-              if (txid) tokenTxIds.add(String(txid));
+              if (!txid) continue;
+              tokenTxIds.add(String(txid));
+              if (!ataTxById.has(String(txid))) ataTxById.set(String(txid), tx);
             }
           }
         }
@@ -222,6 +236,57 @@ export default function History() {
         archError = e;
         console.warn("[History] Arch transaction fetch failed:", e?.message);
       }
+      }
+
+      // Merge ATA-only transactions as their own rows. Inbound APL transfers
+      // land on the destination token account (where the recipient's
+      // archAddress is not a participant), so the archAddr feed above never
+      // includes them. Skip any txid already added from the archAddr feed (a
+      // tx touching both legs must appear once), then classify each remaining
+      // ATA tx with the same detail+tree summarizer path used above. These
+      // are fetched as a flat recent window (not paged with archPage), so
+      // received tokens always surface regardless of the archAddr page.
+      if (archAddr && ataTxById.size > 0) {
+        const seenTxIds = new Set(items.map((i) => i.txid));
+        const ataOnly = [...ataTxById.values()].filter(
+          (tx) => tx?.txid && !seenTxIds.has(String(tx.txid))
+        );
+        try {
+          const detailedAtaTxs = await Promise.all(
+            ataOnly.map(async (tx) => {
+              const [detail, tree] = await Promise.all([
+                indexer.getTransactionDetail(tx.txid).catch(() => null),
+                indexer.getTransactionTree(tx.txid).catch(() => null),
+              ]);
+              return { merged: { ...tx, ...(detail ?? {}) }, tree };
+            })
+          );
+          for (const { merged: tx, tree } of detailedAtaTxs) {
+            const status = normalizeArchStatus(tx);
+            const summary = summarizeArchTx(
+              { ...tx, status },
+              archAddr,
+              { tree, tokenAccounts },
+            );
+            items.push({
+              txid: tx.txid,
+              displayTxid: truncateAddress(formatArchId(tx.txid), 8),
+              type: "apl",
+              direction:
+                summary.direction === "in" ? "in"
+                : summary.direction === "out" ? "out"
+                : summary.direction === "neutral" ? "neutral"
+                : "unknown",
+              label: summary.label,
+              amountLabel: summary.amountLabel,
+              timestamp: tx.created_at || "",
+              status,
+              explorerUrl: `${archExplorer}${tx.txid}`,
+            });
+          }
+        } catch (e: any) {
+          console.warn("[History] ATA transaction merge failed:", e?.message);
+        }
       }
 
       // Rune transfer history for accurate row labels + amounts. Both
