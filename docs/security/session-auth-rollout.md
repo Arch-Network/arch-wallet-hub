@@ -13,15 +13,49 @@ for the root-cause note.
 
 The server has a complete per-user session layer:
 
-- **Mint:** `POST /v1/auth/session/challenge` → sign `payloadHex` with
-  the user's Turnkey key → `POST /v1/auth/session` returns
-  `whs_v1_<token>` (24h). (`routes/authSessions.ts`, `auth/sessionToken.ts`)
+- **Mint (Turnkey):** `POST /v1/auth/session/challenge` → sign
+  `payloadHex` with the user's Turnkey key → `POST /v1/auth/session`
+  returns `whs_v1_<token>` (24h). (`routes/authSessions.ts`,
+  `auth/sessionToken.ts`)
+- **Mint (external / linked wallets):** `POST
+  /v1/auth/session/external/challenge` → BIP-322-sign the returned
+  `message` with the linked wallet (Xverse/UniSat/...) → `POST
+  /v1/auth/session/external` returns the same `whs_v1_<token>` (24h).
+  See "External wallets mint via BIP-322" below.
 - **Enforce:** `server.requireSession` preHandler validates the
   `Authorization: Bearer whs_v1_...` token (in addition to the app API
   key) and populates `request.session = { sessionId, appId, userId,
   externalUserId }`. (`plugins/sessionAuth.ts`)
 - **Pattern:** a protected route adds `preHandler: server.requireSession`
   and rejects when `body.externalUserId !== session.externalUserId`.
+
+### External wallets mint via BIP-322
+
+The Turnkey mint path verifies a schnorr signature over the challenge's
+32-byte `payloadHex` against the resource's stored
+`default_public_key_hex`. External / linked wallets have no
+Turnkey-custodied key, so they prove control with a **BIP-322** signature
+over the challenge's human-readable `message` instead — exactly the
+verification the wallet-linking flow already uses
+(`routes/walletLinking.ts`, `@saturnbtcio/bip322-js`).
+
+- `POST /v1/auth/session/external/challenge` body `{ externalUserId,
+  walletProvider, address }` — requires a Taproot (p2tr) address that is
+  already present in `linked_wallets` for that user (proof-of-control was
+  established at link time). Returns `{ challengeId, message, expiresAt }`.
+- `POST /v1/auth/session/external` body `{ challengeId, signature }` —
+  re-checks the `linked_wallets` ownership, verifies the BIP-322
+  signature over the stored `message`, and mints the **same** `whs_v1_`
+  token (same `auth_sessions` row, 24h TTL, app/user scoping) as the
+  Turnkey path.
+
+The (provider, address) a challenge targets are persisted on the
+`auth_challenges` row (migration 015, nullable columns; the Turnkey path
+leaves them NULL). The Turnkey path is unchanged.
+
+**Net effect:** every client — our extension, third-party integrators, and
+Arch Prime — can mint a session token regardless of wallet type, so
+enforcement (below) can stay ON permanently for all clients.
 
 ## Why this can't be flipped on globally in one PR
 

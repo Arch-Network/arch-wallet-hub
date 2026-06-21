@@ -31,6 +31,7 @@
 import type { PoolClient } from "pg";
 import crypto from "node:crypto";
 import { schnorr } from "@noble/curves/secp256k1";
+import { Verifier } from "@saturnbtcio/bip322-js";
 
 export const SESSION_TOKEN_PREFIX = "whs_v1_";
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
@@ -57,6 +58,13 @@ export type AuthChallengeRow = {
   created_at: string;
   expires_at: string;
   consumed_at: string | null;
+  /**
+   * External (BIP-322) challenges only (migration 015). NULL for the
+   * Turnkey schnorr path. A non-null `address` is what marks a challenge
+   * as belonging to the external-wallet mint flow.
+   */
+  wallet_provider: string | null;
+  address: string | null;
 };
 
 export type SessionPrincipal = {
@@ -135,6 +143,95 @@ export async function createChallenge(
 }
 
 /**
+ * Build the canonical challenge message for an EXTERNAL (linked /
+ * BIP-322) wallet. Unlike the Turnkey path, the signature surface is
+ * the human-readable `message` string itself (BIP-322 signs the
+ * message, not a 32-byte payload hash), so this message is what the
+ * wallet actually signs. The format mirrors the wallet-linking
+ * challenge (routes/walletLinking.ts) so external wallets that already
+ * implement that flow need no new signing logic.
+ */
+function buildExternalChallengeMessage(params: {
+  appId: string;
+  externalUserId: string;
+  walletProvider: string;
+  address: string;
+  nonceHex: string;
+  expiresAt: Date;
+}): string {
+  return [
+    "Wallet Hub session challenge",
+    `App: ${params.appId}`,
+    `User: ${params.externalUserId}`,
+    `Provider: ${params.walletProvider}`,
+    `Address: ${params.address}`,
+    `Nonce: ${params.nonceHex}`,
+    `Expires: ${params.expiresAt.toISOString()}`,
+    "",
+    "Only sign this message if you trust the application.",
+  ].join("\n");
+}
+
+/**
+ * Create a session challenge for an external (linked / BIP-322)
+ * wallet. The resulting `message` is the exact string the wallet must
+ * BIP-322-sign; the (provider, address) it targets are persisted on
+ * the row so the mint can verify the signature against that address
+ * and re-check `linked_wallets` ownership.
+ *
+ * `payload_hex` is still populated (sha256 of the message) only to
+ * satisfy the NOT NULL column from migration 013; it is NOT part of
+ * the external signature surface.
+ */
+export async function createExternalChallenge(
+  client: PoolClient,
+  params: {
+    appId: string;
+    userId: string;
+    externalUserId: string;
+    walletProvider: string;
+    address: string;
+  },
+): Promise<{
+  challengeId: string;
+  message: string;
+  expiresAt: string;
+}> {
+  const nonceHex = crypto.randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + CHALLENGE_TTL_MS);
+  const message = buildExternalChallengeMessage({
+    appId: params.appId,
+    externalUserId: params.externalUserId,
+    walletProvider: params.walletProvider,
+    address: params.address,
+    nonceHex,
+    expiresAt,
+  });
+  const payloadHex = crypto.createHash("sha256").update(message, "utf8").digest("hex");
+  const res = await client.query<{ id: string }>(
+    `
+      INSERT INTO auth_challenges (app_id, user_id, payload_hex, message, expires_at, wallet_provider, address)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id
+    `,
+    [
+      params.appId,
+      params.userId,
+      payloadHex,
+      message,
+      expiresAt.toISOString(),
+      params.walletProvider,
+      params.address,
+    ],
+  );
+  return {
+    challengeId: res.rows[0]!.id,
+    message,
+    expiresAt: expiresAt.toISOString(),
+  };
+}
+
+/**
  * Look up a challenge under a row lock and return it if it's still
  * usable. Caller is expected to be inside a transaction so the
  * lock survives until consume/mint completes.
@@ -193,6 +290,27 @@ export function verifyChallengeSignature(params: {
       Buffer.from(cleanPayload, "hex"),
       Buffer.from(cleanPub, "hex"),
     );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify a BIP-322 signature over an external challenge's
+ * human-readable `message`, produced by a linked wallet that controls
+ * `address`. Reuses the exact `@saturnbtcio/bip322-js` Verifier the
+ * wallet-linking flow uses (routes/walletLinking.ts), so any wallet
+ * that can link can also mint a session. Returns a boolean; the
+ * library throws on malformed input, which we map to `false` so the
+ * caller can reply with a consistent 401 rather than a 500.
+ */
+export function verifyExternalChallengeSignature(params: {
+  address: string;
+  message: string;
+  signature: string;
+}): boolean {
+  try {
+    return Verifier.verifySignature(params.address, params.message, params.signature);
   } catch {
     return false;
   }
