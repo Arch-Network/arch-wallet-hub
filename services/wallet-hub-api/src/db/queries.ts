@@ -118,6 +118,34 @@ export async function getTurnkeyResourceByIdForApp(
   return res.rows[0] ?? null;
 }
 
+export type LinkedWalletRow = {
+  id: string;
+  app_id: string;
+  user_id: string;
+  wallet_provider: string;
+  address: string;
+};
+
+/**
+ * Fetch a linked wallet for (app, user, provider, address). Used by the
+ * external-wallet session-mint to confirm the BIP-322 signer's address
+ * belongs to the challenge's user before issuing a token.
+ */
+export async function getLinkedWalletForUser(
+  client: PoolClient,
+  params: { appId: string; userId: string; walletProvider: string; address: string }
+): Promise<LinkedWalletRow | null> {
+  const res = await client.query<LinkedWalletRow>(
+    `
+      SELECT id, app_id, user_id, wallet_provider, address
+      FROM linked_wallets
+      WHERE app_id = $1 AND user_id = $2 AND wallet_provider = $3 AND address = $4
+    `,
+    [params.appId, params.userId, params.walletProvider, params.address]
+  );
+  return res.rows[0] ?? null;
+}
+
 export async function updateTurnkeyResourceDefaultPublicKeyHexForApp(
   client: PoolClient,
   params: { id: string; appId: string; defaultPublicKeyHex: string }

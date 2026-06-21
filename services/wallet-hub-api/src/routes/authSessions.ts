@@ -22,16 +22,19 @@
 
 import type { FastifyPluginAsync } from "fastify";
 import { Type } from "@sinclair/typebox";
+import { Address as Bip322Address } from "@saturnbtcio/bip322-js";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
-import { getTurnkeyResourceByIdForApp } from "../db/queries.js";
+import { getLinkedWalletForUser, getTurnkeyResourceByIdForApp } from "../db/queries.js";
 import {
   createChallenge,
+  createExternalChallenge,
   loadConsumableChallenge,
   mintSession,
   revokeSession,
   verifyChallengeSignature,
+  verifyExternalChallengeSignature,
 } from "../auth/sessionToken.js";
 
 const ChallengeBody = Type.Object({
@@ -57,6 +60,29 @@ const MintBody = Type.Object({
 const MintResponse = Type.Object({
   sessionToken: Type.String(),
   expiresAt: Type.String(),
+});
+
+// External (linked / BIP-322) wallet challenge + mint. Mirrors the
+// Turnkey pair above but the proof-of-control is a BIP-322 signature
+// over the challenge message, bound to a `linked_wallets` row the user
+// already proved control of via the wallet-linking flow.
+const ExternalChallengeBody = Type.Object({
+  externalUserId: Type.String({ minLength: 1 }),
+  walletProvider: Type.String({ minLength: 1 }),
+  address: Type.String({ minLength: 1 }),
+});
+
+const ExternalChallengeResponse = Type.Object({
+  challengeId: Type.String(),
+  message: Type.String(),
+  expiresAt: Type.String(),
+});
+
+const ExternalMintBody = Type.Object({
+  challengeId: Type.String({ minLength: 1 }),
+  // BIP-322 signatures are conventionally base64 (witness blob); accept
+  // whatever the wallet returns and let the Verifier decide.
+  signature: Type.String({ minLength: 1 }),
 });
 
 const RevokeResponse = Type.Object({
@@ -190,6 +216,138 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
           error: "InvalidSignature",
           message:
             "Challenge signature did not verify against any Turnkey resource for this user.",
+        });
+      }
+      return {
+        sessionToken: result.token,
+        expiresAt: result.expiresAt,
+      };
+    },
+  );
+
+  server.post(
+    "/auth/session/external/challenge",
+    {
+      schema: {
+        summary:
+          "Mint a per-user proof-of-control challenge for an external (BIP-322) wallet",
+        tags: ["auth-sessions"],
+        body: ExternalChallengeBody,
+        response: { 200: ExternalChallengeResponse },
+      },
+    },
+    async (request, reply) => {
+      const appId = request.app!.appId;
+      const body = request.body as typeof ExternalChallengeBody.static;
+
+      if (!Bip322Address.isValidBitcoinAddress(body.address)) {
+        return reply.badRequest("Invalid bitcoin address");
+      }
+      if (!Bip322Address.isP2TR(body.address)) {
+        return reply.badRequest("Only Taproot (p2tr) addresses are supported");
+      }
+
+      // Bind the challenge to a wallet the user has already linked
+      // (proof-of-control was established at link time). The mint
+      // re-checks this, but failing fast here gives a clean error.
+      const challenge = await withDbTransaction(getDbPool(), async (client) => {
+        const user = await getOrCreateUserByExternalId(client, {
+          appId,
+          externalUserId: body.externalUserId,
+        });
+        const linked = await getLinkedWalletForUser(client, {
+          appId,
+          userId: user.id,
+          walletProvider: body.walletProvider,
+          address: body.address,
+        });
+        if (!linked) return null;
+        return createExternalChallenge(client, {
+          appId,
+          userId: user.id,
+          externalUserId: body.externalUserId,
+          walletProvider: body.walletProvider,
+          address: body.address,
+        });
+      });
+
+      if (!challenge) {
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "InvalidResource",
+          message:
+            "No linked wallet found for this user with the given provider and address. Link the wallet first.",
+        });
+      }
+
+      return challenge;
+    },
+  );
+
+  server.post(
+    "/auth/session/external",
+    {
+      schema: {
+        summary:
+          "Mint a session token by BIP-322-signing an external-wallet challenge",
+        tags: ["auth-sessions"],
+        body: ExternalMintBody,
+        response: { 200: MintResponse },
+      },
+    },
+    async (request, reply) => {
+      const appId = request.app!.appId;
+      const body = request.body as typeof ExternalMintBody.static;
+
+      const result = await withDbTransaction(getDbPool(), async (client) => {
+        const challenge = await loadConsumableChallenge(client, {
+          challengeId: body.challengeId,
+          appId,
+        });
+        if (!challenge) return { kind: "challenge_not_found" as const };
+        // Guard against using a Turnkey challenge on the external path.
+        if (!challenge.address || !challenge.wallet_provider) {
+          return { kind: "challenge_not_found" as const };
+        }
+
+        // Re-confirm the linked wallet still belongs to the challenge's
+        // user before trusting a signature from its address.
+        const linked = await getLinkedWalletForUser(client, {
+          appId,
+          userId: challenge.user_id,
+          walletProvider: challenge.wallet_provider,
+          address: challenge.address,
+        });
+        if (!linked) return { kind: "bad_signature" as const };
+
+        const verified = verifyExternalChallengeSignature({
+          address: challenge.address,
+          message: challenge.message,
+          signature: body.signature,
+        });
+        if (!verified) return { kind: "bad_signature" as const };
+
+        const minted = await mintSession(client, {
+          challengeId: challenge.id,
+          appId,
+          userId: challenge.user_id,
+        });
+        return { kind: "ok" as const, ...minted };
+      });
+
+      if (result.kind === "challenge_not_found") {
+        return reply.code(400).send({
+          statusCode: 400,
+          error: "InvalidChallenge",
+          message: "Challenge not found, already consumed, expired, or not an external challenge.",
+        });
+      }
+      if (result.kind === "bad_signature") {
+        return reply.code(401).send({
+          statusCode: 401,
+          error: "InvalidSignature",
+          message:
+            "BIP-322 signature did not verify against the linked wallet for this user.",
         });
       }
       return {
