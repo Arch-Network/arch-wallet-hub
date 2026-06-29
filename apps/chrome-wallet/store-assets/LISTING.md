@@ -32,7 +32,7 @@ KEY FEATURES
 
 • Testnet Ready — Built-in testnet4 support with one-click ARCH faucet airdrop for developers.
 
-• Open Source — Fully open-source at https://github.com/hoffmabc/arch-wallet-hub
+• Open Source — Fully open-source at https://github.com/Arch-Network/arch-wallet-hub
 
 SUPPORTED NETWORKS
 
@@ -55,7 +55,7 @@ English
 
 ## Privacy Policy URL
 
-https://github.com/hoffmabc/arch-wallet-hub/blob/main/PRIVACY_POLICY.md
+https://github.com/Arch-Network/arch-wallet-hub/blob/main/PRIVACY_POLICY.md
 
 ## Single Purpose Description
 
