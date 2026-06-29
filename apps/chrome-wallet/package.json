@@ -10,7 +10,8 @@
     "zip": "wxt zip",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "screenshots": "wxt build && playwright test --config screenshots/playwright.config.ts"
   },
   "dependencies": {
     "@arch-network/arch-sdk": "^0.0.26",
@@ -35,10 +36,14 @@
     "sats-connect": "^4.2.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.0",
     "@types/chrome": "^0.0.287",
+    "@types/node": "^22.10.0",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@wxt-dev/module-react": "^1.1.2",
+    "playwright": "^1.49.0",
+    "sharp": "^0.33.5",
     "typescript": "5.7.3",
     "vite-plugin-node-polyfills": "^0.28.0",
     "vitest": "^3.2.4",

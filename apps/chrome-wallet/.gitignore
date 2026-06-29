@@ -2,3 +2,8 @@ node_modules/
 .output/
 .wxt/
 dist/
+
+# Generated Chrome Web Store listing screenshots (see screenshots/README.md)
+.screenshots/
+# Local wallet seed for capturing data-rich screens (NEVER commit; may hold key material)
+screenshots/seed.local.json
