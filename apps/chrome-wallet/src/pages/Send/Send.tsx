@@ -1052,7 +1052,7 @@ export default function Send({ networkStatus }: SendProps) {
               Available <strong>{availableValue}</strong>
             </span>
           </div>
-          <div className="form-field-input">
+          <div className="form-field-input form-field-input--amount">
             <input
               type="number"
               step={asset === "btc" ? "0.00000001" : asset === "arch" ? "0.0001" : tokenInputStep(selectedToken?.decimals ?? 0)}

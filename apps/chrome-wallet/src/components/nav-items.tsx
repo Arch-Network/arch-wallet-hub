@@ -4,82 +4,66 @@ interface NavIconProps {
   active: boolean;
 }
 
-function IconHome({ active }: NavIconProps) {
-  const s = active ? "#c19a5b" : "currentColor";
-  const f = active ? "rgba(193,154,91,0.15)" : "none";
+// Flat line icons per the rebrand: a single currentColor stroke, no
+// filled backgrounds. The active tab tints currentColor to the primary
+// orange via `.nav-item.active` / `.side-nav-item.active` in global.css,
+// so these icons stay theme-agnostic and inherit their color.
+function IconHome(_: NavIconProps) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <path d="M4 10.2L12 4l8 6.2V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V10.2z" fill={f} stroke={s} strokeWidth="1.6" strokeLinejoin="round" />
-      <rect x="9.5" y="14" width="5" height="7" rx="0.5" fill={active ? "rgba(193,154,91,0.3)" : "none"} stroke={s} strokeWidth="1.4" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M4 11 L12 4 L20 11 M6 10 V20 H18 V10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function IconSend({ active }: NavIconProps) {
-  const s = active ? "#c19a5b" : "currentColor";
-  const f = active ? "rgba(193,154,91,0.15)" : "none";
+function IconSend(_: NavIconProps) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="9" fill={f} stroke={s} strokeWidth="1.5" />
-      <path d="M12 16V8" stroke={s} strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M8.5 11.5L12 8l3.5 3.5" stroke={s} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M6 18 L18 6 M10 6 H18 V14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function IconReceive({ active }: NavIconProps) {
-  const s = active ? "#c19a5b" : "currentColor";
-  const f = active ? "rgba(193,154,91,0.15)" : "none";
+function IconReceive(_: NavIconProps) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="9" fill={f} stroke={s} strokeWidth="1.5" />
-      <path d="M12 8v8" stroke={s} strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M8.5 12.5L12 16l3.5-3.5" stroke={s} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M12 4 V19 M6 13 L12 19 L18 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function IconHistory({ active }: NavIconProps) {
-  const s = active ? "#c19a5b" : "currentColor";
-  const f = active ? "rgba(193,154,91,0.15)" : "none";
+function IconHistory(_: NavIconProps) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="9" fill={f} stroke={s} strokeWidth="1.5" />
-      <path d="M12 7.5V12l3.2 3.2" stroke={s} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="12" cy="12" r="1.2" fill={s} />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2" />
+      <path d="M12 7.5 V12 L15 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function IconSettings({ active }: NavIconProps) {
-  const s = active ? "#c19a5b" : "currentColor";
-  const f = active ? "rgba(193,154,91,0.15)" : "none";
+function IconSettings(_: NavIconProps) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <circle cx="12" cy="12" r="3" fill={f} stroke={s} strokeWidth="1.5" />
-      <path d="M12 2v2.4M12 19.6V22M22 12h-2.4M4.4 12H2M19.1 4.9l-1.7 1.7M6.6 17.4l-1.7 1.7M19.1 19.1l-1.7-1.7M6.6 6.6L4.9 4.9" stroke={s} strokeWidth="1.6" strokeLinecap="round" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <circle cx="12" cy="12" r="3.4" stroke="currentColor" strokeWidth="2" />
+      <path d="M12 3 V6 M12 18 V21 M3 12 H6 M18 12 H21 M5.5 5.5 L7.6 7.6 M16.4 16.4 L18.5 18.5 M18.5 5.5 L16.4 7.6 M7.6 16.4 L5.5 18.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
 
-function IconSwap({ active }: NavIconProps) {
-  const s = active ? "#c19a5b" : "currentColor";
+function IconSwap(_: NavIconProps) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <path d="M7 4v12M3 12l4 4 4-4" stroke={s} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M17 20V8M13 12l4-4 4 4" stroke={s} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <path d="M7 5 V19 M4.5 7.5 L7 5 L9.5 7.5 M17 19 V5 M14.5 16.5 L17 19 L19.5 16.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
-function IconCollectibles({ active }: NavIconProps) {
-  const s = active ? "#c19a5b" : "currentColor";
-  const f = active ? "rgba(193,154,91,0.15)" : "none";
+function IconCollectibles(_: NavIconProps) {
   return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <rect x="3" y="3" width="18" height="18" rx="2.5" fill={f} stroke={s} strokeWidth="1.5" />
-      <circle cx="8.5" cy="8.5" r="1.6" fill={s} />
-      <path d="M21 16l-5-5L5 21" stroke={s} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+      <rect x="3" y="3" width="18" height="18" rx="2.5" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="8.5" cy="8.5" r="1.6" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M21 16l-5-5L5 21" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

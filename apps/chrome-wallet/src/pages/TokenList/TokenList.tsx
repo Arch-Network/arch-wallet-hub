@@ -110,7 +110,7 @@ export default function TokenList() {
           <div style={{ width: 60 }} />
         </div>
         <div className="empty-state">
-          <div className="empty-state-icon"><ArchIcon size={32} color="#7b68ee" /></div>
+          <div className="empty-state-icon"><ArchIcon size={32} color="var(--color-usd)" /></div>
           <div>No APL tokens found</div>
           <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
             Tokens on the Arch network will appear here once you receive them.

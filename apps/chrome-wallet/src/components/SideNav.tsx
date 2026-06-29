@@ -19,7 +19,8 @@ export default function SideNav({ network }: SideNavProps) {
   return (
     <aside className="app-sidebar" aria-label="Primary navigation">
       <div className="side-nav-brand">
-        <img src="/arch-logo.svg" alt="" className="side-nav-brand-logo" />
+        <img src="/arch-mark-orange.svg" alt="" className="side-nav-brand-logo brand-swap-light" />
+        <img src="/arch-mark-white.svg" alt="" className="side-nav-brand-logo brand-swap-dark" />
         <div className="side-nav-brand-text">
           <span className="side-nav-brand-name">Arch Wallet</span>
           <span className="side-nav-brand-network">{NETWORK_LABELS[network]}</span>

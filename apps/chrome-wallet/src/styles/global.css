@@ -1,32 +1,155 @@
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* ───────────────────────── Self-hosted fonts ─────────────────────────
+   MV3 CSP + offline support forbid remote @import from Google Fonts, so
+   the three OFL families are bundled in `public/fonts/` and loaded here.
+   Each file is the full variable font (one woff2 per family), so a single
+   @font-face with a `font-weight` range covers every weight we use.
+   Latin subset only (wallet UI is ASCII: addresses, amounts, English). */
+@font-face {
+  font-family: "Newsreader";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("/fonts/newsreader.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Hanken Grotesk";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("/fonts/hanken-grotesk.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url("/fonts/jetbrains-mono.woff2") format("woff2");
+}
 
+/* ───────────────────────── Design tokens ─────────────────────────────
+   Two layers:
+   1. SEMANTIC tokens (--color-*, --surface-*, --text-*, --border-*,
+      --radius-*, --shadow-*, --font-*) are the public API — new code and
+      restyled components reference these.
+   2. LEGACY aliases (--bg-*, --accent, --success, etc.) map the old
+      variable names onto the new semantic tokens so the ~571 existing
+      classes re-theme for free without a mass rename.
+   `:root` is the LIGHT theme; `[data-theme="dark"]` overrides the small
+   set of theme-dependent values. Theme-invariant primitives (brand
+   orange, status colors, BTC/USD, radii, shadows, fonts) live once here.
+
+   ⚠️ THREE-ORANGE DISCREPANCY (flagged for design review):
+   - UI primary (light): #E8590C
+   - UI primary (dark):  #F2640F  (the handoff warms the accent in dark)
+   - Brand logo SVGs:    #EC641D  (the logo/mark files keep their own hue)
+   These are intentionally distinct per the handoff but should be
+   reconciled into one brand orange once design signs off. */
 :root {
-  --bg-primary: #0e0c0a;
-  --bg-secondary: #161210;
-  --bg-card: rgba(22, 18, 14, 0.85);
-  --bg-hover: #1e1814;
-  --bg-input: #120f0c;
-  --border-primary: rgba(193, 154, 91, 0.2);
-  --border-accent: #c19a5b;
-  --text-primary: #f0e6d6;
-  --text-secondary: #c4b49a;
-  --text-muted: #7a6e5e;
-  --accent: #c19a5b;
-  --accent-hover: #d4ad6e;
-  --accent-glow: rgba(193, 154, 91, 0.15);
-  --success: #5cb85c;
-  --warning: #e6a817;
-  --danger: #d9534f;
-  --btc-orange: #f7931a;
-  --arch-blue: #7eb8da;
-  --apl-gold: #c19a5b;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --font-display: "Playfair Display", Georgia, serif;
-  --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  color-scheme: light;
+
+  /* ---- Brand + status (theme-invariant) ---- */
+  --color-primary: #e8590c;
+  --color-primary-hover: #cf4f0a;
+  --color-primary-tint: #fcefe7; /* MAX tag / accent fill on light */
+  --color-positive: #16a34a;
+  --color-negative: #dc2626;
+  --color-warning: #e6a817;
+  --color-btc: #f7931a;
+  --color-usd: #4f46e5;
+
+  /* ---- Surfaces (light) ---- */
+  --surface-app: #eeeef0;
+  --surface-card: #ffffff;
+  --surface-header: #ffffff;
+  --surface-subtle: #f1f1f3;
+  --surface-input: #f4f4f6;
+
+  /* ---- Text (light) ---- */
+  --text-primary: #16161a;
+  --text-secondary: #6e6e76;
+  --text-muted: #9a9aa2;
+  --text-placeholder: #b0b0b8;
+  --text-disabled: #c4c4cb;
+  --text-mono: #3a3a40;
+
+  /* ---- Borders (light) ---- */
+  --border-card: #e5e5e8;
+  --border-field: #e0e0e4;
+  --border-divider: #ececef;
+
+  /* ---- Radii ---- */
+  --radius-pill: 999px;
+  --radius-card: 16px;
+  --radius-field: 14px; /* full-width form CTA + larger inputs */
+  --radius-input: 12px;
+  --radius-tile: 14px;
+  --radius-popup: 18px;
+  --radius-chip: 8px;
+
+  /* ---- Shadows (flat, hairline; no glows) ---- */
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-input: 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.12);
+  --shadow-seg: 0 1px 2px rgba(0, 0, 0, 0.08);
+
+  /* ---- Fonts (self-hosted above) ---- */
+  --font-display: "Newsreader", Georgia, serif;
+  --font-body: "Hanken Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", monospace;
+
+  /* ---------- Legacy aliases → semantic tokens ----------
+     Keep old names working so existing classes re-theme. */
+  --bg-primary: var(--surface-app);
+  --bg-secondary: var(--surface-header);
+  --bg-card: var(--surface-card);
+  --bg-hover: var(--surface-subtle);
+  --bg-input: var(--surface-input);
+  --border-primary: var(--border-card);
+  --border-accent: var(--color-primary);
+  --accent: var(--color-primary);
+  --accent-hover: var(--color-primary-hover);
+  --accent-glow: var(--color-primary-tint);
+  --success: var(--color-positive);
+  --warning: var(--color-warning);
+  --danger: var(--color-negative);
+  --btc-orange: var(--color-btc);
+  --arch-blue: #7eb8da; /* unchanged: not part of the new palette */
+  --apl-gold: var(--color-primary);
+  --radius-sm: var(--radius-chip);
+  --radius-md: var(--radius-input);
+  --radius-lg: var(--radius-card);
+  --radius-xl: var(--radius-popup);
+}
+
+/* ───────────────────────── Dark theme ─────────────────────────────── */
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-primary: #f2640f; /* warmed accent per handoff dark mockups */
+  --color-primary-hover: #ff7a2e;
+  --color-primary-tint: #2a1a10;
+
+  --surface-app: #0d0d0f;
+  --surface-card: #16161a;
+  --surface-header: #121214;
+  --surface-subtle: #1c1c20;
+  --surface-input: #1c1c20;
+
+  --text-primary: #f3f2ee;
+  --text-secondary: #8a8a92;
+  --text-muted: #6e6e76;
+  --text-placeholder: #6e6e76;
+  --text-disabled: #4a4a52;
+  --text-mono: #c9c9cf;
+
+  --border-card: #26262b;
+  --border-field: #2a2a30;
+  --border-divider: #232328;
+
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --shadow-input: 0 1px 3px rgba(0, 0, 0, 0.2);
+  --shadow-pop: 0 8px 30px rgba(0, 0, 0, 0.35);
+  --shadow-seg: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 * {
@@ -118,26 +241,8 @@ a {
   background: var(--bg-primary);
 }
 
-/* Persistent cyberpunk skyline behind every tab. City + readability scrim are
-   combined in ::after (the ::before pseudo is reserved for the network badge).
-   Header/nav are opaque bars; the scrollable .app-body is transparent so the
-   city shows through card gaps. */
-.app-container::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    linear-gradient(
-      to bottom,
-      rgba(14, 12, 10, 0.45) 0%,
-      rgba(14, 12, 10, 0.28) 35%,
-      rgba(14, 12, 10, 0.4) 70%,
-      rgba(14, 12, 10, 0.6) 100%
-    ),
-    url("/hero-bg.png") center / cover no-repeat;
-}
+/* The skyline hero background was dropped in the rebrand — the new system
+   is fully flat with a solid app canvas. */
 
 .app-main {
   flex: 1;
@@ -160,7 +265,7 @@ a {
   width: min(680px, calc(100% - 32px));
   padding: 12px 14px;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: rgba(31, 29, 31, 0.96);
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
   color: #fff;
@@ -349,7 +454,7 @@ a {
     gap: 10px;
     padding: 16px 14px;
     font-size: 15px;
-    border-radius: 14px;
+    border-radius: var(--radius-field);
     /* basis 130px is just above the natural pill content width so the
        buttons fit four-up at wide widths and wrap to 2-up at narrow
        widths, distributing leftover space evenly via flex-grow. */
@@ -515,49 +620,13 @@ a {
 
 .app-header {
   flex-shrink: 0;
-  padding: 8px 10px 6px;
-  background: var(--bg-primary);
+  padding: 0;
+  background: var(--surface-header);
+  border-bottom: 1px solid var(--border-divider);
   position: relative;
   /* No overflow:hidden here — popovers (e.g. the network switcher dropdown)
-     anchor to elements inside the header and need to render below it. The
-     grid-pattern ::before pseudo-element is `inset: 0` so it doesn't leak
-     visually even without clipping. */
+     anchor to elements inside the header and need to render below it. */
   z-index: 20;
-}
-
-.app-header::after {
-  /* Belt-and-suspenders: subtle bottom hairline so the header still reads as
-     a distinct band when popovers float over the content below. */
-  content: "";
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(193, 154, 91, 0.08), transparent);
-  pointer-events: none;
-}
-
-.app-header::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    repeating-linear-gradient(
-      90deg,
-      rgba(193,154,91,0.03) 0px,
-      rgba(193,154,91,0.03) 1px,
-      transparent 1px,
-      transparent 30px
-    ),
-    repeating-linear-gradient(
-      0deg,
-      rgba(193,154,91,0.03) 0px,
-      rgba(193,154,91,0.03) 1px,
-      transparent 1px,
-      transparent 30px
-    );
-  pointer-events: none;
 }
 
 .header-inner {
@@ -565,11 +634,7 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 10px;
-  background: rgba(22, 20, 18, 0.7);
-  border: 1px solid rgba(193, 154, 91, 0.15);
-  border-radius: var(--radius-lg);
-  backdrop-filter: blur(16px);
+  padding: 14px 14px;
 }
 
 .header-brand {
@@ -579,19 +644,39 @@ a {
   flex-shrink: 0;
 }
 
+/* Horizontal brand lockup. Light surfaces show the orange logo; dark
+   surfaces swap to the cream logo (handoff brand rule). */
 .header-logo-img {
-  width: 28px;
-  height: 28px;
+  height: 19px;
+  width: auto;
   object-fit: contain;
+  display: block;
 }
 
-.header-brand-text {
-  font-family: var(--font-body);
-  font-weight: 700;
-  font-size: 11px;
-  line-height: 1.15;
-  color: var(--text-primary);
-  letter-spacing: 0.02em;
+.header-logo-dark {
+  display: none;
+}
+
+[data-theme="dark"] .header-logo-light {
+  display: none;
+}
+
+[data-theme="dark"] .header-logo-dark {
+  display: block;
+}
+
+/* Generic brand-asset theme swap (logos/marks outside the header):
+   light surfaces show the orange asset, dark surfaces the cream/white one. */
+.brand-swap-dark {
+  display: none;
+}
+
+[data-theme="dark"] .brand-swap-light {
+  display: none;
+}
+
+[data-theme="dark"] .brand-swap-dark {
+  display: block;
 }
 
 .header-controls {
@@ -602,23 +687,24 @@ a {
 }
 
 .header-lock-btn {
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
   padding: 0;
-  border-radius: 8px;
-  background: rgba(92, 184, 92, 0.08);
-  border: 1px solid rgba(92, 184, 92, 0.18);
+  border-radius: 10px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-card);
+  color: var(--color-primary);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.15s, border-color 0.15s;
   flex-shrink: 0;
 }
 
 .header-lock-btn:hover {
-  background: rgba(92, 184, 92, 0.18);
-  border-color: rgba(92, 184, 92, 0.35);
+  background: var(--surface-subtle);
+  border-color: var(--border-field);
 }
 
 .app-body {
@@ -665,10 +751,10 @@ a {
   top: 0;
   left: 50%;
   transform: translateX(-50%);
-  width: 16px;
-  height: 2px;
+  width: 22px;
+  height: 3px;
   border-radius: 0 0 2px 2px;
-  background: var(--accent);
+  background: var(--color-primary);
 }
 
 .app-nav button:hover {
@@ -692,14 +778,14 @@ a {
 /* ═══════════════════ Cards ═══════════════════ */
 
 .card {
-  background: var(--bg-card);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-card);
   /* Vertical 14 keeps rows comfortable; horizontal 12 gives the row
      contents an extra 4px of width on each side without crowding the
      card chrome. */
   padding: 14px 12px;
-  backdrop-filter: blur(8px);
+  box-shadow: var(--shadow-card);
 }
 
 .card-header {
@@ -709,12 +795,13 @@ a {
   margin-bottom: 10px;
 }
 
+/* Section labels: muted, uppercase, wide tracking (handoff spec). */
 .card-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.12em;
 }
 
 /* ═══════════════════ Buttons ═══════════════════ */
@@ -724,74 +811,79 @@ a {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 10px 18px;
-  border-radius: var(--radius-md);
-  font-weight: 600;
+  padding: 11px 20px;
+  border-radius: var(--radius-pill);
+  font-weight: 700;
   font-size: 14px;
-  transition: all 0.2s;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent) 0%, #a07c42 100%);
-  color: #0e0c0a;
+  background: var(--color-primary);
+  color: #fff;
   border: none;
 }
 
 .btn-primary:hover {
-  background: linear-gradient(135deg, var(--accent-hover) 0%, var(--accent) 100%);
-  box-shadow: 0 4px 16px rgba(193, 154, 91, 0.25);
+  background: var(--color-primary-hover);
 }
 
 .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  box-shadow: none;
 }
 
+/* Ghost button: card-colored surface, ink text, hairline border. */
 .btn-secondary {
-  background: transparent;
-  color: var(--accent);
-  border: 1px solid var(--border-primary);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-field);
 }
 
 .btn-secondary:hover {
-  border-color: var(--accent);
-  background: var(--accent-glow);
+  border-color: var(--text-muted);
+  background: var(--surface-subtle);
 }
 
 .btn-danger {
-  background: var(--danger);
+  background: var(--color-negative);
   color: #fff;
 }
 
 .btn-sm {
-  padding: 5px 12px;
-  font-size: 11px;
-  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  font-size: 12px;
+  border-radius: var(--radius-pill);
 }
 
+/* Full-width form CTA ("Review", "Confirm"…): flat rectangle, larger
+   type — NOT a pill (handoff spec). */
 .btn-full {
   width: 100%;
+  border-radius: var(--radius-field);
+  padding: 15px;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .btn-icon {
   width: 34px;
   height: 34px;
   padding: 0;
-  border-radius: 50%;
-  background: rgba(193, 154, 91, 0.1);
-  color: var(--accent);
+  border-radius: 10px;
+  background: var(--surface-card);
+  color: var(--color-primary);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 16px;
-  border: 1px solid var(--border-primary);
-  transition: all 0.2s;
+  border: 1px solid var(--border-card);
+  transition: background 0.15s, border-color 0.15s;
 }
 
 .btn-icon:hover {
-  background: rgba(193, 154, 91, 0.2);
-  border-color: var(--accent);
+  background: var(--surface-subtle);
+  border-color: var(--border-field);
 }
 
 /* ═══════════════════ Inputs ═══════════════════ */
@@ -805,61 +897,41 @@ a {
 
 .input-label {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--accent);
+  font-weight: 700;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.12em;
 }
 
 .input, .input-field {
-  padding: 10px 12px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-sm);
+  padding: 11px 14px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-field);
+  border-radius: var(--radius-input);
   color: var(--text-primary);
   outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  box-shadow: var(--shadow-input);
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .input:focus, .input-field:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(193, 154, 91, 0.1);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-tint);
 }
 
 .input::placeholder, .input-field::placeholder {
-  color: var(--text-muted);
+  color: var(--text-placeholder);
 }
 
 /* ═══════════════════ Balance Hero ═══════════════════ */
 
 .balance-hero {
   text-align: center;
-  /* Trimmed from 28/22 -- the hero shows a single figure + label, so
-     the extra vertical padding was dead space. The parallax bg still
-     reads fine at this height. */
   padding: 18px 16px 16px;
   margin: -14px -14px 10px;
   position: relative;
   overflow: hidden;
-  /* Transparent so the persistent app-wide skyline (on .app-container)
-     shows through the hero too. */
   background: transparent;
-}
-
-/* The dashboard hero no longer paints its own skyline -- the app-wide
-   background handles that. Keep only a soft scrim so the balance figure
-   stays legible over the city. */
-.balance-hero::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    ellipse at 50% 45%,
-    rgba(14, 12, 10, 0.45) 0%,
-    rgba(14, 12, 10, 0.2) 55%,
-    transparent 80%
-  );
 }
 
 .balance-hero > * {
@@ -867,13 +939,16 @@ a {
   z-index: 1;
 }
 
+/* Balance figure is Hanken Grotesk (not the display serif): heavy weight,
+   tight tracking, tabular numerics so digits don't jitter on refresh. */
 .balance-amount {
-  font-family: var(--font-display);
-  font-size: 32px;
+  font-family: var(--font-body);
+  font-size: 40px;
   font-weight: 800;
   color: var(--text-primary);
   margin-bottom: 6px;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
 }
 
 .balance-label {
@@ -934,21 +1009,19 @@ a {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 12px 6px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
+  padding: 14px 6px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-tile);
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  transition: all 0.2s;
-  backdrop-filter: blur(8px);
+  transition: border-color 0.15s, background 0.15s;
 }
 
 .action-btn:hover {
-  border-color: var(--accent);
-  background: rgba(193, 154, 91, 0.08);
-  box-shadow: 0 2px 12px rgba(193, 154, 91, 0.1);
+  border-color: var(--border-field);
+  background: var(--surface-subtle);
 }
 
 .action-btn:disabled {
@@ -976,7 +1049,7 @@ a {
   align-items: center;
   gap: 12px;
   padding: 12px 0;
-  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .asset-row:last-child {
@@ -992,7 +1065,7 @@ a {
 }
 
 .asset-row.clickable:hover {
-  background: rgba(193, 154, 91, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 /* Unified holdings list -- reuses the base .card chrome; every child
@@ -1001,7 +1074,7 @@ a {
    It's now the primary tap surface, so its clickable rows get a touch
    more hover presence than the default subtle tint. */
 .card.holdings .asset-row.clickable:hover {
-  background: rgba(193, 154, 91, 0.09);
+  background: color-mix(in srgb, var(--color-primary) 9%, transparent);
 }
 
 /* Keep the collectibles thumbnail strip clear of the trailing chevron. */
@@ -1031,12 +1104,13 @@ a {
 .inscription-gallery-more {
   width: 36px;
   height: 36px;
-  border-radius: 8px;
-  background: var(--surface-2, #1f2230);
+  border-radius: var(--radius-chip);
+  background: var(--surface-card);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 10px;
   font-weight: 600;
   color: var(--text-muted);
@@ -1053,7 +1127,7 @@ a {
 }
 
 .inscription-gallery-row.clickable:hover {
-  background: rgba(193, 154, 91, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 .inscription-gallery-chevron {
@@ -1103,7 +1177,7 @@ a {
 
 .collectible-card:hover {
   border-color: var(--accent);
-  background: rgba(193, 154, 91, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
 }
 
 .collectible-card.selected {
@@ -1181,6 +1255,7 @@ a {
   min-width: 0;
   text-align: right;
   word-break: break-word;
+  font-variant-numeric: tabular-nums;
 }
 
 .collectible-detail-val.mono {
@@ -1229,18 +1304,18 @@ a {
 }
 
 .asset-icon.apl {
-  background: rgba(193, 154, 91, 0.12);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
   color: var(--apl-gold);
-  border: 1px solid rgba(193, 154, 91, 0.2);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 
 /* Rune leading icon. Renders the rune symbol glyph; shares the gold
    token palette but with a slightly cooler tint so runes read as a
    distinct asset class from APL tokens in the unified list. */
 .asset-icon.rune {
-  background: rgba(193, 154, 91, 0.1);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
   color: var(--apl-gold);
-  border: 1px solid rgba(193, 154, 91, 0.18);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
   font-size: 14px;
 }
 
@@ -1279,7 +1354,8 @@ a {
 
 .asset-balance {
   font-weight: 600;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   color: var(--accent);
 }
@@ -1309,7 +1385,7 @@ a {
   gap: 7px;
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid rgba(193, 154, 91, 0.08);
+  border-top: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .btc-breakdown-row {
@@ -1326,7 +1402,8 @@ a {
 }
 
 .btc-breakdown-value {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
@@ -1387,9 +1464,11 @@ a {
   margin-bottom: 4px;
 }
 
+/* Page headlines use the Newsreader display serif (headlines only). */
 .page-title {
-  font-size: 22px;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 500;
   margin: 0;
   letter-spacing: -0.01em;
   color: var(--text-primary);
@@ -1407,7 +1486,7 @@ a {
   gap: 4px;
   padding: 4px 8px 4px 4px;
   margin-left: -4px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: transparent;
   border: none;
   color: var(--text-muted);
@@ -1420,7 +1499,7 @@ a {
 
 .back-link:hover {
   color: var(--accent);
-  background: rgba(193, 154, 91, 0.08);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .back-link svg {
@@ -1472,9 +1551,9 @@ a {
   align-items: center;
   gap: 12px;
   padding: 10px 14px;
-  background: rgba(20, 18, 16, 0.7);
+  background: var(--surface-card);
   border: 1px solid var(--border-primary);
-  border-radius: 14px;
+  border-radius: var(--radius-field);
 }
 
 .asset-summary-chip .asset-icon {
@@ -1519,7 +1598,8 @@ a {
 }
 
 .asset-summary-chip-balance-value {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
@@ -1551,7 +1631,8 @@ a {
 .form-field-meta {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
 }
 
 .form-field-meta strong {
@@ -1564,14 +1645,14 @@ a {
   align-items: center;
   background: var(--bg-input);
   border: 1px solid var(--border-primary);
-  border-radius: 12px;
+  border-radius: var(--radius-input);
   padding: 4px 6px 4px 4px;
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 
 .form-field-input:focus-within {
-  border-color: rgba(193, 154, 91, 0.55);
-  background: rgba(20, 18, 16, 0.95);
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
+  background: var(--surface-card);
 }
 
 .form-field-input input {
@@ -1601,12 +1682,20 @@ a {
   appearance: textfield;
 }
 
+/* Amount fields type the value in the body font with tabular figures so
+   numbers align and match the standardized balance display. JetBrains
+   Mono on `.form-field-input input` stays reserved for the address field. */
+.form-field-input--amount input {
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
+}
+
 .form-field-suffix {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
   padding: 0 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 13px;
   font-weight: 700;
   color: var(--text-muted);
@@ -1619,8 +1708,8 @@ a {
   padding: 7px 12px;
   margin-right: 2px;
   border-radius: 9px;
-  background: rgba(193, 154, 91, 0.14);
-  border: 1px solid rgba(193, 154, 91, 0.32);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, transparent);
   color: var(--accent);
   font-size: 10px;
   font-weight: 800;
@@ -1630,14 +1719,15 @@ a {
 }
 
 .form-field-action:hover {
-  background: rgba(193, 154, 91, 0.24);
-  border-color: rgba(193, 154, 91, 0.55);
+  background: color-mix(in srgb, var(--color-primary) 24%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 
 .form-field-hint {
   font-size: 11px;
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Recent recipients chip strip rendered under the address input on Send.
@@ -1652,20 +1742,20 @@ a {
 .recent-chip {
   display: inline-flex;
   align-items: center;
-  background: rgba(20, 18, 16, 0.8);
+  background: var(--surface-card);
   border: 1px solid var(--border-primary);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   overflow: hidden;
   transition: border-color 0.18s ease, background 0.18s ease;
 }
 
 .recent-chip:hover {
-  border-color: rgba(193, 154, 91, 0.4);
+  border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
 }
 
 .recent-chip.selected {
   border-color: var(--accent);
-  background: rgba(193, 154, 91, 0.14);
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
 }
 
 .recent-chip-fill {
@@ -1695,8 +1785,9 @@ a {
   letter-spacing: 0.04em;
   color: var(--text-muted);
   padding: 1px 5px;
-  border-radius: 999px;
-  background: rgba(193, 154, 91, 0.12);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  font-variant-numeric: tabular-nums;
 }
 
 .recent-chip-remove {
@@ -1723,7 +1814,7 @@ a {
 }
 
 .recent-chip-remove:hover {
-  background: rgba(217, 83, 79, 0.18);
+  background: rgba(220, 38, 38, 0.18);
   color: var(--danger);
 }
 
@@ -1734,8 +1825,8 @@ a {
   padding: 10px 12px;
   font-size: 12px;
   color: var(--text-muted);
-  background: rgba(193, 154, 91, 0.06);
-  border: 1px solid rgba(193, 154, 91, 0.14);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 14%, transparent);
   border-radius: 10px;
   line-height: 1.5;
 }
@@ -1750,9 +1841,9 @@ a {
 .review-card {
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, rgba(28, 24, 20, 0.85) 0%, rgba(20, 18, 16, 0.85) 100%);
+  background: var(--surface-card);
   border: 1px solid var(--border-primary);
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   overflow: hidden;
 }
 
@@ -1762,7 +1853,7 @@ a {
   justify-content: space-between;
   gap: 16px;
   padding: 14px 16px;
-  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .review-row:last-child {
@@ -1797,6 +1888,7 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Compact inline icon used in the Send review row + anywhere a token
@@ -1836,7 +1928,8 @@ a {
 }
 
 .review-row-sub {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -1846,8 +1939,8 @@ a {
   flex-direction: column;
   gap: 6px;
   padding: 12px 16px;
-  background: rgba(0, 0, 0, 0.15);
-  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+  background: var(--surface-subtle);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .review-section-label {
@@ -1870,7 +1963,8 @@ a {
 }
 
 .review-section-row .value {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   color: var(--text-primary);
 }
 
@@ -1879,8 +1973,8 @@ a {
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px;
-  background: linear-gradient(135deg, rgba(193, 154, 91, 0.12) 0%, rgba(160, 124, 66, 0.08) 100%);
-  border-top: 1px solid rgba(193, 154, 91, 0.18);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--color-primary) 12%, transparent) 0%, color-mix(in srgb, var(--color-primary) 8%, transparent) 100%);
+  border-top: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 
 .review-total-row .label {
@@ -1892,7 +1986,8 @@ a {
 }
 
 .review-total-row .value {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
   font-weight: 700;
   color: var(--accent);
@@ -1906,9 +2001,9 @@ a {
   align-items: center;
   gap: 16px;
   padding: 32px 20px;
-  background: linear-gradient(180deg, rgba(40, 75, 50, 0.18) 0%, rgba(20, 18, 16, 0.65) 100%);
+  background: linear-gradient(180deg, rgba(22, 163, 74, 0.08) 0%, var(--surface-card) 60%);
   border: 1px solid rgba(92, 184, 92, 0.25);
-  border-radius: 18px;
+  border-radius: var(--radius-popup);
   text-align: center;
 }
 
@@ -1942,8 +2037,8 @@ a {
   color: var(--text-muted);
   word-break: break-all;
   padding: 10px 12px;
-  background: rgba(12, 10, 8, 0.55);
-  border: 1px solid rgba(193, 154, 91, 0.18);
+  background: var(--surface-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
   border-radius: 10px;
   max-width: 100%;
 }
@@ -1976,8 +2071,8 @@ a {
 }
 
 .send-asset-card:hover {
-  border-color: rgba(193, 154, 91, 0.42);
-  background: rgba(30, 24, 20, 0.9);
+  border-color: color-mix(in srgb, var(--color-primary) 42%, transparent);
+  background: var(--surface-card);
   transform: translateY(-1px);
 }
 
@@ -2022,7 +2117,8 @@ a {
 
 .send-asset-balance {
   width: 100%;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
   font-weight: 700;
   line-height: 1.15;
@@ -2033,7 +2129,8 @@ a {
 }
 
 .send-asset-pending {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 9px;
   font-weight: 600;
 }
@@ -2047,7 +2144,8 @@ a {
 }
 
 .send-asset-usd {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 10px;
   color: var(--text-muted);
   margin-top: 2px;
@@ -2109,7 +2207,8 @@ a {
 
 /* USD subtitle next to fiat-priced balances (BTC only today) */
 .asset-balance-usd {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 10px;
   color: var(--text-muted);
   margin-top: 2px;
@@ -2122,7 +2221,7 @@ a {
   align-items: center;
   gap: 10px;
   padding: 10px 0;
-  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .tx-row:last-child {
@@ -2140,9 +2239,9 @@ a {
 }
 
 .tx-dir.outbound {
-  background: rgba(217, 83, 79, 0.12);
+  background: rgba(220, 38, 38, 0.12);
   color: var(--danger);
-  border: 1px solid rgba(217, 83, 79, 0.15);
+  border: 1px solid rgba(220, 38, 38, 0.15);
 }
 
 .tx-dir.inbound {
@@ -2158,8 +2257,8 @@ a {
 }
 
 .tx-dir.arch {
-  background: rgba(193, 154, 91, 0.12);
-  border: 1px solid rgba(193, 154, 91, 0.2);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 20%, transparent);
 }
 
 .tx-dir.apl {
@@ -2179,7 +2278,8 @@ a {
 }
 
 .tx-amount-inline {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 10px;
   font-weight: 500;
 }
@@ -2201,7 +2301,8 @@ a {
 }
 
 .tx-amount {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-weight: 500;
   text-align: right;
@@ -2241,7 +2342,8 @@ a {
 }
 
 .tx-activity-amount {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 13px;
   font-weight: 600;
   flex-shrink: 0;
@@ -2265,7 +2367,8 @@ a {
 }
 
 .tx-activity-usd {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -2285,8 +2388,8 @@ a {
 
 .badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 10px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
@@ -2294,21 +2397,21 @@ a {
 }
 
 .badge-success {
-  background: rgba(92, 184, 92, 0.15);
-  color: var(--success);
-  border: 1px solid rgba(92, 184, 92, 0.2);
+  background: rgba(22, 163, 74, 0.12);
+  color: var(--color-positive);
+  border: 1px solid rgba(22, 163, 74, 0.22);
 }
 
 .badge-pending {
   background: rgba(230, 168, 23, 0.15);
   color: var(--warning);
-  border: 1px solid rgba(230, 168, 23, 0.2);
+  border: 1px solid rgba(230, 168, 23, 0.22);
 }
 
 .badge-failed {
-  background: rgba(217, 83, 79, 0.15);
-  color: var(--danger);
-  border: 1px solid rgba(217, 83, 79, 0.2);
+  background: rgba(220, 38, 38, 0.12);
+  color: var(--color-negative);
+  border: 1px solid rgba(220, 38, 38, 0.22);
 }
 
 /* ═══════════════════ Network Pill ═══════════════════ */
@@ -2328,48 +2431,44 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 10px;
-  border-radius: 20px;
-  font-size: 9px;
-  font-weight: 700;
-  background: rgba(30, 28, 26, 0.8);
-  color: var(--text-secondary);
-  border: 1px solid rgba(193, 154, 91, 0.12);
-  letter-spacing: 0.06em;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-subtle);
+  color: var(--text-primary);
+  border: 1px solid var(--border-card);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .network-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--success);
-  box-shadow: 0 0 6px var(--success);
-  transition: background 0.3s, box-shadow 0.3s;
+  transition: background 0.3s;
 }
 
 .network-dot-disconnected {
   background: var(--danger);
-  box-shadow: 0 0 6px var(--danger);
 }
 
 .network-dot-checking {
   background: var(--warning);
-  box-shadow: 0 0 6px var(--warning);
   animation: pulse-pending 1.5s ease-in-out infinite;
 }
 
 .network-dot-degraded {
   background: var(--warning);
-  box-shadow: 0 0 6px var(--warning);
 }
 
 .network-pill-disconnected {
-  border-color: rgba(217, 83, 79, 0.25);
+  border-color: rgba(220, 38, 38, 0.3);
 }
 
 .network-pill-degraded {
-  border-color: rgba(230, 168, 23, 0.25);
+  border-color: rgba(230, 168, 23, 0.3);
 }
 
 /* Interactive variant of the network pill. The base `.network-pill` is used
@@ -2381,14 +2480,14 @@ a {
 }
 
 .network-pill-button:hover {
-  background: rgba(40, 36, 30, 0.92);
-  border-color: rgba(193, 154, 91, 0.34);
+  background: var(--surface-subtle);
+  border-color: var(--border-field);
   color: var(--text-primary);
 }
 
 .network-pill-button[aria-expanded="true"] {
-  background: rgba(40, 36, 30, 0.92);
-  border-color: rgba(193, 154, 91, 0.5);
+  background: var(--surface-subtle);
+  border-color: var(--color-primary);
   color: var(--text-primary);
 }
 
@@ -2412,12 +2511,10 @@ a {
   right: 0;
   min-width: 240px;
   padding: 6px;
-  background: linear-gradient(180deg, rgba(28, 24, 20, 0.98) 0%, rgba(18, 16, 14, 0.98) 100%);
-  border: 1px solid var(--border-primary);
-  border-radius: 14px;
-  box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(193, 154, 91, 0.08);
+  background: var(--surface-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-field);
+  box-shadow: var(--shadow-pop);
   z-index: 1000;
   animation: network-menu-in 0.14s ease-out;
 }
@@ -2452,11 +2549,11 @@ a {
 }
 
 .network-menu-item:hover {
-  background: rgba(193, 154, 91, 0.08);
+  background: var(--surface-subtle);
 }
 
 .network-menu-item.active {
-  background: rgba(193, 154, 91, 0.12);
+  background: var(--color-primary-tint);
 }
 
 .network-menu-dot {
@@ -2468,13 +2565,13 @@ a {
 }
 
 .network-menu-dot.testnet {
-  background: #f7a93f;
-  color: #f7a93f;
+  background: var(--color-warning);
+  color: var(--color-warning);
 }
 
 .network-menu-dot.mainnet {
-  background: #5cb85c;
-  color: #5cb85c;
+  background: var(--color-positive);
+  color: var(--color-positive);
 }
 
 .network-menu-text {
@@ -2547,9 +2644,9 @@ a {
 .receive-segmented {
   display: inline-flex;
   align-self: flex-start;
-  background: rgba(20, 18, 16, 0.7);
+  background: var(--surface-card);
   border: 1px solid var(--border-primary);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 4px;
   gap: 2px;
 }
@@ -2559,7 +2656,7 @@ a {
   align-items: center;
   gap: 6px;
   padding: 8px 16px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: transparent;
   border: none;
   color: var(--text-muted);
@@ -2574,9 +2671,9 @@ a {
 }
 
 .receive-segment.active {
-  background: linear-gradient(135deg, var(--accent) 0%, #a07c42 100%);
-  color: #0e0c0a;
-  box-shadow: 0 2px 12px rgba(193, 154, 91, 0.25);
+  background: var(--color-primary);
+  color: #fff;
+  box-shadow: 0 2px 12px color-mix(in srgb, var(--color-primary) 25%, transparent);
 }
 
 .receive-segment-icon {
@@ -2595,9 +2692,9 @@ a {
   align-items: center;
   gap: 18px;
   padding: 24px 20px 22px;
-  background: linear-gradient(180deg, rgba(28, 24, 20, 0.85) 0%, rgba(20, 18, 16, 0.85) 100%);
+  background: var(--surface-card);
   border: 1px solid var(--border-primary);
-  border-radius: 18px;
+  border-radius: var(--radius-popup);
   position: relative;
   overflow: hidden;
 }
@@ -2611,7 +2708,7 @@ a {
   width: 280px;
   height: 280px;
   transform: translateX(-50%);
-  background: radial-gradient(circle at center, rgba(193, 154, 91, 0.16) 0%, transparent 60%);
+  background: radial-gradient(circle at center, color-mix(in srgb, var(--color-primary) 16%, transparent) 0%, transparent 60%);
   pointer-events: none;
 }
 
@@ -2619,11 +2716,11 @@ a {
   position: relative;
   padding: 14px;
   background: #ffffff;
-  border-radius: 16px;
+  border-radius: var(--radius-card);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.08) inset,
     0 18px 40px rgba(0, 0, 0, 0.45),
-    0 0 0 1px rgba(193, 154, 91, 0.25);
+    0 0 0 1px color-mix(in srgb, var(--color-primary) 25%, transparent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2640,7 +2737,7 @@ a {
   align-items: center;
   justify-content: center;
   background: rgba(255, 255, 255, 0.06);
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
 }
 
 .receive-meta {
@@ -2670,9 +2767,9 @@ a {
   align-items: center;
   gap: 10px;
   padding: 12px 14px;
-  background: rgba(12, 10, 8, 0.65);
-  border: 1px solid rgba(193, 154, 91, 0.18);
-  border-radius: 12px;
+  background: var(--surface-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
+  border-radius: var(--radius-input);
   cursor: default;
 }
 
@@ -2690,8 +2787,8 @@ a {
   flex-shrink: 0;
   padding: 8px 12px;
   border-radius: 10px;
-  background: rgba(193, 154, 91, 0.12);
-  border: 1px solid rgba(193, 154, 91, 0.28);
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
   color: var(--accent);
   display: inline-flex;
   align-items: center;
@@ -2702,8 +2799,8 @@ a {
 }
 
 .receive-address-copy:hover {
-  background: rgba(193, 154, 91, 0.2);
-  border-color: rgba(193, 154, 91, 0.5);
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
+  border-color: color-mix(in srgb, var(--color-primary) 50%, transparent);
   color: var(--accent);
 }
 
@@ -2717,9 +2814,10 @@ a {
   align-items: baseline;
   gap: 6px;
   padding: 6px 12px;
-  background: rgba(193, 154, 91, 0.08);
-  border-radius: 999px;
-  font-family: var(--font-mono);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -2753,12 +2851,12 @@ a {
   align-items: flex-start;
   gap: 10px;
   padding: 12px 14px;
-  border-radius: 12px;
+  border-radius: var(--radius-input);
   font-size: 12px;
   line-height: 1.5;
-  border: 1px solid rgba(255, 184, 0, 0.18);
-  background: rgba(255, 184, 0, 0.06);
-  color: rgba(255, 220, 160, 0.92);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 18%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 6%, transparent);
+  color: var(--color-warning);
 }
 
 .receive-warning strong {
@@ -2773,8 +2871,8 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 184, 0, 0.22);
-  color: #ffcd6e;
+  background: color-mix(in srgb, var(--color-warning) 22%, transparent);
+  color: var(--color-warning);
   border-radius: 50%;
   font-weight: 800;
   font-size: 11px;
@@ -2832,7 +2930,7 @@ a {
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(193, 154, 91, 0.2);
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
   border-radius: 2px;
 }
 
@@ -2862,9 +2960,9 @@ a {
 .section-title {
   font-size: 11px;
   font-weight: 700;
-  color: var(--accent);
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   margin-bottom: 8px;
 }
 
@@ -2875,8 +2973,8 @@ a {
   align-items: center;
   gap: 6px;
   padding: 5px 10px;
-  background: rgba(30, 28, 26, 0.8);
-  border: 1px solid rgba(193, 154, 91, 0.12);
+  background: var(--surface-subtle);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 12%, transparent);
   border-radius: 20px;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -2965,23 +3063,7 @@ a {
   background: var(--bg-primary);
 }
 
-.onboarding::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: url("/hero-bg.png") center bottom / cover no-repeat;
-  opacity: 0.15;
-  filter: saturate(0.6) brightness(0.5);
-}
-
-.onboarding::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(to bottom, rgba(14,12,10,0.6) 0%, rgba(14,12,10,0.3) 30%, rgba(14,12,10,0.6) 70%, var(--bg-primary) 100%),
-    radial-gradient(ellipse at 50% 60%, rgba(193,154,91,0.1) 0%, transparent 60%);
-}
+/* Skyline + radial glow layers removed in the rebrand (flat system). */
 
 .onboarding > * {
   position: relative;
@@ -2990,29 +3072,14 @@ a {
 
 .onboarding-logo {
   font-size: 48px;
-  color: var(--accent);
-  /* Soft circular glow around the mark so the page has a visual
-     anchor; the gradient halo bleeds into the dimmed hero image
-     behind it and pulls the eye to the top of the column. */
+  color: var(--color-primary);
   width: 88px;
   height: 88px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(
-    circle at center,
-    rgba(193, 154, 91, 0.22) 0%,
-    rgba(193, 154, 91, 0.06) 45%,
-    transparent 70%
-  );
   margin-bottom: -4px; /* tighten the gap to title without changing the parent's gap */
-  /* Slow breathing halo. The keyframe scales the whole element
-     (including the radial-gradient background) so the glow swells in
-     and out around the mark. The inner SVG counter-scales so the
-     logo glyph itself stays visually stable; only the halo breathes. */
-  animation: arch-logo-halo 4.2s ease-in-out infinite;
-  will-change: transform;
 }
 
 .onboarding-logo img {
@@ -3105,8 +3172,8 @@ a {
 
 .onboarding-title {
   font-family: var(--font-display);
-  font-size: 22px;
-  font-weight: 800;
+  font-size: 28px;
+  font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--text-primary);
   margin: 0;
@@ -3127,7 +3194,7 @@ a {
   width: 100%;
   background: var(--bg-card);
   border: 1px solid var(--border-primary);
-  border-radius: 12px;
+  border-radius: var(--radius-input);
   padding: 16px 16px 18px;
   display: flex;
   flex-direction: column;
@@ -3219,7 +3286,7 @@ a {
   line-height: 1.45;
   text-align: left;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid var(--border-primary);
 }
@@ -3319,7 +3386,7 @@ a {
   padding: 14px;
   background: var(--bg-card);
   border: 1px solid var(--border-primary);
-  border-radius: 12px;
+  border-radius: var(--radius-input);
   cursor: pointer;
   text-align: left;
   transition: transform 0.15s ease, border-color 0.15s ease,
@@ -3332,7 +3399,7 @@ a {
 .onboarding-choice-card:hover,
 .onboarding-choice-card:focus-visible {
   border-color: var(--accent);
-  background: rgba(193, 154, 91, 0.06);
+  background: color-mix(in srgb, var(--color-primary) 6%, transparent);
   transform: translateY(-1px);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
   outline: none;
@@ -3340,8 +3407,8 @@ a {
 
 .onboarding-choice-card[data-selected="true"] {
   border-color: var(--accent);
-  background: rgba(193, 154, 91, 0.12);
-  box-shadow: 0 0 0 1px rgba(193, 154, 91, 0.35),
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-primary) 35%, transparent),
               0 8px 22px rgba(0, 0, 0, 0.28);
 }
 
@@ -3360,7 +3427,7 @@ a {
 .onboarding-choice-card-icon {
   width: 36px;
   height: 36px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: var(--accent-glow);
   display: flex;
   align-items: center;
@@ -3516,7 +3583,7 @@ a {
 /* ═══════════════════ Skeleton Loading ═══════════════════ */
 
 .skeleton {
-  background: linear-gradient(90deg, rgba(193,154,91,0.05) 25%, rgba(193,154,91,0.12) 50%, rgba(193,154,91,0.05) 75%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 5%, transparent) 25%, color-mix(in srgb, var(--color-primary) 12%, transparent) 50%, color-mix(in srgb, var(--color-primary) 5%, transparent) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
   border-radius: var(--radius-sm);
@@ -3571,8 +3638,8 @@ a {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 12px;
-  background: rgba(217, 83, 79, 0.08);
-  border-bottom: 1px solid rgba(217, 83, 79, 0.2);
+  background: rgba(220, 38, 38, 0.08);
+  border-bottom: 1px solid rgba(220, 38, 38, 0.2);
   flex-shrink: 0;
   animation: banner-slide-in 0.3s ease-out;
 }
@@ -3628,16 +3695,16 @@ a {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--danger);
-  background: rgba(217, 83, 79, 0.1);
-  border: 1px solid rgba(217, 83, 79, 0.25);
+  background: rgba(220, 38, 38, 0.1);
+  border: 1px solid rgba(220, 38, 38, 0.25);
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all 0.2s;
 }
 
 .connection-banner-retry:hover {
-  background: rgba(217, 83, 79, 0.2);
-  border-color: rgba(217, 83, 79, 0.4);
+  background: rgba(220, 38, 38, 0.2);
+  border-color: rgba(220, 38, 38, 0.4);
 }
 
 .connection-banner-warning {
@@ -3668,8 +3735,8 @@ a {
 
 .error-banner {
   padding: 8px 12px;
-  background: rgba(217, 83, 79, 0.1);
-  border: 1px solid rgba(217, 83, 79, 0.2);
+  background: rgba(220, 38, 38, 0.1);
+  border: 1px solid rgba(220, 38, 38, 0.2);
   border-radius: var(--radius-sm);
   color: var(--danger);
   font-size: 12px;
@@ -3715,7 +3782,7 @@ a {
   cursor: pointer;
   transition: background 0.15s;
   color: var(--text-muted);
-  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .token-more-row:last-child {
@@ -3773,7 +3840,7 @@ a {
 
 .token-search-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(193, 154, 91, 0.1);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 10%, transparent);
 }
 
 .token-search-input::placeholder {
@@ -3788,7 +3855,7 @@ a {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: rgba(193, 154, 91, 0.1);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
   border: none;
   color: var(--text-muted);
   font-size: 12px;
@@ -3800,7 +3867,7 @@ a {
 }
 
 .token-search-clear:hover {
-  background: rgba(193, 154, 91, 0.2);
+  background: color-mix(in srgb, var(--color-primary) 20%, transparent);
   color: var(--text-primary);
 }
 
@@ -3808,6 +3875,7 @@ a {
   font-size: 11px;
   color: var(--text-muted);
   margin-bottom: 8px;
+  font-variant-numeric: tabular-nums;
 }
 
 .token-row {
@@ -3815,7 +3883,7 @@ a {
   align-items: center;
   gap: 12px;
   padding: 10px 0;
-  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -3847,7 +3915,7 @@ a {
   opacity: 0;
   transition: max-height 0.3s ease, opacity 0.25s ease, padding 0.25s ease;
   padding: 0 0 0 48px;
-  border-bottom: 1px solid rgba(193, 154, 91, 0.08);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-primary) 8%, transparent);
 }
 
 .token-detail-panel.open {
@@ -3959,7 +4027,8 @@ a {
 }
 
 .token-detail-balance {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 26px;
   font-weight: 600;
   color: var(--text-primary);
@@ -4022,7 +4091,8 @@ a {
 }
 
 .tx-amount-big {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 14px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -4072,7 +4142,7 @@ a {
 }
 
 .app-container[data-network="testnet4"] {
-  --network-accent: #e6a817;
+  --network-accent: var(--color-warning);
   --network-warning: rgba(230, 168, 23, 0.4);
   box-shadow: inset 0 2px 0 0 var(--network-warning);
 }
@@ -4083,7 +4153,7 @@ a {
   top: 0;
   right: 0;
   background: rgba(230, 168, 23, 0.12);
-  color: #e6a817;
+  color: var(--color-warning);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 1px;
@@ -4110,7 +4180,7 @@ a {
 .approve-dapp-icon {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: var(--bg-hover);
   object-fit: contain;
 }
@@ -4118,7 +4188,7 @@ a {
 .approve-dapp-icon-placeholder {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: var(--bg-hover);
   display: flex;
   align-items: center;
@@ -4159,13 +4229,13 @@ a {
 }
 
 .approve-dapp-badge.returning {
-  background: rgba(46, 204, 113, 0.15);
-  color: #2ecc71;
+  background: color-mix(in srgb, var(--color-positive) 15%, transparent);
+  color: var(--color-positive);
 }
 
 .approve-dapp-badge.new {
   background: rgba(230, 168, 23, 0.15);
-  color: #e6a817;
+  color: var(--color-warning);
 }
 
 .approve-risk {
@@ -4182,11 +4252,11 @@ a {
 
 .approve-risk-warn {
   background: rgba(230, 168, 23, 0.12);
-  color: #e6a817;
+  color: var(--color-warning);
 }
 
 .approve-risk-danger {
-  background: rgba(217, 83, 79, 0.12);
+  background: rgba(220, 38, 38, 0.12);
   color: var(--danger);
 }
 
@@ -4252,7 +4322,7 @@ a {
 }
 
 .swap-card-receive {
-  background: rgba(22, 18, 14, 0.6);
+  background: var(--surface-card);
 }
 
 .swap-card-header {
@@ -4277,6 +4347,7 @@ a {
   color: var(--text-muted);
   text-transform: none;
   letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .swap-balance-loading {
@@ -4314,7 +4385,8 @@ a {
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-family: var(--font-display);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 26px;
   font-weight: 700;
   line-height: 1.1;
@@ -4352,7 +4424,7 @@ a {
   gap: 6px;
   background: var(--bg-hover);
   border: 1px solid var(--border-primary);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 4px 10px 4px 4px;
   color: var(--text-primary);
   font-size: 13px;
@@ -4394,7 +4466,7 @@ a {
 .swap-direction-btn {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   border: 1px solid var(--border-primary);
   background: var(--bg-secondary);
   color: var(--text-secondary);
@@ -4423,7 +4495,7 @@ a {
   padding: 10px 12px;
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-sm);
-  background: rgba(22, 18, 14, 0.4);
+  background: var(--surface-input);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -4672,7 +4744,7 @@ a {
 }
 .qr-scanner-video {
   width: 100%;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: black;
   aspect-ratio: 1;
 }
@@ -4710,7 +4782,7 @@ a {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--radius-chip);
   background: var(--bg-card);
   border: 1px solid var(--border-primary);
   color: var(--text-secondary);
@@ -4767,7 +4839,7 @@ a {
   background: var(--accent-glow);
   border: 1px solid var(--accent-glow);
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .onboarding-panel__title {
@@ -4886,7 +4958,7 @@ a {
   background: var(--bg-hover);
   border: 1px solid var(--border-primary);
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .faucet-panel__hint {

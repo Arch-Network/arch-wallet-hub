@@ -75,7 +75,7 @@ export function TokenIcon({ image, symbol, size, wrapperClassName }: Props) {
             onError={() => setErrored(true)}
           />
         ) : (
-          <ArchIcon size={Math.round(dim * 0.85)} color="#7b68ee" />
+          <ArchIcon size={Math.round(dim * 0.85)} color="var(--color-usd)" />
         )}
       </div>
     );
@@ -105,7 +105,7 @@ export function TokenIcon({ image, symbol, size, wrapperClassName }: Props) {
           onError={() => setErrored(true)}
         />
       ) : (
-        <ArchIcon size={Math.round(dim * 0.6)} color="#7b68ee" />
+        <ArchIcon size={Math.round(dim * 0.6)} color="var(--color-usd)" />
       )}
     </span>
   );

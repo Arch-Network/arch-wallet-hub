@@ -14,10 +14,21 @@ import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "..
 import { APP_VERSION } from "../../utils/version";
 import DiagnosticsLogView from "../../components/DiagnosticsLogView";
 import { isSentryAvailableForOptIn } from "../../utils/log";
+import {
+  getThemePreference,
+  setThemePreference,
+  type ThemePreference,
+} from "../../utils/theme";
 
 const NETWORKS: { id: NetworkId; label: string }[] = [
   { id: "testnet4", label: "Testnet4" },
   { id: "mainnet", label: "Mainnet" },
+];
+
+const THEME_OPTIONS: { id: ThemePreference; label: string }[] = [
+  { id: "light", label: "Light" },
+  { id: "dark", label: "Dark" },
+  { id: "system", label: "System" },
 ];
 
 const AUTO_LOCK_OPTIONS: { value: number; label: string }[] = [
@@ -47,11 +58,20 @@ function accountAuthLabel(account: WalletAccount): string {
 
 function accountAuthTone(account: WalletAccount): { background: string; color: string } {
   if (isExternalAccount(account)) {
-    return { background: "rgba(255,176,32,0.16)", color: "#ffb020" };
+    return {
+      background: "color-mix(in srgb, var(--color-warning) 16%, transparent)",
+      color: "var(--color-warning)",
+    };
   }
   return account.authMethod === "email"
-    ? { background: "rgba(123,104,238,0.15)", color: "#7b68ee" }
-    : { background: "rgba(46,204,113,0.15)", color: "#2ecc71" };
+    ? {
+        background: "color-mix(in srgb, var(--color-usd) 15%, transparent)",
+        color: "var(--color-usd)",
+      }
+    : {
+        background: "color-mix(in srgb, var(--color-positive) 15%, transparent)",
+        color: "var(--color-positive)",
+      };
 }
 
 export default function Settings() {
@@ -60,6 +80,7 @@ export default function Settings() {
   const [connectedSites, setConnectedSites] = useState<Record<string, ConnectedSite>>({});
   const [showReset, setShowReset] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [themePref, setThemePref] = useState<ThemePreference>("system");
 
   const [hubBaseUrl, setHubBaseUrl] = useState(state.hubBaseUrl || DEFAULT_HUB_BASE_URL);
   const [hubApiKey, setHubApiKey] = useState(state.hubApiKey || "");
@@ -81,6 +102,15 @@ export default function Settings() {
   useEffect(() => {
     setConnectedSites(state.connectedSites);
   }, [state.connectedSites]);
+
+  useEffect(() => {
+    void getThemePreference().then(setThemePref);
+  }, []);
+
+  const handleThemeChange = useCallback((pref: ThemePreference) => {
+    setThemePref(pref);
+    void setThemePreference(pref);
+  }, []);
 
   useEffect(() => {
     setHubBaseUrl(state.hubBaseUrl || DEFAULT_HUB_BASE_URL);
@@ -205,6 +235,27 @@ export default function Settings() {
                 {n.label}
               </button>
             ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="section">
+        <div className="section-title">Appearance</div>
+        <div className="card">
+          <div style={{ display: "flex", gap: 8 }}>
+            {THEME_OPTIONS.map((t) => (
+              <button
+                key={t.id}
+                className={`btn btn-sm ${themePref === t.id ? "btn-primary" : "btn-secondary"}`}
+                onClick={() => handleThemeChange(t.id)}
+                style={{ flex: 1 }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-muted)" }}>
+            System follows your device's light/dark setting.
           </div>
         </div>
       </div>
