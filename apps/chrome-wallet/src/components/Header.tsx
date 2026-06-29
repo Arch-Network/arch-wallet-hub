@@ -16,9 +16,9 @@ interface HeaderProps {
 
 function LockIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5cb85c" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="10" width="14" height="10" rx="2.5" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
     </svg>
   );
 }
@@ -200,8 +200,8 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
     <header className="app-header">
       <div className="header-inner">
         <div className="header-brand">
-          <img src="/arch-logo.svg" alt="Arch" className="header-logo-img" />
-          <span className="header-brand-text">Arch<br/>Network</span>
+          <img src="/arch-logo-orange.svg" alt="Arch Network" className="header-logo-img header-logo-light" />
+          <img src="/arch-logo-cream.svg" alt="Arch Network" className="header-logo-img header-logo-dark" />
         </div>
 
         <div className="header-controls">

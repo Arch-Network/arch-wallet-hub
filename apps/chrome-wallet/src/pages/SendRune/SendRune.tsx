@@ -488,7 +488,7 @@ export default function SendRune() {
             Available <strong>{balanceHuman}</strong>
           </span>
         </div>
-        <div className="form-field-input">
+        <div className="form-field-input form-field-input--amount">
           <input
             type="text"
             inputMode="decimal"

@@ -582,7 +582,7 @@ export default function TokenDetail() {
           <div style={{ width: 60 }} />
         </div>
         <div className="empty-state">
-          <div className="empty-state-icon"><ArchIcon size={32} color="#7b68ee" /></div>
+          <div className="empty-state-icon"><ArchIcon size={32} color="var(--color-usd)" /></div>
           <div>{error || "Token not found"}</div>
         </div>
       </>

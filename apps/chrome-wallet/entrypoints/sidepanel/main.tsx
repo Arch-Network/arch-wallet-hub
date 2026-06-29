@@ -5,6 +5,12 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "../popup/App";
 import "../../src/styles/global.css";
+import { applySystemThemeImmediately, bootstrapTheme } from "../../src/utils/theme";
+
+// Paint the OS theme before first render (no flash for "system" users),
+// then refine from the stored Light/Dark/System preference.
+applySystemThemeImmediately();
+void bootstrapTheme();
 
 console.debug("[arch-wallet] sidepanel boot");
 

@@ -768,7 +768,7 @@ export default function Dashboard() {
                     {hiddenCount > 0 && (
                       <div className="token-more-row" onClick={() => navigate("/tokens")}>
                         <div className="asset-icon apl">
-                          <ArchIcon size={24} color="#7b68ee" />
+                          <ArchIcon size={24} color="var(--color-usd)" />
                         </div>
                         <div className="token-more-label">
                           + {hiddenCount} more token{hiddenCount !== 1 ? "s" : ""}

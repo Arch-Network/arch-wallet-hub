@@ -86,7 +86,7 @@ export default function Receive() {
           onClick={() => setTab("arch")}
         >
           <span className="receive-segment-icon" aria-hidden>
-            <ArchIcon size={12} color={tab === "arch" ? "#c19a5b" : "#777"} />
+            <ArchIcon size={12} color={tab === "arch" ? "var(--color-primary)" : "var(--text-muted)"} />
           </span>
           <span>Arch</span>
         </button>

@@ -509,7 +509,7 @@ export default function History() {
         </button>
         <button className={`tab ${tab === "arch" ? "active" : ""}`} onClick={() => setTab("arch")}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <ArchIcon size={12} color={tab === "arch" ? "#c19a5b" : "#888"} /> Arch
+            <ArchIcon size={12} color={tab === "arch" ? "var(--color-primary)" : "var(--text-muted)"} /> Arch
           </span>
         </button>
         <button className={`tab ${tab === "btc" ? "active" : ""}`} onClick={() => setTab("btc")}>

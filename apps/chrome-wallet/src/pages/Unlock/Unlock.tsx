@@ -54,7 +54,8 @@ export default function Unlock({ onUnlock }: UnlockProps) {
   return (
     <div className="onboarding">
       <div className="onboarding-logo">
-        <img src="/arch-logo.svg" alt="Arch" style={{ width: 64, height: 64 }} />
+        <img src="/arch-mark-orange.svg" alt="Arch" className="brand-swap-light" style={{ width: 64, height: 64 }} />
+        <img src="/arch-mark-white.svg" alt="Arch" className="brand-swap-dark" style={{ width: 64, height: 64 }} />
       </div>
       <h1 className="onboarding-title">Welcome back</h1>
       <p className="onboarding-sub">Enter your password to unlock the wallet.</p>
