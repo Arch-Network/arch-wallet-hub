@@ -264,6 +264,14 @@ export class WalletHubStack extends cdk.Stack {
         DB_PORT: "5432",
         DB_NAME: "wallet_hub",
         DB_USER: "wallet_hub",
+        // Enforce TLS to RDS. The app assembles its connection string from
+        // the DB_* vars and only enables `pg` SSL when sslmode is
+        // require/verify (see services/wallet-hub-api/src/plugins/db.ts).
+        // The app schema already defaults this to "require"; we set it
+        // explicitly so TLS enforcement is visible in the task def and
+        // resilient to any future change of that default. RDS also
+        // enforces it server-side (rds.force_ssl=1).
+        DB_SSLMODE: "require",
         DEPLOY_STAMP: new Date().toISOString(),
       },
       secrets: {
@@ -296,10 +304,13 @@ export class WalletHubStack extends cdk.Stack {
           appSecrets,
           "INDEXER_API_KEY"
         ),
-        INTERNAL_API_KEY: ecs.Secret.fromSecretsManager(
-          appSecrets,
-          "INTERNAL_API_KEY"
-        ),
+        // NOTE: INTERNAL_API_KEY is intentionally NOT injected into the API
+        // container. It is not read anywhere in services/wallet-hub-api/src;
+        // the API authenticates inbound X-Api-Key against DB-backed per-app
+        // keys (plugins/appAuth.ts), not its own env value. The live task
+        // def (:16) also omits it, so dropping it here reconciles code with
+        // live. The frontend container below DOES keep INTERNAL_API_KEY: its
+        // nginx proxy forwards it as X-Api-Key to call the API as an app.
       },
       portMappings: [{ containerPort: 3005, protocol: ecs.Protocol.TCP }],
       healthCheck: {
