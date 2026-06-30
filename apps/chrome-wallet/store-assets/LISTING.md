@@ -32,7 +32,7 @@ KEY FEATURES
 
 • Testnet Ready — Built-in testnet4 support with one-click ARCH faucet airdrop for developers.
 
-• Open Source — Fully open-source at https://github.com/hoffmabc/arch-wallet-hub
+• Open Source — Fully open-source at https://github.com/Arch-Network/arch-wallet-hub
 
 SUPPORTED NETWORKS
 
@@ -55,18 +55,25 @@ English
 
 ## Privacy Policy URL
 
-https://github.com/hoffmabc/arch-wallet-hub/blob/main/PRIVACY_POLICY.md
+https://github.com/Arch-Network/arch-wallet-hub/blob/main/PRIVACY_POLICY.md
 
 ## Single Purpose Description
 
 Arch Wallet serves a single purpose: it is a cryptocurrency wallet that lets users manage Bitcoin and Arch Network assets and connect to decentralized applications. The extension requires host_permissions on all URLs because it injects a JavaScript provider object (window.arch) into web pages so that Arch-compatible dApps can communicate with the wallet. This is the standard pattern used by all major browser wallet extensions (MetaMask, Phantom, Keplr, etc.). No user browsing data is collected or transmitted.
 
-## Screenshots Needed
+## Screenshots & Store Icon
 
-Capture at 1280x800 (or 640x400):
+These assets reflect the v0.7.0 design-system rebrand. Upload the screenshots and store icon manually via the Chrome Web Store developer dashboard.
 
-1. screenshot-dashboard.png — Dashboard showing BTC + ARCH balances and recent activity
-2. screenshot-send.png — Send screen with address input and amount
-3. screenshot-receive.png — Receive screen with QR code and addresses
-4. screenshot-history.png — Transaction history with BTC and Arch transactions
-5. screenshot-connect.png — dApp connection approval prompt (if available)
+Screenshots (1280x800):
+
+1. screenshot-home-light.png — Home dashboard in light theme with BTC + ARCH balances and quick actions
+2. screenshot-home-dark.png — Home dashboard in dark theme, showing the same view in the alternate theme
+3. screenshot-send-light.png — Send screen with address input, amount, and network fee
+4. screenshot-activity-dark.png — Activity screen with recent transaction history
+
+Store icon (128x128):
+
+- store-icon-128.png — Rebranded store icon
+
+> Note: The screenshots above are stylized promo mockups of the v0.7.0 design. Real-capture screenshots from the built extension are planned as a follow-up.
