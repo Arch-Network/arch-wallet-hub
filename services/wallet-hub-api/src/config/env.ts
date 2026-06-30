@@ -32,6 +32,18 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // Master switch for the global + per-route rate limiter (see
+  // plugins/rateLimit.ts). Defaults to true so existing behavior is
+  // preserved. When false, the @fastify/rate-limit plugin is NOT
+  // registered at all, which also makes every route-level
+  // `config.rateLimit` override inert (those only apply when the global
+  // plugin is registered). Fully reversible: flip back to true (or unset)
+  // to restore throttling with no code change.
+  RATE_LIMIT_ENABLED: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+
   // Phase 2b of the session-auth rollout (docs/security/session-auth-rollout.md).
   // Comma-separated list of route keys (see plugins/sessionAuth.ts) on which
   // to ENFORCE a per-user session token + bind the body/query externalUserId

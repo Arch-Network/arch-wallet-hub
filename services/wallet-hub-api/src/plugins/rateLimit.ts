@@ -24,6 +24,16 @@ function keyForRequest(req: FastifyRequest): string {
 }
 
 const rateLimitPlugin: FastifyPluginAsync = async (server) => {
+  // Master switch. When disabled we skip registering @fastify/rate-limit
+  // entirely; because route-level `config.rateLimit` overrides only take
+  // effect when the global plugin is registered, this also makes every
+  // per-route limit inert. Fully reversible via RATE_LIMIT_ENABLED=true.
+  if (!server.config.RATE_LIMIT_ENABLED) {
+    server.log.warn("Rate limiting is DISABLED (RATE_LIMIT_ENABLED=false)");
+    return;
+  }
+  server.log.info("Rate limiting is enabled (300/min/key global, per-route overrides apply)");
+
   await server.register(rateLimit, {
     global: true,
     max: 300, // requests per window per key
