@@ -173,6 +173,41 @@ export async function listTurnkeyResourcesForUserForApp(
   return res.rows;
 }
 
+/**
+ * Find the earliest email-auth wallet registered to `email` within `appId`,
+ * across every user that shares that recovery email. Backs the get-or-create
+ * behaviour of POST /turnkey/email-wallets so one email maps to one wallet:
+ * without it, each create mints a fresh sub-org and repeated email logins
+ * (including ones triggered by a rate-limited /init returning an empty
+ * candidate list) accumulate duplicate wallets under the same identity.
+ *
+ * Only addressable rows qualify — a default address and public key are
+ * required so the caller can return a usable wallet without re-deriving.
+ */
+export async function findEmailWalletByRecoveryEmail(
+  client: PoolClient,
+  params: { appId: string; email: string }
+): Promise<TurnkeyResourceRow | null> {
+  const normalised = params.email.trim().toLowerCase();
+  if (!normalised) return null;
+  const res = await client.query<TurnkeyResourceRow>(
+    `
+      SELECT r.*
+      FROM turnkey_resources r
+      JOIN users u ON u.id = r.user_id
+      WHERE r.app_id = $1
+        AND lower(u.recovery_email) = $2
+        AND r.auth_method = 'email'
+        AND r.default_address IS NOT NULL
+        AND r.default_public_key_hex IS NOT NULL
+      ORDER BY r.created_at ASC
+      LIMIT 1
+    `,
+    [params.appId, normalised]
+  );
+  return res.rows[0] ?? null;
+}
+
 export type InsertAuditLogParams = {
   appId: string;
   requestId: string | null;
