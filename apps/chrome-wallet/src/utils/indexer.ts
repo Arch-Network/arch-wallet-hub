@@ -167,6 +167,29 @@ export interface BtcAddressRuneTransactionsResponse {
 }
 
 /**
+ * Rune metadata from `GET /bitcoin/runes/:rune`. Supplies are decimal
+ * strings (u128 range); apply `divisibility` to render human amounts.
+ * `mints_remaining` may be null/absent for unlimited or terms-free runes.
+ */
+export interface BtcRuneMetadata {
+  rune_id: string;
+  spaced_name: string;
+  name?: string;
+  number?: number;
+  divisibility: number;
+  symbol?: string;
+  etching_txid?: string;
+  etching_height?: number;
+  premine?: string;
+  max_supply?: string;
+  minted?: string;
+  burned?: string;
+  circulating?: string;
+  mints_remaining?: string | null;
+  [k: string]: unknown;
+}
+
+/**
  * Per-inscription summary as returned by the per-address list.
  * Has the full set of fields needed to render a gallery thumbnail
  * (content_type, content_length, satpoint, id) without a second
@@ -449,6 +472,10 @@ export class ArchIndexerClient {
     return this.getJson(
       `/bitcoin/address/${encodeURIComponent(btcAddress)}/rune-transactions${suffix}`
     );
+  }
+
+  getBtcRune(rune: string): Promise<BtcRuneMetadata> {
+    return this.getJson(`/bitcoin/runes/${encodeURIComponent(rune)}`);
   }
 
   getBtcAddressInscriptions(
