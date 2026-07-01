@@ -8,6 +8,7 @@ import { auditEvent } from "../audit/audit.js";
 import { computeDisplayHash } from "../signingRequests/displayHash.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
 import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
+import { buildSwapAction, rebuildSwapInstructions, buildAddLiquidityAction, rebuildAddLiquidityInstructions } from "../arch/ammInstructions.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
@@ -18,6 +19,15 @@ import { resolveArchAccountAddress, archAccountFromInternalKey } from "../arch/a
 import { address as btcAddress } from "bitcoinjs-lib";
 import { indexerForRequest, archRpcUrlForRequest } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
+
+// The user's own input outpoint for an AMM swap. `txid` is 32-byte internal
+// byte-order hex. Amounts are intentionally absent: the on-chain program
+// verifies the input's sat/rune value itself, so the caller cannot declare
+// (or lie about) them.
+const AmmOutpointSchema = Type.Object({
+  txid: Type.String({ minLength: 64, maxLength: 64 }),
+  vout: Type.Integer({ minimum: 0 })
+});
 
 const CreateSigningRequestBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
@@ -59,6 +69,36 @@ const CreateSigningRequestBody = Type.Object({
       type: Type.Literal("arch.sign_message"),
       // Raw dApp-provided message bytes, hex-encoded. Empty string not allowed.
       messageHex: Type.String({ minLength: 2, pattern: "^[0-9a-fA-F]+$" })
+    }),
+    // Native-settlement AMM (arch-bitcoin-defi): user authorizes a swap on Arch;
+    // the Bitcoin settlement is co-signed by the validator FROST set when the
+    // program runs. Same BIP-322 signing path as arch.transfer/arch.anchor.
+    Type.Object({
+      type: Type.Literal("swap.rune_native"),
+      programId: Type.String({ minLength: 1 }),
+      poolAddress: Type.String({ minLength: 1 }),
+      runeId: Type.Object({ block: Type.String({ minLength: 1 }), tx: Type.Integer({ minimum: 0 }) }),
+      baseToQuote: Type.Boolean(),
+      amountIn: Type.String({ minLength: 1 }),
+      minOut: Type.String({ minLength: 1 }),
+      nonce: Type.String({ minLength: 1 }),
+      // Reserve inputs are no longer caller-supplied: the program selects which
+      // of its OWN tracked reserve UTXOs to spend. The caller only names its own
+      // input outpoint (amounts verified on-chain).
+      userInput: AmmOutpointSchema,
+      recipientScriptHex: Type.String({ minLength: 2, pattern: "^[0-9a-fA-F]+$" }),
+      feeRateSatVb: Type.String({ minLength: 1 })
+    }),
+    Type.Object({
+      type: Type.Literal("pool.add_liquidity"),
+      programId: Type.String({ minLength: 1 }),
+      poolAddress: Type.String({ minLength: 1 }),
+      positionAddress: Type.String({ minLength: 1 }),
+      baseTxid: Type.String({ minLength: 64, maxLength: 64 }),
+      baseVout: Type.Integer({ minimum: 0 }),
+      quoteTxid: Type.String({ minLength: 64, maxLength: 64 }),
+      quoteVout: Type.Integer({ minimum: 0 }),
+      minConfirmations: Type.Integer({ minimum: 0 })
     })
   ])
 });
@@ -751,7 +791,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
       const archRpc = createArchRpcClient(archRpcUrl);
 
-      let actionType: "arch.transfer" | "arch.token_transfer" | "arch.anchor";
+      let actionType: "arch.transfer" | "arch.token_transfer" | "arch.anchor" | "swap.rune_native" | "pool.add_liquidity";
       let instructions: Instruction[];
       let display: any;
 
@@ -924,6 +964,31 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             btcAccountAddress
           },
           utxo: { txid: body.action.btcTxid, vout: body.action.vout }
+        };
+      } else if (body.action.type === "swap.rune_native") {
+        actionType = "swap.rune_native";
+        const built = buildSwapAction(body.action, payerPubkey);
+        instructions = built.instructions;
+        display = {
+          ...built.display,
+          // signer fields the submit handler looks up via display.account.*
+          account: {
+            taprootAddress: signerTaprootAddress,
+            archAccountAddress: signerArchAccountAddress,
+            xOnlyPubkeyHex: signerInternalXOnlyPubkeyHex
+          }
+        };
+      } else if (body.action.type === "pool.add_liquidity") {
+        actionType = "pool.add_liquidity";
+        const built = buildAddLiquidityAction(body.action, payerPubkey);
+        instructions = built.instructions;
+        display = {
+          ...built.display,
+          account: {
+            taprootAddress: signerTaprootAddress,
+            archAccountAddress: signerArchAccountAddress,
+            xOnlyPubkeyHex: signerInternalXOnlyPubkeyHex
+          }
         };
       } else {
         return reply.badRequest("Unsupported action type");
@@ -1147,6 +1212,10 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const vout = Number(display?.utxo?.vout);
         if (!txid || Number.isNaN(vout)) return reply.badRequest("Signing request display missing anchor fields");
         instructions = [SystemInstructionUtil.anchor(payerPubkey, txid, vout)];
+      } else if (row.action_type === "swap.rune_native") {
+        instructions = rebuildSwapInstructions(display, payerPubkey);
+      } else if (row.action_type === "pool.add_liquidity") {
+        instructions = rebuildAddLiquidityInstructions(display, payerPubkey);
       } else if (row.action_type === "arch.sign_message") {
         // sign_message produces a standalone BIP-322 signature; no Arch instructions.
         instructions = [];
