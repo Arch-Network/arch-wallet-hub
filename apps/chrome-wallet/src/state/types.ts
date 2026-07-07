@@ -102,6 +102,14 @@ export interface WalletAccount {
   externalProvider?: ExternalWalletProvider;
   linkedWalletId?: string;
   verificationScheme?: string;
+  /**
+   * Previous (wrong) Arch address preserved when the canonical-identity
+   * migration rewrote `archAddress`. External wallets linked before the
+   * Unisat derivation fix stored the BIP-341 TWEAKED taproot output key
+   * instead of the untweaked internal key. Kept for support/recovery UX;
+   * never used for signing or display.
+   */
+  legacyArchAddress?: string;
   /** WebAuthn credential id registered with Turnkey for this passkey wallet. */
   passkeyCredentialId?: string;
   /** Email captured at sign-up for recovery; never sent to dapps. */

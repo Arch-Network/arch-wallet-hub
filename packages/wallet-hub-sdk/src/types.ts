@@ -106,6 +106,15 @@ export type CreateChallengeRequest = {
   walletProvider: string;
   address: string; // taproot
   network?: string;
+  /**
+   * Wallet's public key (compressed 33-byte or x-only 32-byte hex, e.g. from
+   * Unisat's `getPublicKey()`). Strongly recommended: the canonical Arch
+   * identity is the UNTWEAKED internal x-only key, which the Hub can only
+   * derive when this is supplied (it cannot be recovered from the taproot
+   * address). Omitting it falls back to the legacy tweaked derivation, which
+   * registers a MISMATCHED Arch account.
+   */
+  publicKeyHex?: string;
 };
 
 export type CreateChallengeResponse = {

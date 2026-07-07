@@ -14,7 +14,7 @@ import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, Signa
 import { Buffer } from "node:buffer";
 import bs58 from "bs58";
 import { secp256k1, schnorr } from "@noble/curves/secp256k1";
-import { resolveArchAccountAddress, archAccountFromInternalKey } from "../arch/address.js";
+import { resolveArchAccountAddress, archAccountFromInternalKey, archAccountFromWalletPublicKey } from "../arch/address.js";
 import { address as btcAddress } from "bitcoinjs-lib";
 import { indexerForRequest, archRpcUrlForRequest } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
@@ -526,14 +526,39 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       let turnkeyResourceId: string | null = null;
       if (body.signer.kind === "external") {
         signerTaprootAddress = body.signer.taprootAddress as string;
-        // Always derive Arch account from the taproot address (tweaked output key)
-        // to stay consistent with the dashboard, airdrop, and indexer endpoints.
-        const resolved = resolveArchAccountAddress(signerTaprootAddress);
-        if (resolved.kind !== "taproot") {
-          return reply.badRequest("External signer must provide a Taproot (p2tr) address");
+        // Canonical Arch identity is the UNTWEAKED internal x-only key from the
+        // wallet's public key (verified against the address via the BIP-341
+        // tweak check). Decoding the taproot address yields the TWEAKED output
+        // key — the WRONG Arch account — so that path is only a legacy
+        // fallback for clients that do not send publicKeyHex.
+        const suppliedPublicKeyHex =
+          typeof body.signer.publicKeyHex === "string" && body.signer.publicKeyHex.length >= 64
+            ? String(body.signer.publicKeyHex).toLowerCase()
+            : null;
+        const canonical = suppliedPublicKeyHex
+          ? archAccountFromWalletPublicKey({
+              publicKeyHex: suppliedPublicKeyHex,
+              taprootAddress: signerTaprootAddress
+            })
+          : null;
+        if (canonical?.ok) {
+          signerArchAccountAddress = canonical.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = canonical.internalXOnlyHex;
+        } else {
+          if (canonical && !canonical.ok) {
+            return reply.badRequest(`Invalid signer publicKeyHex: ${canonical.reason}`);
+          }
+          const resolved = resolveArchAccountAddress(signerTaprootAddress);
+          if (resolved.kind !== "taproot") {
+            return reply.badRequest("External signer must provide a Taproot (p2tr) address");
+          }
+          signerArchAccountAddress = resolved.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
+          server.log.warn(
+            { signerTaprootAddress },
+            "External signer without publicKeyHex: using legacy (tweaked) Arch identity derivation"
+          );
         }
-        signerArchAccountAddress = resolved.archAccountAddress;
-        signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
       } else {
         turnkeyResourceId = body.signer.resourceId as string;
         const resource = await withDbTransaction(db, (client) =>
