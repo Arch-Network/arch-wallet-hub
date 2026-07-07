@@ -569,6 +569,10 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
           walletProvider: connected.provider,
           address: connected.address,
           network: hubNetwork,
+          // Canonical Arch identity is the UNTWEAKED internal pubkey; the Hub
+          // can only derive it when we pass the wallet's public key (the
+          // taproot address alone yields the tweaked output key).
+          publicKeyHex: connected.publicKeyHex || undefined,
         }),
         15_000,
         "Creating wallet-link challenge",
@@ -609,9 +613,12 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         label: walletName.trim() || `${adapter.label} Wallet`,
         btcAddress: verified.address,
         publicKeyHex: connected.publicKeyHex,
+        // Prefer the locally derived CANONICAL identity (untweaked internal
+        // key). Older Hubs echo the address-decoded (tweaked) key here, which
+        // points at the wrong Arch account.
         archAddress:
-          verified.archAccountAddress ||
-          (connected.publicKeyHex ? deriveArchAccountAddress(connected.publicKeyHex) : undefined),
+          (connected.publicKeyHex ? deriveArchAccountAddress(connected.publicKeyHex) : undefined) ||
+          verified.archAccountAddress,
         kind: "external",
         turnkeyResourceId: "",
         organizationId: "",

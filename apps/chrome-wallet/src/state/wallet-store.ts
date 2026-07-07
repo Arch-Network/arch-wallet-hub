@@ -211,7 +211,7 @@ export function migrateApiConfig(state: any): boolean {
  * both from getState (for legacy installs) and from the seal/unlock
  * paths.
  */
-function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
+export function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
   const state = { ...DEFAULT_STATE, ...stateInput };
   let migrated = false;
 
@@ -287,6 +287,21 @@ function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
     if (!acct.archAddress && acct.publicKeyHex && acct.publicKeyHex.length >= 64) {
       acct.archAddress = deriveArchAccountAddress(acct.publicKeyHex);
       migrated = true;
+    }
+    // Canonical Arch identity fix (Unisat/external derivation bug): external
+    // accounts linked before the fix stored the Hub-echoed archAddress, which
+    // was the BIP-341 TWEAKED taproot output key — the wrong Arch account.
+    // The canonical identity is deterministically derivable from the wallet's
+    // public key, so recompute and repair. The old value is preserved in
+    // legacyArchAddress (first value wins) rather than discarded. Idempotent:
+    // once archAddress matches the canonical derivation this is a no-op.
+    if (acct.kind === "external" && acct.publicKeyHex && acct.publicKeyHex.length >= 64) {
+      const canonicalArchAddress = deriveArchAccountAddress(acct.publicKeyHex);
+      if (acct.archAddress && acct.archAddress !== canonicalArchAddress) {
+        if (!acct.legacyArchAddress) acct.legacyArchAddress = acct.archAddress;
+        acct.archAddress = canonicalArchAddress;
+        migrated = true;
+      }
     }
   }
 
