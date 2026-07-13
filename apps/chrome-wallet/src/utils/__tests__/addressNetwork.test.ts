@@ -35,4 +35,23 @@ describe("addressNetwork", () => {
     // unchanged, so accept either a successful tb1p swap or no-op.
     expect(swapped.startsWith("tb1p") || swapped === mainnet).toBe(true);
   });
+
+  // Accounts are stored in one fixed encoding; the dapp-facing CONNECT /
+  // GET_ACCOUNT responses re-encode per the active network. This is the exact
+  // direction that bug surfaced in: a stored testnet address on a mainnet
+  // wallet must reach the dapp as bc1p… (else network-guarded dapps reject it).
+  it("maps a stored testnet taproot to mainnet and back losslessly", () => {
+    // Real BIP-86 first-receive taproot vector (valid bech32m checksum).
+    const mainnet = "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr";
+    const storedTestnet = reEncodeTaprootAddress(mainnet, "testnet4");
+    expect(storedTestnet.startsWith("tb1p")).toBe(true);
+
+    // Wallet switched to mainnet → dapp must receive the bc1p form.
+    const forMainnet = reEncodeTaprootAddress(storedTestnet, "mainnet");
+    expect(forMainnet).toBe(mainnet);
+
+    // Same-network request is a no-op (no double-encoding drift).
+    expect(reEncodeTaprootAddress(storedTestnet, "testnet4")).toBe(storedTestnet);
+    expect(reEncodeTaprootAddress(mainnet, "mainnet")).toBe(mainnet);
+  });
 });

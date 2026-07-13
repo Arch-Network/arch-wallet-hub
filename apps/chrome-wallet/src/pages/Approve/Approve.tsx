@@ -15,6 +15,7 @@ import { useParams } from "react-router-dom";
 import { computeDisplayHash } from "@arch-network/wallet-hub-sdk";
 import { useWallet } from "../../hooks/useWallet";
 import { walletStore } from "../../state/wallet-store";
+import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { getClient, getExternalUserId, formatWalletHubError } from "../../utils/sdk";
 import { truncateAddress, formatArch } from "../../utils/format";
 import { fetchArchAccountBalance, type ArchBalanceSnapshot } from "../../utils/arch-rpc";
@@ -864,6 +865,16 @@ export default function Approve() {
       }
 
       if (request.type === "CONNECT") {
+        // Hand the dapp the address encoded for the active network. The
+        // stored `btcAddress` is a single fixed encoding, so a mainnet
+        // wallet would otherwise deliver a testnet-form address (and vice
+        // versa) — which network-guarded dapps reject even though the
+        // wallet is on the right network. archAddress/publicKey are
+        // network-independent. Mirrors the display screens' re-encoding.
+        const connectAddress = reEncodeTaprootAddress(
+          selectedAccount.btcAddress,
+          state.network,
+        );
         await chrome.runtime.sendMessage({
           type: "APPROVE_CONNECT",
           requestId,
@@ -879,13 +890,13 @@ export default function Approve() {
           // user is forced through the approval popup on every refresh.
           accountId: selectedAccount.id,
           account: {
-            address: selectedAccount.btcAddress,
+            address: connectAddress,
             publicKey: selectedAccount.publicKeyHex,
             archAddress: selectedAccount.archAddress,
           },
         });
         sendApproved({
-          address: selectedAccount.btcAddress,
+          address: connectAddress,
           publicKey: selectedAccount.publicKeyHex,
           archAddress: selectedAccount.archAddress,
         });

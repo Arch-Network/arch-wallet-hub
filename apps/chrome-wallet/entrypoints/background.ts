@@ -8,6 +8,7 @@ import { keystore } from "../src/crypto/keystore";
 import type { PendingRequest } from "../src/messaging/types";
 import type { OpenAsMode } from "../src/state/types";
 import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
+import { reEncodeTaprootAddress } from "../src/utils/addressNetwork";
 import {
   applyDiagnosticsRuntime,
   installGlobalErrorHandlers,
@@ -612,11 +613,17 @@ export default defineBackground(() => {
         }
         const account = await walletStore.getAccountForOrigin(origin);
         if (!account) return { id: msg.id, success: false, error: "No active account" };
+        // Return the address encoded for the active network. The stored
+        // `btcAddress` is a single fixed encoding; without this a mainnet
+        // wallet hands the dapp a testnet-form address (and vice versa),
+        // which network-guarded dapps reject even though the wallet is on
+        // the right network. Mirrors what every display screen already does.
+        const { network } = await walletStore.getState();
         return {
           id: msg.id,
           success: true,
           data: {
-            address: account.btcAddress,
+            address: reEncodeTaprootAddress(account.btcAddress, network),
             publicKey: account.publicKeyHex,
             archAddress: account.archAddress,
           },
@@ -631,11 +638,14 @@ export default defineBackground(() => {
         const connected = await walletStore.isSiteConnected(origin);
         if (connected) {
           const account = await walletStore.getAccountForOrigin(origin);
+          const { network } = await walletStore.getState();
           return {
             id: msg.id,
             success: true,
             data: {
-              address: account?.btcAddress,
+              address: account
+                ? reEncodeTaprootAddress(account.btcAddress, network)
+                : undefined,
               publicKey: account?.publicKeyHex,
               archAddress: account?.archAddress,
             },
