@@ -14,19 +14,19 @@ import type {
 const MAINNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
   BTC: {
     symbol: "BTC",
-    name: "Bitcoin",
+    name: "Arch Bitcoin",
     icon: "/btc.png",
     decimals: 8,
-    mint: "66db8bdfee04bb957ca1e4fdf6a7ff9b55d4ec9f6521d783acdce93bec66755f",
+    mint: "225b03d6f9e05fd834cd18906b019fb46372544b0eeb9f6f8b615472467d46b0",
     mintAuthority: "36ba400747066a8fd2dfa87c152037347532b3405a0f6d7f2fa32bdf7d7845e0",
     pythHistorySymbol: "Crypto.BTC/USD",
   },
   USDT: {
     symbol: "USDT",
-    name: "Tether",
+    name: "Arch USD",
     icon: "/usdt.png",
     decimals: 6,
-    mint: "7a52e0fbbc12e7cbf60cf608d394b5c005f61ff1d9c1df29321ea1e2b050e07e",
+    mint: "aec8ca1598d74bc27721536f1a88b5648740bc6a856546a0a47817ff7fe7437c",
     mintAuthority: "30cb47b0c98099ffd5f6d3011924cdff232169f6dcebf28d10ca57f473a4aec4",
     pythHistorySymbol: "Crypto.USDT/USD",
   },

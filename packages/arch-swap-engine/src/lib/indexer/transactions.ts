@@ -20,7 +20,7 @@ export async function fetchTransactionStatus(
 ): Promise<ProcessedTransaction | null> {
   return indexerRpc<ProcessedTransaction | null>(
     "get_processed_transaction",
-    [txid],
+    { tx_id: txid },
   );
 }
 

@@ -60,6 +60,14 @@ function toEngineNetworkId(network: NetworkId): EngineNetworkId {
   return network === "mainnet" ? "mainnet" : "testnet";
 }
 
+function indexerBaseUrlForNetwork(baseUrl: string, networkId: EngineNetworkId): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  if (/\/(?:mainnet|testnet)$/.test(trimmed)) {
+    return trimmed.replace(/\/(?:mainnet|testnet)$/, `/${networkId}`);
+  }
+  return `${trimmed}/${networkId}`;
+}
+
 /**
  * Whether the configured engine for this wallet network has a faucet
  * endpoint. Today: testnet only. Used by the UI to gate the
@@ -92,15 +100,16 @@ function buildPriceProvider(): EnginePriceProvider {
 }
 
 export function buildEngineConfig(state: AppState): EngineConfig {
-  const indexerBaseUrl = state.indexerBaseUrl || INDEXER_BASE_URL;
-  const indexerApiKey = state.indexerApiKey || DEFAULT_INDEXER_API_KEY;
   const networkId = toEngineNetworkId(state.network);
+  const indexerBaseUrl = indexerBaseUrlForNetwork(
+    state.indexerBaseUrl || INDEXER_BASE_URL,
+    networkId,
+  );
+  const indexerApiKey = state.indexerApiKey || DEFAULT_INDEXER_API_KEY;
   return {
     networkId,
     transport: {
-      // The engine appends `/{network}/...` itself; our `INDEXER_BASE_URL`
-      // already terminates at `/api/v1`, which is the prefix the engine
-      // expects.
+      // The indexer exposes separate RPC routes per network.
       indexerBaseUrl,
       indexerApiKey: indexerApiKey || undefined,
       propAmmQuoteUrl: PROPAMM_QUOTE_URL,

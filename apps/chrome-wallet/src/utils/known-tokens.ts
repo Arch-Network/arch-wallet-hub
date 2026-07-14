@@ -78,9 +78,14 @@ const DISPLAY_OVERRIDES: Record<string, { symbol: string; name: string }> = {
     name: "Arch Bitcoin",
   },
   // Mainnet wrapped BTC
-  "66db8bdfee04bb957ca1e4fdf6a7ff9b55d4ec9f6521d783acdce93bec66755f": {
+  "225b03d6f9e05fd834cd18906b019fb46372544b0eeb9f6f8b615472467d46b0": {
     symbol: "aBTC",
     name: "Arch Bitcoin",
+  },
+  // Mainnet Arch USD
+  "aec8ca1598d74bc27721536f1a88b5648740bc6a856546a0a47817ff7fe7437c": {
+    symbol: "aUSD",
+    name: "Arch USD",
   },
 };
 
