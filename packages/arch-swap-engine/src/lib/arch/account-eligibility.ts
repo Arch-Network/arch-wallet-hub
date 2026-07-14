@@ -1,8 +1,7 @@
 import { isExempt } from "@saturnbtcio/arch-sdk";
 
 import { fetchAccountInfo } from "@/lib/indexer/accounts";
-
-const SYSTEM_PROGRAM_ID = new Uint8Array(32);
+import { SYSTEM_PROGRAM_ID } from "@/lib/arch/program-ids";
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;

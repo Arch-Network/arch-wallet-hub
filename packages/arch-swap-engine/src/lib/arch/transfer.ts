@@ -3,6 +3,7 @@ import { PubkeyUtil } from "@saturnbtcio/arch-sdk";
 import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  SYSTEM_PROGRAM_ID,
 } from "@/lib/arch/program-ids";
 import { fetchAccountInfo } from "@/lib/indexer/accounts";
 import { hexToBytes } from "@/lib/arch/hex";
@@ -13,8 +14,6 @@ import {
 } from "@/lib/arch/tx-builder";
 import type { RuntimeTransaction } from "@/lib/arch/types";
 import type { NetworkConfig, TokenSymbol } from "@/lib/network/config";
-
-const SYSTEM_PROGRAM_ID = new Uint8Array(32);
 
 function resolveMint(config: NetworkConfig, symbol: string): string | undefined {
   return config.tokens[symbol as TokenSymbol]?.mint;
