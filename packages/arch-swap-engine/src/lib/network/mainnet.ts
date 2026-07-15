@@ -24,7 +24,7 @@ const MAINNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
   USDT: {
     symbol: "USDT",
     name: "Arch USD",
-    icon: "/usdt.png",
+    icon: "",
     decimals: 6,
     mint: "aec8ca1598d74bc27721536f1a88b5648740bc6a856546a0a47817ff7fe7437c",
     mintAuthority: "30cb47b0c98099ffd5f6d3011924cdff232169f6dcebf28d10ca57f473a4aec4",

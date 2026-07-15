@@ -4453,6 +4453,12 @@ a {
   object-fit: cover;
 }
 
+.swap-token-chip .asset-icon {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+
 /* Flip direction button. Pulled into the negative space so the two
  * cards visually anchor against it. */
 .swap-direction-row {
