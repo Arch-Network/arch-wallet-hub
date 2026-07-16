@@ -37,9 +37,9 @@ export const MAINNET_CONFIG: NetworkConfig = {
   tokens: MAINNET_TOKENS,
   tradingPair: { base: "BTC", quote: "USDT" },
   clammProgramId:
-    "5c748cd0eb8a1a4aa5793f744f3ba00b814a7bdbb3ec568cc9cbb985480fbe98",
+    "96feb7352aa992398e76a99d8e1801057eac114ee8458d3668847287353bcfb7",
   clammPoolAddress:
-    "5f903ac05d8955be9ecedfa3c7b377b3040be0b25c1715f7ef6d049042c5a202",
+    "7caf3541b5d2d9bf06453480acbed988c1c9ebe9ff0edf6deb2f17e0e2e9cb32",
   lendingProgramId: "TODO_MAINNET_LENDING_PROGRAM_ID",
   oracleProgramId: "TODO_MAINNET_ORACLE_PROGRAM_ID",
   oracleSignerPubkey: "TODO_MAINNET_ORACLE_SIGNER",
@@ -60,12 +60,12 @@ export const MAINNET_CONFIG: NetworkConfig = {
   indexerApiBaseUrl: "https://explorer.arch.network/api/v1/mainnet",
   propAmmUpstreamUrl: "http://64.34.82.201:3001",
   propAmm: {
-    programId: "b15585263fa7ccdc99a912e3549be984b939e21ae42ba13cc644fb18b57e2928",
-    configPubkey: "c0c1c7809def76810b9ec7758e300276213477e9c8292aac753c4bcf7a83e5bd",
-    quoteSignerPubkey: "460b20ee0851ecd95f464c58a730c9d936262fd46ef926de82a319de2ca7bdd1",
+    programId: "d31a682e813c641f40fefe1c906c052063fcff6d628556e01344fd4660636aec",
+    configPubkey: "f1651efa9f9ecbd6cda417854e2acd976fd0469268dff3a07c39e07e643bf3a3",
+    quoteSignerPubkey: "8094dceb67a73510db62b9d519fff4ed59a7493695dc3458a6204c0b7ec33e97",
     vaults: {
-      BTC:  "3346c57b16c98065b8f8bae0cb13e11030d0faa0d6be2fb622a5f72a7d1582d3",
-      USDT: "aea079f7d8c7ae9ef32cbd4b3d3b814e37f24919fa68fb3304aa57f08f110451",
+      BTC:  "9de22416e3343655461f0da1c3a9b6eff3853882337d608ee106967fc9cfb7bf",
+      USDT: "f061a743352bfd12a3351b1b787d79456c9876c4e61cb04df16b5e18a9302b37",
     },
   },
 

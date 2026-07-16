@@ -72,7 +72,7 @@ type PickerState = { direction: Direction } | null;
 
 function priceForSymbol(symbol: TokenSymbol, btcPrice: number): number {
   if (symbol === "BTC") return btcPrice;
-  if (symbol === "USDC") return 1;
+  if (symbol === "USDC" || symbol === "USDT") return 1;
   return 0;
 }
 
