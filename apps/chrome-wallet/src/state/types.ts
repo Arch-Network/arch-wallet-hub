@@ -207,7 +207,7 @@ export interface AppState {
   // Persistent labeled contacts.
   contacts: Contact[];
 
-  /** Idle minutes before the wallet auto-locks. Default 15. */
+  /** Idle minutes before the wallet auto-locks. Default 60 (matches Turnkey session ceiling). */
   autoLockMinutes: number;
 
   /** Opt-in error reporting (Sentry). Off by default. */
@@ -333,7 +333,7 @@ export const DEFAULT_STATE: AppState = {
   openAs: "popup",
   recentRecipients: [],
   contacts: [],
-  autoLockMinutes: 15,
+  autoLockMinutes: 60,
   sentryOptIn: false,
   debugMode: false,
 };

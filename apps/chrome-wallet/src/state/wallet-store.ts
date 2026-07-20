@@ -323,7 +323,7 @@ export function migrateState(stateInput: any): { state: AppState; migrated: bool
   }
 
   if (typeof state.autoLockMinutes !== "number" || state.autoLockMinutes <= 0) {
-    state.autoLockMinutes = 15;
+    state.autoLockMinutes = 60;
     migrated = true;
   }
 
@@ -646,7 +646,7 @@ export const walletStore = {
   sessionTtlSecondsFromState(state: AppState): number {
     const mins = Number.isFinite(state.autoLockMinutes)
       ? Math.max(1, Math.floor(state.autoLockMinutes))
-      : 15;
+      : 60;
     return mins * 60;
   },
 
