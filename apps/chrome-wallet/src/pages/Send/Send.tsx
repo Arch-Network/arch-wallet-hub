@@ -42,10 +42,21 @@ import {
   loadSendForm,
   saveSendForm,
 } from "../../state/send-form-session";
-import { isExternalAccount, isWatchAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
+import { buildSessionSigner, ensureHubSession } from "../../utils/hub-session";
+import {
+  EmailSessionNeededError,
+  ensureSigningSessionForAccount,
+} from "../../session/ensure-signing-session";
+import SessionBootstrapper from "../../session/SessionBootstrapper";
+import {
+  btcInputToUsd,
+  rawTokenAmountToInput,
+  usdInputToBtc,
+} from "../../utils/send-amounts";
 
 type AssetType = "btc" | "arch" | "apl";
 
@@ -160,6 +171,9 @@ export default function Send({ networkStatus }: SendProps) {
   const [signStatus, setSignStatus] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [txResult, setTxResult] = useState<{ txid: string; rawTxid: string } | null>(null);
+  const [otpAccount, setOtpAccount] = useState<WalletAccount | null>(null);
+  const [btcAmountMode, setBtcAmountMode] = useState<"btc" | "usd">("btc");
+  const [btcUsdAmount, setBtcUsdAmount] = useState("");
 
   const [btcConfirmed, setBtcConfirmed] = useState<number>(0);
   const [btcPending, setBtcPending] = useState<number>(0);
@@ -598,9 +612,20 @@ export default function Send({ networkStatus }: SendProps) {
         if (aplRawAmount > availableRaw) throw new Error("Insufficient token balance");
       }
 
+      // Money/signing routes require a per-user Wallet Hub session.
+      // Direct sends previously relied on the unlock-time best-effort
+      // mint, so this path could reach Review successfully and then
+      // fail with a missing-session 401. Prepare the signing session
+      // and await the Hub token immediately before the enforced calls.
+      await ensureSigningSessionForAccount(activeAccount);
+      const client = await getClient();
+      const externalUserId = await getExternalUserId();
+      client.setSessionSigner(
+        buildSessionSigner(activeAccount, externalUserId, state.network),
+      );
+      await ensureHubSession(activeAccount, state.network);
+
       const submitViaHub = async (): Promise<string> => {
-        const client = await getClient();
-        const externalUserId = await getExternalUserId();
         const action =
           asset === "apl" && selectedToken
             ? {
@@ -704,6 +729,11 @@ export default function Send({ networkStatus }: SendProps) {
 
       setStep(4);
     } catch (err: any) {
+      if (err instanceof EmailSessionNeededError) {
+        setError("");
+        setOtpAccount(err.account);
+        return;
+      }
       setError(formatWalletHubError(err, "Transaction failed"));
       void notifyTxFailed({
         title: asset === "apl" ? "Token transfer failed" : "ARCH transfer failed",
@@ -715,6 +745,11 @@ export default function Send({ networkStatus }: SendProps) {
     }
   }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, signWithExternalWallet, handleBtcSign, addRecentRecipient, state.network]);
 
+  const handleOtpReady = useCallback(() => {
+    setOtpAccount(null);
+    void handleSubmit();
+  }, [handleSubmit]);
+
   const resetFlow = useCallback(() => {
     setStep(1);
     setAsset(null);
@@ -724,6 +759,8 @@ export default function Send({ networkStatus }: SendProps) {
     setError("");
     setTxResult(null);
     setBtcPrepare(null);
+    setBtcAmountMode("btc");
+    setBtcUsdAmount("");
     // The form has been intentionally reset -- drop any parked
     // checkpoint so reopening the popup lands on the asset-picker
     // instead of restoring stale fields.
@@ -737,6 +774,18 @@ export default function Send({ networkStatus }: SendProps) {
   const btcExplorerBase = isTestnet
     ? "https://mempool.space/testnet4/tx/"
     : "https://mempool.space/tx/";
+
+  if (otpAccount) {
+    return (
+      <div className="send-form-shell">
+        <SessionBootstrapper
+          account={otpAccount}
+          onReady={handleOtpReady}
+          onCancel={() => setOtpAccount(null)}
+        />
+      </div>
+    );
+  }
 
   // Watch-only accounts cannot sign or broadcast. Refuse at the
   // page level so the user never gets a partially-filled form they
@@ -908,17 +957,56 @@ export default function Send({ networkStatus }: SendProps) {
           ? `${selectedToken.uiAmount} ${selectedToken.symbol || ""}`.trim()
           : "—";
     const showMax = (asset === "btc" && btcLoaded && btcSpendableSats > 0)
-      || (asset === "arch" && archBalance && Number(archBalance) > 0);
+      || (asset === "arch" && archBalance && Number(archBalance) > 0)
+      || (
+        asset === "apl"
+        && selectedToken !== null
+        && parseRawTokenAmount(selectedToken.rawAmount) > 0n
+      );
     const handleMax = () => {
       if (asset === "btc") {
-        setAmount((btcSpendableSats / 1e8).toFixed(8));
+        const maxBtc = (btcSpendableSats / 1e8).toFixed(8);
+        setAmount(maxBtc);
+        if (btcAmountMode === "usd") {
+          setBtcUsdAmount(btcInputToUsd(maxBtc, btcUsd));
+        }
       } else if (asset === "arch" && archBalance) {
         setAmount((Number(archBalance) / 1e9).toFixed(4));
+      } else if (asset === "apl" && selectedToken) {
+        setAmount(
+          rawTokenAmountToInput(selectedToken.rawAmount, selectedToken.decimals),
+        );
       }
     };
     const btcUsdLine = asset === "btc" && Number(amount) > 0
       ? btcUsdSubtitle(Math.round(Number(amount) * 1e8), btcUsd)
       : null;
+    const amountInputValue =
+      asset === "btc" && btcAmountMode === "usd" ? btcUsdAmount : amount;
+    const handleAmountChange = (value: string) => {
+      if (asset === "btc" && btcAmountMode === "usd") {
+        setBtcUsdAmount(value);
+        setAmount(usdInputToBtc(value, btcUsd));
+        return;
+      }
+      setAmount(value);
+    };
+    const toggleBtcAmountMode = () => {
+      if (btcAmountMode === "btc") {
+        setBtcUsdAmount(btcInputToUsd(amount, btcUsd));
+        setBtcAmountMode("usd");
+      } else {
+        setBtcAmountMode("btc");
+      }
+    };
+    const btcAmountHint =
+      asset !== "btc" || Number(amount) <= 0
+        ? null
+        : btcAmountMode === "usd"
+          ? `≈ ${amount} BTC`
+          : btcUsdLine
+            ? `≈ ${btcUsdLine}`
+            : null;
 
     // Recent recipients for the current asset / network / mint context.
     // The store keeps them MRU-sorted; we cap to 6 here to keep the chip
@@ -1055,21 +1143,50 @@ export default function Send({ networkStatus }: SendProps) {
           <div className="form-field-input form-field-input--amount">
             <input
               type="number"
-              step={asset === "btc" ? "0.00000001" : asset === "arch" ? "0.0001" : tokenInputStep(selectedToken?.decimals ?? 0)}
+              step={
+                asset === "btc" && btcAmountMode === "usd"
+                  ? "0.01"
+                  : asset === "btc"
+                    ? "0.00000001"
+                    : asset === "arch"
+                      ? "0.0001"
+                      : tokenInputStep(selectedToken?.decimals ?? 0)
+              }
               placeholder="0.00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              value={amountInputValue}
+              onChange={(e) => handleAmountChange(e.target.value)}
               inputMode="decimal"
             />
-            <span className="form-field-suffix">{meta.unit}</span>
+            <span className="form-field-suffix">
+              {asset === "btc" && btcAmountMode === "usd" ? "USD" : meta.unit}
+            </span>
+            {asset === "btc" && btcUsd !== null && (
+              <button
+                type="button"
+                className="form-field-action"
+                onClick={toggleBtcAmountMode}
+                aria-label={
+                  btcAmountMode === "btc"
+                    ? "Enter amount in US dollars"
+                    : "Enter amount in bitcoin"
+                }
+                title={
+                  btcAmountMode === "btc"
+                    ? "Enter amount in US dollars"
+                    : "Enter amount in bitcoin"
+                }
+              >
+                {btcAmountMode === "btc" ? "$ USD" : "₿ BTC"}
+              </button>
+            )}
             {showMax && (
               <button type="button" className="form-field-action" onClick={handleMax}>
                 MAX
               </button>
             )}
           </div>
-          {btcUsdLine && (
-            <div className="form-field-hint">{"\u2248"} {btcUsdLine}</div>
+          {btcAmountHint && (
+            <div className="form-field-hint">{btcAmountHint}</div>
           )}
         </div>
 
