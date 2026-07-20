@@ -125,7 +125,7 @@ async function syncDiagnosticsFromStorage(): Promise<void> {
 async function rescheduleAutoLock(): Promise<void> {
   try {
     const state = await walletStore.getState();
-    const minutes = state.autoLockMinutes ?? 15;
+    const minutes = state.autoLockMinutes ?? 60;
     chrome.alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: minutes });
     if (chrome.idle?.setDetectionInterval) {
       // Convert minutes -> seconds, clamp to chrome's 15s..240min window.

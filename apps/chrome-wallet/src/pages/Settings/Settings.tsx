@@ -267,7 +267,7 @@ export default function Settings() {
             <div className="input-label" style={{ marginBottom: 4 }}>Auto-lock</div>
             <select
               className="input"
-              value={state.autoLockMinutes ?? 15}
+              value={state.autoLockMinutes ?? 60}
               onChange={(e) => setAutoLockMinutes(Number(e.target.value))}
               style={{ width: "100%", boxSizing: "border-box" }}
             >
