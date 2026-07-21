@@ -16,16 +16,24 @@ import { computeDisplayHash } from "@arch-network/wallet-hub-sdk";
 import { useWallet } from "../../hooks/useWallet";
 import { walletStore } from "../../state/wallet-store";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { hasConfirmedMainnet, markMainnetConfirmed } from "../../utils/mainnet-confirm";
 import { getClient, getExternalUserId, formatWalletHubError } from "../../utils/sdk";
 import { truncateAddress, formatArch } from "../../utils/format";
-import { fetchArchAccountBalance, type ArchBalanceSnapshot } from "../../utils/arch-rpc";
+import {
+  fetchArchAccountBalance,
+  fetchAssociatedTokenBalance,
+  type ArchBalanceSnapshot,
+  type TokenBalanceSnapshot,
+} from "../../utils/arch-rpc";
 import { getIndexer } from "../../utils/indexer";
+import { deriveAssociatedTokenAddress } from "../../utils/associated-token";
 import DappHeader from "../../components/Approve/DappHeader";
 import { interpretMessage } from "../../utils/sign-message";
 import {
   summarizePsbt,
   formatSats,
   evaluatePsbtGate,
+  deterministicPsbtSpendSats,
   type PsbtGate,
   type PsbtSummary,
 } from "../../utils/psbt-summary";
@@ -329,11 +337,6 @@ function ArchMessageHashSummary({ payload }: { payload: any }) {
   );
 }
 
-// TODO: enforce `SitePermissions.spendingLimitSatsPerDay` once a
-// daily counter lives in the wallet store. Today the field is
-// typed (state/types.ts) but unread; surfacing it from here will
-// be cleaner once the Permission Center work lands.
-
 /**
  * Pre-flight balance check for `arch.transfer` (the SEND_TRANSFER
  * dapp request type).
@@ -490,6 +493,69 @@ function ArchBalanceCard({
   );
 }
 
+type TokenBalanceGate =
+  | { state: "loading" }
+  | { state: "ok"; snapshot: TokenBalanceSnapshot; postAmount: bigint | null }
+  | {
+      state: "blocked";
+      snapshot: TokenBalanceSnapshot;
+      requestedAmount: bigint;
+      availableAmount: bigint;
+    };
+
+function computeTokenTransferGate(
+  snapshot: TokenBalanceSnapshot | null,
+  requestedAmount: bigint | null,
+): TokenBalanceGate {
+  if (!snapshot) return { state: "loading" };
+  if (snapshot.kind !== "found") return { state: "ok", snapshot, postAmount: null };
+  if (requestedAmount === null || requestedAmount <= 0n) {
+    return { state: "ok", snapshot, postAmount: snapshot.amount };
+  }
+  if (requestedAmount > snapshot.amount) {
+    return {
+      state: "blocked",
+      snapshot,
+      requestedAmount,
+      availableAmount: snapshot.amount,
+    };
+  }
+  return { state: "ok", snapshot, postAmount: snapshot.amount - requestedAmount };
+}
+
+function TokenBalanceCard({
+  gate,
+  requestedAmount,
+}: {
+  gate: TokenBalanceGate;
+  requestedAmount: bigint | null;
+}) {
+  if (gate.state === "loading") {
+    return <div className="card" style={{ marginTop: 8 }}><div className="input-label">Pre-flight token balance</div><div style={{ fontSize: 12, opacity: 0.7 }}>Checking associated token account...</div></div>;
+  }
+  if (gate.snapshot.kind !== "found") {
+    return (
+      <div className="card" style={{ marginTop: 8 }}>
+        <div className="input-label">Pre-flight token balance</div>
+        <div className="approve-risk approve-risk-warn">
+          {gate.snapshot.kind === "not_found"
+            ? "No matching associated token account was found. The transfer may fail."
+            : `Could not verify this token balance (${gate.snapshot.reason}). Proceed with caution.`}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="card" style={{ marginTop: 8 }}>
+      <div className="input-label">Pre-flight token balance (raw units)</div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 4 }}><span>Current</span><span className="mono">{gate.snapshot.amount.toString()}</span></div>
+      {requestedAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 2 }}><span>This transfer</span><span className="mono">- {requestedAmount.toString()}</span></div>}
+      {gate.state === "ok" && gate.postAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--border)", fontWeight: 600 }}><span>After</span><span className="mono">{gate.postAmount.toString()}</span></div>}
+      {gate.state === "blocked" && <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>Insufficient token balance: requested {gate.requestedAmount.toString()}, available {gate.availableAmount.toString()}. Refusing to sign.</div>}
+    </div>
+  );
+}
+
 function PsbtSummaryCard({
   summary,
   decodeError,
@@ -578,10 +644,12 @@ function PsbtSummaryCard({
 function AccountPicker({
   accounts,
   selectedId,
+  network,
   onSelect,
 }: {
   accounts: WalletAccount[];
   selectedId: string;
+  network: NetworkId;
   onSelect: (id: string) => void;
 }) {
   if (accounts.length <= 1) return null;
@@ -596,7 +664,7 @@ function AccountPicker({
       >
         {accounts.map((a) => (
           <option key={a.id} value={a.id}>
-            {a.label} ({truncateAddress(a.btcAddress, 8)})
+            {a.label} ({truncateAddress(reEncodeTaprootAddress(a.btcAddress, network), 8)})
           </option>
         ))}
       </select>
@@ -604,17 +672,115 @@ function AccountPicker({
   );
 }
 
+function ConnectNetworkCard({
+  network,
+  btcAddress,
+  switching,
+  confirmingMainnet,
+  onRequestSwitch,
+  onConfirmMainnet,
+  onCancelMainnetConfirm,
+}: {
+  network: NetworkId;
+  btcAddress: string | undefined;
+  switching: boolean;
+  confirmingMainnet: boolean;
+  onRequestSwitch: () => void;
+  onConfirmMainnet: () => void;
+  onCancelMainnetConfirm: () => void;
+}) {
+  const networkLabel = network === "testnet4" ? "Testnet" : "Mainnet";
+  const otherLabel = network === "testnet4" ? "Mainnet" : "Testnet";
+  const previewAddress = btcAddress
+    ? reEncodeTaprootAddress(btcAddress, network)
+    : "";
+
+  return (
+    <div className="card" style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <div className="input-label">Network</div>
+          <div style={{ fontWeight: 600 }}>{networkLabel}</div>
+        </div>
+        {!confirmingMainnet && (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={onRequestSwitch}
+            disabled={switching}
+          >
+            {switching ? "Switching…" : `Switch to ${otherLabel}`}
+          </button>
+        )}
+      </div>
+      {previewAddress && (
+        <div style={{ marginTop: 10 }}>
+          <div className="input-label">Address this site will see</div>
+          <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+            {previewAddress}
+          </div>
+        </div>
+      )}
+      <p style={{ marginTop: 10, marginBottom: 0, fontSize: 12, color: "var(--text-muted)" }}>
+        If this site expects a different network, switch before approving.
+      </p>
+      {confirmingMainnet && (
+        <div
+          role="alertdialog"
+          style={{
+            marginTop: 12,
+            padding: 12,
+            borderRadius: 8,
+            border: "1px solid var(--border-primary)",
+            background: "var(--bg-secondary)",
+          }}
+        >
+          <div style={{ fontWeight: 600, color: "var(--danger)", marginBottom: 6 }}>
+            Switch to Mainnet?
+          </div>
+          <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-secondary)" }}>
+            Mainnet uses real funds. Make sure you intend to use real Bitcoin and ARCH.
+          </p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-sm btn-secondary"
+              style={{ flex: 1 }}
+              onClick={onCancelMainnetConfirm}
+              disabled={switching}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="btn btn-sm btn-primary"
+              style={{ flex: 1 }}
+              onClick={onConfirmMainnet}
+              disabled={switching}
+            >
+              {switching ? "Switching…" : "Switch"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Approve() {
   const { requestId } = useParams<{ requestId: string }>();
-  const { state, activeAccount } = useWallet();
+  const { state, activeAccount, setNetwork } = useWallet();
   const [request, setRequest] = useState<RequestDetails | null>(null);
   const [isReturning, setIsReturning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [switchingNetwork, setSwitchingNetwork] = useState(false);
+  const [confirmingMainnet, setConfirmingMainnet] = useState(false);
   const [psbtLargeOutflowAck, setPsbtLargeOutflowAck] = useState(false);
   const [archBalance, setArchBalance] = useState<ArchBalanceSnapshot | null>(null);
+  const [tokenBalance, setTokenBalance] = useState<TokenBalanceSnapshot | null>(null);
   // When an email-wallet user clicks Approve without a live Turnkey
   // session, `ensureSigningSessionForAccount` throws
   // `EmailSessionNeededError`. Previously we surfaced that as a text
@@ -623,11 +789,6 @@ export default function Approve() {
   // OTP without leaving the approve flow; on success we re-run the
   // approve handler.
   const [otpAccount, setOtpAccount] = useState<WalletAccount | null>(null);
-
-  const myAddresses = useMemo(
-    () => state.accounts.map((a) => a.btcAddress).filter(Boolean),
-    [state.accounts],
-  );
 
   const selectedAccount = useMemo(
     () => state.accounts.find((a) => a.id === selectedAccountId) ?? activeAccount,
@@ -648,11 +809,17 @@ export default function Approve() {
     const psbtPayload: string = (request.payload as any)?.psbt;
     if (!psbtPayload) return { summary: null, error: "Missing PSBT payload" };
     try {
-      return { summary: summarizePsbt(psbtPayload, myAddresses), error: null };
+      return {
+        summary: summarizePsbt(
+          psbtPayload,
+          selectedAccount?.btcAddress ? [selectedAccount.btcAddress] : [],
+        ),
+        error: null,
+      };
     } catch (e: any) {
       return { summary: null, error: e?.message || "Could not decode PSBT" };
     }
-  }, [request, myAddresses]);
+  }, [request, selectedAccount?.btcAddress]);
 
   const psbtGate = useMemo<PsbtGate | null>(
     () => (psbtDecode.summary ? evaluatePsbtGate(psbtDecode.summary) : null),
@@ -706,6 +873,49 @@ export default function Approve() {
     if (request?.type !== "SEND_TRANSFER") return null;
     return computeArchTransferGate(archBalance, requestedArchLamports);
   }, [request, archBalance, requestedArchLamports]);
+
+  const requestedTokenAmount = useMemo<bigint | null>(() => {
+    if (request?.type !== "SEND_TOKEN_TRANSFER") return null;
+    return parseLamportsToBigInt((request.payload as any)?.amount);
+  }, [request]);
+
+  useEffect(() => {
+    if (request?.type !== "SEND_TOKEN_TRANSFER") {
+      setTokenBalance(null);
+      return;
+    }
+    const mint = (request.payload as any)?.mint;
+    if (!selectedAccount?.publicKeyHex || typeof mint !== "string") {
+      setTokenBalance({ kind: "error", reason: "Selected account or token mint is missing" });
+      return;
+    }
+    let cancelled = false;
+    setTokenBalance(null);
+    (async () => {
+      try {
+        const tokenAccount = deriveAssociatedTokenAddress(mint, selectedAccount.publicKeyHex);
+        const snapshot = await fetchAssociatedTokenBalance(
+          await getIndexer(),
+          tokenAccount,
+          mint,
+          selectedAccount.publicKeyHex,
+        );
+        if (!cancelled) setTokenBalance(snapshot);
+      } catch (e: any) {
+        if (!cancelled) {
+          setTokenBalance({ kind: "error", reason: e?.message || "Failed to derive token account" });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [request, selectedAccount?.publicKeyHex]);
+
+  const tokenTransferGate = useMemo<TokenBalanceGate | null>(() => {
+    if (request?.type !== "SEND_TOKEN_TRANSFER") return null;
+    return computeTokenTransferGate(tokenBalance, requestedTokenAmount);
+  }, [request, tokenBalance, requestedTokenAmount]);
 
   // Per-origin daily spend cap. State is { state: "loading" | "ok"
   // | "cap-blocked" }; the gate refuses ARCH transfers whose
@@ -770,6 +980,59 @@ export default function Approve() {
     };
   }, [request, requestedArchLamports, state.network]);
 
+  // BTC is only quota-gated for PSBTs whose exact wallet outflow can be
+  // established. Collaborative or partially-described PSBTs remain subject
+  // to their normal confirmation safeguards, but cannot be safely charged to
+  // a numeric limit.
+  const deterministicPsbtSpend = useMemo(
+    () => (psbtDecode.summary ? deterministicPsbtSpendSats(psbtDecode.summary) : null),
+    [psbtDecode.summary],
+  );
+  const [btcSpendCapGate, setBtcSpendCapGate] = useState<
+    | { state: "n/a" }
+    | { state: "loading" }
+    | { state: "ok" }
+    | { state: "cap-blocked"; capSats: bigint; recentSats: bigint }
+  >({ state: "n/a" });
+
+  useEffect(() => {
+    if (
+      request?.type !== "SIGN_PSBT" ||
+      !request.origin ||
+      deterministicPsbtSpend === null
+    ) {
+      setBtcSpendCapGate({ state: "n/a" });
+      return;
+    }
+    let cancelled = false;
+    setBtcSpendCapGate({ state: "loading" });
+    (async () => {
+      const capRaw = (await walletStore.getSitePermissions(request.origin))
+        ?.btcSpendingLimitSatsPerDay;
+      if (capRaw === undefined || capRaw === null) {
+        if (!cancelled) setBtcSpendCapGate({ state: "ok" });
+        return;
+      }
+      const cap = BigInt(capRaw);
+      const recent = await getRecentSpend({
+        origin: request.origin,
+        asset: "btc",
+        network: state.network,
+      });
+      if (cancelled) return;
+      if (exceedsCap({ pending: BigInt(deterministicPsbtSpend), recent, cap })) {
+        setBtcSpendCapGate({ state: "cap-blocked", capSats: cap, recentSats: recent });
+      } else {
+        setBtcSpendCapGate({ state: "ok" });
+      }
+    })().catch(() => {
+      if (!cancelled) setBtcSpendCapGate({ state: "ok" });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [request, deterministicPsbtSpend, state.network]);
+
   useEffect(() => {
     if (!requestId) return;
     chrome.runtime.sendMessage({ type: "GET_PENDING_REQUEST", requestId }, (response) => {
@@ -787,6 +1050,39 @@ export default function Approve() {
       setSelectedAccountId(activeAccount.id);
     }
   }, [activeAccount, selectedAccountId]);
+
+  const applyNetworkSwitch = useCallback(
+    async (next: NetworkId) => {
+      setSwitchingNetwork(true);
+      setError(null);
+      try {
+        await setNetwork(next);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : "Failed to switch network");
+      } finally {
+        setSwitchingNetwork(false);
+      }
+    },
+    [setNetwork],
+  );
+
+  const handleConnectNetworkSwitch = useCallback(async () => {
+    const next: NetworkId = state.network === "mainnet" ? "testnet4" : "mainnet";
+    if (next === "mainnet") {
+      const confirmed = await hasConfirmedMainnet();
+      if (!confirmed) {
+        setConfirmingMainnet(true);
+        return;
+      }
+    }
+    await applyNetworkSwitch(next);
+  }, [state.network, applyNetworkSwitch]);
+
+  const handleConfirmMainnetSwitch = useCallback(async () => {
+    setConfirmingMainnet(false);
+    await markMainnetConfirmed();
+    await applyNetworkSwitch("mainnet");
+  }, [applyNetworkSwitch]);
 
   const sendApproved = useCallback(
     (result: unknown) => {
@@ -819,6 +1115,14 @@ export default function Approve() {
     // session error from deeper in the signing path.
     if (isWatchAccount(selectedAccount)) {
       setError("Watch-only wallet — cannot sign or send transactions.");
+      return;
+    }
+    if (request.type === "SEND_TOKEN_TRANSFER" && tokenTransferGate?.state === "blocked") {
+      setError("Insufficient token balance. Refusing to sign.");
+      return;
+    }
+    if (request.type === "SIGN_PSBT" && btcSpendCapGate.state === "cap-blocked") {
+      setError("Daily Bitcoin spend cap exceeded for this site. Refusing to sign.");
       return;
     }
     setLoading(true);
@@ -1028,6 +1332,14 @@ export default function Approve() {
         // bootstrapped. No more server-side PSBT signing.
         const signedHex = await signPsbtLocally(psbtPayload);
         sendApproved({ psbt: signedHex });
+        if (deterministicPsbtSpend !== null) {
+          void recordSpend({
+            origin: request.origin,
+            asset: "btc",
+            network: state.network,
+            amount: deterministicPsbtSpend,
+          });
+        }
         return;
       }
 
@@ -1057,7 +1369,7 @@ export default function Approve() {
     } finally {
       setLoading(false);
     }
-  }, [request, selectedAccount, requestId, sendApproved, signPsbtLocally, state.network]);
+  }, [request, selectedAccount, requestId, sendApproved, signPsbtLocally, state.network, deterministicPsbtSpend, tokenTransferGate, btcSpendCapGate.state]);
 
   const handleOtpReady = useCallback(() => {
     // Session is now open. Drop the bootstrapper and re-attempt the
@@ -1163,7 +1475,17 @@ export default function Approve() {
             <AccountPicker
               accounts={state.accounts}
               selectedId={selectedAccountId || activeAccount?.id || ""}
+              network={state.network}
               onSelect={setSelectedAccountId}
+            />
+            <ConnectNetworkCard
+              network={state.network}
+              btcAddress={selectedAccount?.btcAddress}
+              switching={switchingNetwork}
+              confirmingMainnet={confirmingMainnet}
+              onRequestSwitch={handleConnectNetworkSwitch}
+              onConfirmMainnet={handleConfirmMainnetSwitch}
+              onCancelMainnetConfirm={() => setConfirmingMainnet(false)}
             />
             <div className="card">
               <p style={{ marginBottom: 12 }}>This site wants to connect to your Arch Wallet.</p>
@@ -1206,24 +1528,29 @@ export default function Approve() {
         )}
 
         {request.type === "SEND_TOKEN_TRANSFER" && request.payload && (
-          <div className="card">
-            <div style={{ marginBottom: 8 }}>
-              <div className="input-label">Action</div>
-              <div style={{ fontWeight: 600 }}>Send APL Token</div>
+          <>
+            <div className="card">
+              <div style={{ marginBottom: 8 }}>
+                <div className="input-label">Action</div>
+                <div style={{ fontWeight: 600 }}>Send APL Token</div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div className="input-label">Token Mint</div>
+                <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.mint}</div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <div className="input-label">To</div>
+                <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
+              </div>
+              <div>
+                <div className="input-label">Amount (raw units)</div>
+                <div style={{ fontWeight: 600 }}>{request.payload.amount}</div>
+              </div>
             </div>
-            <div style={{ marginBottom: 8 }}>
-              <div className="input-label">Token Mint</div>
-              <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.mint}</div>
-            </div>
-            <div style={{ marginBottom: 8 }}>
-              <div className="input-label">To</div>
-              <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
-            </div>
-            <div>
-              <div className="input-label">Amount</div>
-              <div style={{ fontWeight: 600 }}>{request.payload.amount}</div>
-            </div>
-          </div>
+            {tokenTransferGate && (
+              <TokenBalanceCard gate={tokenTransferGate} requestedAmount={requestedTokenAmount} />
+            )}
+          </>
         )}
 
         {request.type === "SIGN_MESSAGE" && request.payload && (
@@ -1257,12 +1584,29 @@ export default function Approve() {
                 </label>
               </div>
             )}
+            {deterministicPsbtSpend !== null && btcSpendCapGate.state === "cap-blocked" && (
+              <div className="approve-risk approve-risk-danger" style={{ marginTop: 8 }}>
+                Daily Bitcoin spend cap exceeded for this site. {formatSats(Number(btcSpendCapGate.recentSats))} already
+                authorized in the last 24h; this PSBT would push the total past the{" "}
+                {formatSats(Number(btcSpendCapGate.capSats))} cap.
+              </div>
+            )}
+            {deterministicPsbtSpend === null && (
+              <div className="approve-risk approve-risk-warn" style={{ marginTop: 8 }}>
+                This PSBT has an ambiguous spend amount, so the site&apos;s Bitcoin cap is not applied.
+                Review the inputs and outputs before approving.
+              </div>
+            )}
           </>
         )}
       </div>
 
       <div className="approve-footer">
-        <button className="btn btn-secondary" onClick={handleReject} disabled={loading}>
+        <button
+          className="btn btn-secondary"
+          onClick={handleReject}
+          disabled={loading || switchingNetwork}
+        >
           {isWatchAccount(selectedAccount) ? "Close" : "Reject"}
         </button>
         <button
@@ -1270,6 +1614,8 @@ export default function Approve() {
           onClick={handleApprove}
           disabled={
             loading ||
+            switchingNetwork ||
+            confirmingMainnet ||
             !selectedAccount ||
             // Watch-only accounts have no signing key. Disable
             // Approve outright; the in-card "Watch-only wallet" risk
@@ -1292,10 +1638,16 @@ export default function Approve() {
             // gate is still loading or on indexer error -- only on a
             // positively-known insufficient balance.
             (request.type === "SEND_TRANSFER" && archTransferGate?.state === "blocked") ||
+            // SEND_TOKEN_TRANSFER: refuse only on a positively verified
+            // insufficient associated-token balance.
+            (request.type === "SEND_TOKEN_TRANSFER" && tokenTransferGate?.state === "blocked") ||
             // Per-origin daily spend cap (Permission Center). We
             // explicitly do NOT block while the gate is loading; the
             // user can still approve after the lookup resolves.
-            (request.type === "SEND_TRANSFER" && archSpendCapGate.state === "cap-blocked")
+            (request.type === "SEND_TRANSFER" && archSpendCapGate.state === "cap-blocked") ||
+            // BTC is capped only when the PSBT has a deterministic,
+            // user-understandable wallet outflow.
+            (request.type === "SIGN_PSBT" && btcSpendCapGate.state === "cap-blocked")
           }
         >
           {loading

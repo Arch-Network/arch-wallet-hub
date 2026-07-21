@@ -5,6 +5,10 @@ import type { IndexerClient } from "./indexer";
 
 const METADATA_PROGRAM_ID = "MetaLUJnthcRKvy3ayXTnVcxaXqca1fbaQox8ChQqAk";
 const METADATA_SEED = new TextEncoder().encode("metadata");
+const TOKEN_PROGRAM_ID = new Uint8Array([
+  6, 221, 246, 225, 185, 234, 132, 65, 44, 16, 184, 223, 2, 28, 16, 15,
+  200, 135, 25, 7, 195, 9, 195, 53, 53, 222, 32, 156, 52, 23, 99, 191,
+]);
 
 interface AccountInfo {
   data: number[];
@@ -99,6 +103,60 @@ export async function fetchArchAccountBalance(
     return { kind: "found", lamports: BigInt(result.lamports) };
   } catch (e: any) {
     return { kind: "error", reason: e?.message || "Unknown indexer error" };
+  }
+}
+
+/**
+ * Read and validate the raw balance of a deterministic associated token
+ * account. We deliberately verify both mint and owner before trusting the
+ * amount: a malformed indexer response must never make the approval screen
+ * claim that a different token is available.
+ */
+export type TokenBalanceSnapshot =
+  | { kind: "found"; amount: bigint }
+  | { kind: "not_found" }
+  | { kind: "error"; reason: string };
+
+export async function fetchAssociatedTokenBalance(
+  indexer: IndexerClient,
+  tokenAccountBase58: string,
+  mintBase58: string,
+  ownerPublicKeyHex: string,
+): Promise<TokenBalanceSnapshot> {
+  try {
+    const tokenAccount = Array.from(bs58.decode(tokenAccountBase58));
+    const expectedMint = bs58.decode(mintBase58);
+    const xOnlyOwnerHex =
+      ownerPublicKeyHex.length === 66 ? ownerPublicKeyHex.slice(2) : ownerPublicKeyHex;
+    if (
+      expectedMint.length !== 32 ||
+      !/^[0-9a-f]{64}$/i.test(xOnlyOwnerHex)
+    ) {
+      return { kind: "error", reason: "Invalid token account, mint, or wallet public key" };
+    }
+    const expectedOwner = new Uint8Array(
+      xOnlyOwnerHex.match(/.{2}/g)!.map((byte) => parseInt(byte, 16)),
+    );
+    const account = await indexer.rpc<AccountInfo | null>("read_account_info", tokenAccount);
+    if (!account?.data || account.data.length < 165) return { kind: "not_found" };
+
+    const data = new Uint8Array(account.data);
+    if (
+      account.owner.length !== TOKEN_PROGRAM_ID.length ||
+      !account.owner.every((byte, index) => byte === TOKEN_PROGRAM_ID[index]) ||
+      !data.slice(0, 32).every((byte, index) => byte === expectedMint[index]) ||
+      !data.slice(32, 64).every((byte, index) => byte === expectedOwner[index])
+    ) {
+      return { kind: "error", reason: "Associated token account does not match this token or wallet" };
+    }
+
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const amount =
+      BigInt(view.getUint32(68, true)) * 0x1_0000_0000n +
+      BigInt(view.getUint32(64, true));
+    return { kind: "found", amount };
+  } catch (e: any) {
+    return { kind: "error", reason: e?.message || "Failed to read token balance" };
   }
 }
 
