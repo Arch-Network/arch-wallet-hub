@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { truncateAddress } from "../utils/format";
 import { reEncodeTaprootAddress } from "../utils/addressNetwork";
+import { hasConfirmedMainnet, markMainnetConfirmed } from "../utils/mainnet-confirm";
 import { useWideMode } from "../hooks/useWideMode";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
@@ -63,8 +64,6 @@ interface NetworkSwitcherProps {
   onChange: (n: NetworkId) => void | Promise<void>;
 }
 
-const MAINNET_CONFIRMED_KEY = "arch_wallet_mainnet_confirmed";
-
 function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [confirmingMainnet, setConfirmingMainnet] = useState(false);
@@ -97,13 +96,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
     if (next === network) return;
     if (next === "mainnet") {
       // Phase 2.4: confirm the first mainnet switch on this install.
-      let confirmed = false;
-      try {
-        const res = await chrome.storage.local.get(MAINNET_CONFIRMED_KEY);
-        confirmed = !!res?.[MAINNET_CONFIRMED_KEY];
-      } catch {
-        confirmed = false;
-      }
+      const confirmed = await hasConfirmedMainnet();
       if (!confirmed) {
         setConfirmingMainnet(true);
         return;
@@ -114,11 +107,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 
   const confirmMainnet = async () => {
     setConfirmingMainnet(false);
-    try {
-      await chrome.storage.local.set({ [MAINNET_CONFIRMED_KEY]: true });
-    } catch {
-      /* ignore */
-    }
+    await markMainnetConfirmed();
     await onChange("mainnet");
   };
 

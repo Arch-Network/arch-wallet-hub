@@ -594,14 +594,14 @@ export default defineBackground(() => {
     const dappName = sender.tab?.title;
     const dappIconUrl = sender.tab?.favIconUrl;
 
-    const unlocked = await keystore.isUnlocked();
-
     switch (msg?.type) {
       case "PING": {
         return { id: msg.id, success: true, data: { ok: true } };
       }
       case "GET_ACCOUNT": {
-        if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
+        if (!(await keystore.isUnlocked())) {
+          return { id: msg.id, success: false, error: "Wallet locked" };
+        }
         // SECURITY: previously we returned address/pubkey to ANY site
         // the extension was injected into (which is `<all_urls>`).
         // Connecting requires user consent; identity reads must too,
@@ -633,25 +633,12 @@ export default defineBackground(() => {
       case "CONNECT": {
         const sealed = await keystore.isSealed();
         if (!sealed) return { id: msg.id, success: false, error: "Wallet not initialized" };
-        if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
 
-        const connected = await walletStore.isSiteConnected(origin);
-        if (connected) {
-          const account = await walletStore.getAccountForOrigin(origin);
-          const { network } = await walletStore.getState();
-          return {
-            id: msg.id,
-            success: true,
-            data: {
-              address: account
-                ? reEncodeTaprootAddress(account.btcAddress, network)
-                : undefined,
-              publicKey: account?.publicKeyHex,
-              archAddress: account?.archAddress,
-            },
-          };
-        }
-
+        // MetaMask-style: keep CONNECT pending and open Approve even when
+        // locked. App.tsx gates locked → Unlock first, then the same
+        // `/approve/:id` route renders Connect after unlock — no "Try again"
+        // round-trip through the dapp. Always open Approve (including
+        // returning sites) so the in-approve network switcher is reachable.
         const reqId = genId();
         const req: PendingRequest = {
           id: reqId,
@@ -678,7 +665,8 @@ export default defineBackground(() => {
       case "SIGN_MESSAGE":
       case "SIGN_ARCH_MESSAGE_HASH":
       case "SIGN_PSBT": {
-        if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
+        // Locked is OK — open Approve; Unlock renders first, then the
+        // sign/send card (same pending-request flow as CONNECT).
         const connected = await walletStore.isSiteConnected(origin);
         if (!connected) return { id: msg.id, success: false, error: "Site not connected" };
 
