@@ -169,6 +169,8 @@ export interface SitePermissions {
   signPsbt: boolean;
   /** Optional daily spending cap (lamports / sats), enforced by background. */
   spendingLimitSatsPerDay?: number;
+  /** Optional daily Bitcoin spending cap in satoshis, enforced for safe PSBT outflows. */
+  btcSpendingLimitSatsPerDay?: number;
 }
 
 export const DEFAULT_SITE_PERMISSIONS: SitePermissions = {
