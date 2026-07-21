@@ -158,6 +158,27 @@ export function formatSats(value: number): string {
 }
 
 /**
+ * Return an amount suitable for a per-origin BTC quota only when this
+ * PSBT's wallet outflow is exact and readily explainable to the user.
+ *
+ * Collaborative PSBTs, missing prevouts, and non-standard outputs can make
+ * it impossible to distinguish an actual payment from another party's input
+ * or a wallet-owned return output. Those flows still require the normal
+ * approval, but must not be silently subject to a numeric spending limit.
+ */
+export function deterministicPsbtSpendSats(summary: PsbtSummary): number | null {
+  if (
+    !summary.exactFee ||
+    summary.inputs.length === 0 ||
+    summary.inputs.some((input) => !input.isMine) ||
+    summary.outputs.some((output) => output.address === null)
+  ) {
+    return null;
+  }
+  return Math.max(0, -summary.netUserSats);
+}
+
+/**
  * Approve-popup safety rails for SIGN_PSBT requests.
  *
  * Policy (from the 2026-05 audit, items M5 + M6):
