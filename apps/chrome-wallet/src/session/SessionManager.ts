@@ -58,18 +58,29 @@ export interface OpenSessionArgs {
 
 /**
  * Key under `chrome.storage.session` where we record the liveness
- * pointer for the current Turnkey session. Two fields, both already
- * non-secret: which account the session belongs to, and when it
- * expires. The actual signing material stays in IndexedDB (origin-
+ * pointer for the current Turnkey session. Three fields, all already
+ * non-secret: which account the session belongs to, when it expires,
+ * and the PUBLIC half of the IndexedDB keypair it was registered
+ * with. The actual signing material stays in IndexedDB (origin-
  * shared, never leaves the extension origin); this is purely the
  * "yes there is a session, here's whose" hand-off between document
  * contexts.
+ *
+ * Why the pubkey is recorded: the IndexedDB keypair is shared across
+ * every extension context, so another context rotating it (its own
+ * `open()`) silently invalidates any snapshot written for the OLD
+ * key. Rehydration compares the on-disk key against the snapshot's
+ * pubkey and refuses on mismatch -- otherwise this context would
+ * stamp requests with a key Turnkey has registered under a different
+ * session (or account) and every sign would fail upstream.
  */
 const SHARED_SESSION_KEY = "arch-wallet:session-snapshot";
 
 interface SessionSnapshot {
   accountId: string;
   expiresAt: number;
+  /** Public key of the IndexedDB keypair this snapshot was written for. */
+  publicKeyHex: string;
 }
 
 /**
@@ -204,6 +215,7 @@ export class SessionManager {
     await this.writeSharedSnapshot({
       accountId: account.id,
       expiresAt: this.expiresAt,
+      publicKeyHex: pubkey,
     });
     this.notify();
     return this.buildClient(stamper);
@@ -288,6 +300,16 @@ export class SessionManager {
       await this.clearSharedSnapshot();
       return null;
     }
+    if (pub !== snapshot.publicKeyHex) {
+      // The on-disk key is NOT the one this snapshot was written
+      // for: another context rotated it after the snapshot landed.
+      // Adopting it would stamp with a key registered under a
+      // different session, so refuse and drop the stale snapshot.
+      // We deliberately leave the IndexedDB key alone -- it may be
+      // mid-registration by the context that rotated it.
+      await this.clearSharedSnapshot();
+      return null;
+    }
 
     this.stamper = stamper;
     this.currentAccountId = snapshot.accountId;
@@ -359,10 +381,19 @@ export class SessionManager {
       if (!raw || typeof raw !== "object") return null;
       const accountId = (raw as { accountId?: unknown }).accountId;
       const expiresAt = (raw as { expiresAt?: unknown }).expiresAt;
-      if (typeof accountId !== "string" || typeof expiresAt !== "number") {
+      const publicKeyHex = (raw as { publicKeyHex?: unknown }).publicKeyHex;
+      if (
+        typeof accountId !== "string" ||
+        typeof expiresAt !== "number" ||
+        // A snapshot without a pubkey (pre-binding format) can't be
+        // verified against the on-disk key, so treat it as absent:
+        // fail closed into a fresh open() (one extra auth ceremony)
+        // rather than risk adopting a rotated key.
+        typeof publicKeyHex !== "string"
+      ) {
         return null;
       }
-      return { accountId, expiresAt };
+      return { accountId, expiresAt, publicKeyHex };
     } catch {
       // chrome.storage.session can be evicted; treat any read error
       // as "no session" rather than failing the sign attempt.
