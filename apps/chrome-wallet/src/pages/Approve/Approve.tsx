@@ -40,7 +40,8 @@ import {
 import { signerForAccount } from "../../signers/Signer";
 import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
-import { ensureHubSession, buildSessionSigner } from "../../utils/hub-session";
+import { buildSessionSigner } from "../../utils/hub-session";
+import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
   ensureSigningSessionForAccount,
   EmailSessionNeededError,
@@ -1165,16 +1166,7 @@ export default function Approve() {
         client.setSessionSigner(
           buildSessionSigner(selectedAccount, externalUserId, state.network),
         );
-        const hubSession = await ensureHubSession(selectedAccount, state.network);
-        if (hubSession === "failed" && !isExternalAccount(selectedAccount)) {
-          // The mint failed against a live-looking signing session --
-          // typically one that was rotated/staled by another extension
-          // context or aged out Turnkey-side. Perform the same reset a
-          // manual lock/unlock does, scoped to the signing session, and
-          // re-mint once before the enforced calls below.
-          await ensureSigningSessionForAccount(selectedAccount, { forceFresh: true });
-          await ensureHubSession(selectedAccount, state.network);
-        }
+        await mintHubSessionWithRecovery(selectedAccount, state.network);
       }
 
       if (request.type === "CONNECT") {
