@@ -126,7 +126,7 @@ const VERIFY_MAX_ATTEMPTS = 5;
 const MAX_OTP_SENDS = 5;
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const RECOVERY_API_KEY_TTL_SECONDS = "900"; // 15 minutes
+const RECOVERY_API_KEY_TTL_SECONDS = "86400"; // 24 hours
 
 function buildOtpEmailCustomization(
   config: Record<string, unknown>
