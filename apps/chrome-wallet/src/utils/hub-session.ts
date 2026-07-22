@@ -88,6 +88,17 @@ export function buildSessionSigner(
 }
 
 /**
+ * Outcome of {@link ensureHubSession}:
+ *   - "ok":      a live token is attached to the client (cached or
+ *                freshly minted).
+ *   - "skipped": the account can't mint (watch-only, or a Turnkey
+ *                account with no resource id) -- nothing to retry.
+ *   - "failed":  a mint was attempted and threw. Callers on the signing
+ *                path may rebuild the signing session and retry once.
+ */
+export type HubSessionResult = "ok" | "skipped" | "failed";
+
+/**
  * Ensure a Hub session token exists (and is attached to the cached SDK
  * client) for `account`, minting one if needed. Works for BOTH Turnkey
  * and external/linked wallets:
@@ -105,15 +116,16 @@ export function buildSessionSigner(
  * still attach the per-account cached token here so a never-minted active
  * account can't leave the client tokenless.
  *
- * Never throws -- failures are logged and ignored; an enforced call will
- * then surface a clear, correctly-labelled session 401 to the user.
+ * Never throws -- failures are logged and reported via the returned
+ * {@link HubSessionResult} so signing-path callers can recover (rebuild
+ * the signing session, retry once) instead of failing the whole action.
  */
 export async function ensureHubSession(
   account: WalletAccount,
   network: NetworkId,
-): Promise<void> {
+): Promise<HubSessionResult> {
   try {
-    if (isWatchAccount(account)) return;
+    if (isWatchAccount(account)) return "skipped";
 
     const externalUserId = await getExternalUserId();
     const client = await getClient();
@@ -122,11 +134,11 @@ export async function ensureHubSession(
     if (existing) {
       // Already have a live token; make sure it's attached and stop.
       client.setSessionToken(existing);
-      return;
+      return "ok";
     }
 
     const signer = buildSessionSigner(account, externalUserId, network);
-    if (!signer) return;
+    if (!signer) return "skipped";
 
     let sessionToken: string;
     let expiresAt: string;
@@ -162,6 +174,7 @@ export async function ensureHubSession(
     );
     client.setSessionToken(sessionToken);
     log.info("hub-session.minted", { accountId: account.id, kind: signer.kind });
+    return "ok";
   } catch (err) {
     // Fail soft: the wallet stays functional; an enforced call will
     // surface a correctly-labelled session error if no token results.
@@ -169,5 +182,6 @@ export async function ensureHubSession(
       accountId: account.id,
       error: err instanceof Error ? err.message : String(err),
     });
+    return "failed";
   }
 }

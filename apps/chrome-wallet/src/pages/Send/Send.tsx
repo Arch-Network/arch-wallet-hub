@@ -623,7 +623,18 @@ export default function Send({ networkStatus }: SendProps) {
       client.setSessionSigner(
         buildSessionSigner(activeAccount, externalUserId, state.network),
       );
-      await ensureHubSession(activeAccount, state.network);
+      const hubSession = await ensureHubSession(activeAccount, state.network);
+      if (hubSession === "failed" && !isExternalAccount(activeAccount)) {
+        // The mint failed against a live-looking signing session --
+        // typically one that was rotated/staled by another extension
+        // context or aged out Turnkey-side. Perform the same reset a
+        // manual lock/unlock does, scoped to the signing session, and
+        // re-mint once before the enforced calls below.
+        setSignStatus("Refreshing signing session…");
+        await ensureSigningSessionForAccount(activeAccount, { forceFresh: true });
+        await ensureHubSession(activeAccount, state.network);
+        setSignStatus("Preparing signing request…");
+      }
 
       const submitViaHub = async (): Promise<string> => {
         const action =
