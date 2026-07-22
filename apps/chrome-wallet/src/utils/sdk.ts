@@ -121,8 +121,10 @@ export function walletHubErrorStatus(err: unknown): number | null {
 
 /**
  * True when a 401 was caused by a missing/expired/invalid per-user
- * SESSION token (the Hub's `plugins/sessionAuth.ts` messages). The fix
- * is to re-unlock / reconnect the wallet, NOT to touch the Hub URL/key.
+ * SESSION token (the Hub's `plugins/sessionAuth.ts` messages) or by a
+ * failed session-token mint (the `/auth/session*` InvalidSignature
+ * rejections). The fix is to re-unlock / reconnect the wallet, NOT to
+ * touch the Hub URL/key.
  */
 export function isWalletHubSessionError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? "");
@@ -132,21 +134,36 @@ export function isWalletHubSessionError(err: unknown): boolean {
     is401 &&
     (lower.includes("session bearer") ||
       lower.includes("session token") ||
-      lower.includes("expired session"))
+      lower.includes("expired session") ||
+      // Mint rejections from /auth/session and /auth/session/external:
+      // "Challenge signature did not verify against any Turnkey resource"
+      // / "BIP-322 signature did not verify against the linked wallet".
+      // These come from a stale/raced signing session, not a bad API key.
+      lower.includes("signature did not verify"))
   );
 }
 
 /**
  * True when a 401 was caused by the app API key being wrong/revoked
  * (fix: Hub URL/key in Settings). Deliberately excludes session errors
- * so a session expiry never triggers an app-key reset.
+ * so a session expiry never triggers an app-key reset, and matches only
+ * the appAuth plugin's known rejection bodies -- a bare 401 (or a "401"
+ * substring in an unrelated message, e.g. an amount in sats) must NOT
+ * be treated as an app-key failure. Misclassifying here is expensive:
+ * callers reset the Hub config and the UI sends users into Settings.
  */
 export function isWalletHubAuthError(err: unknown): boolean {
   if (isWalletHubSessionError(err)) return false;
   const message = err instanceof Error ? err.message : String(err ?? "");
   const lower = message.toLowerCase();
-  const is401 = walletHubErrorStatus(err) === 401 || message.includes("401");
-  return (is401 && !lower.includes("session")) || lower.includes("invalid api key");
+  if (lower.includes("invalid api key")) return true;
+  if (walletHubErrorStatus(err) !== 401) return false;
+  return (
+    lower.includes("missing api key") ||
+    lower.includes("api key revoked") ||
+    lower.includes("app disabled") ||
+    lower.includes("missing app authentication")
+  );
 }
 
 export function isWalletHubUnknownResourceError(err: unknown): boolean {
