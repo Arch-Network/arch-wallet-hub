@@ -41,8 +41,24 @@ export class WatchOnlyAccountError extends Error {
   }
 }
 
+export interface EnsureSigningSessionOptions {
+  /**
+   * Close any existing session first so the reopen performs a full
+   * fresh bootstrap (new IndexedDB keypair + new Turnkey registration)
+   * instead of trusting a live-looking session. Used to recover from a
+   * session that looks open locally but no longer works upstream (e.g.
+   * the shared IndexedDB key was rotated by another extension context,
+   * or the Turnkey-side API key aged out) -- the same reset a manual
+   * lock/unlock performs, scoped to the signing session. Costs one
+   * re-auth ceremony (WebAuthn tap for passkey wallets; the email OTP
+   * gate via EmailSessionNeededError for email wallets).
+   */
+  forceFresh?: boolean;
+}
+
 export async function ensureSigningSessionForAccount(
   account: WalletAccount,
+  opts: EnsureSigningSessionOptions = {},
 ): Promise<void> {
   // Watch-only is checked first: the UI gates should prevent reaching
   // this function with a watch account, but the throw guarantees that
@@ -53,8 +69,12 @@ export async function ensureSigningSessionForAccount(
   }
   if (isExternalAccount(account)) return;
 
-  const existing = await sessionManager.ensureClient(account.id);
-  if (existing) return;
+  if (opts.forceFresh) {
+    await sessionManager.close();
+  } else {
+    const existing = await sessionManager.ensureClient(account.id);
+    if (existing) return;
+  }
 
   if (account.authMethod === "passkey") {
     await walletStore.openPasskeySessionForAccount(account);
