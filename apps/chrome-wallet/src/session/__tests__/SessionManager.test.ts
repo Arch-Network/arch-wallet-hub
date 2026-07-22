@@ -254,3 +254,97 @@ describe("SessionManager", () => {
     expect(v2).toBeGreaterThan(v1);
   });
 });
+
+/**
+ * Cross-context rehydration via the shared `chrome.storage.session`
+ * snapshot. The snapshot is now bound to the IndexedDB keypair it was
+ * written for (`publicKeyHex`): the extension-origin key is shared
+ * across every document context, so another context rotating it must
+ * invalidate every snapshot written for the old key. Without the
+ * binding, a context would rehydrate a live-looking session and stamp
+ * with a key Turnkey registered under a different session -- the
+ * "works until you lock/unlock" failure users hit in the field.
+ */
+describe("SessionManager > snapshot/key binding on rehydration", () => {
+  const SNAPSHOT_KEY = "arch-wallet:session-snapshot";
+  let store: Map<string, unknown>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-18T12:00:00.000Z"));
+    mockGetPublicKey.mockReturnValue("0xpub");
+    mockInit.mockResolvedValue(undefined);
+    mockResetKeyPair.mockResolvedValue(undefined);
+    mockClear.mockResolvedValue(undefined);
+    vi.resetModules();
+
+    store = new Map<string, unknown>();
+    (globalThis as { chrome?: unknown }).chrome = {
+      storage: {
+        session: {
+          get: async (key: string) => ({ [key]: store.get(key) }),
+          set: async (items: Record<string, unknown>) => {
+            for (const [k, v] of Object.entries(items)) store.set(k, v);
+          },
+          remove: async (key: string) => {
+            store.delete(key);
+          },
+        },
+      },
+    };
+  });
+
+  afterEach(() => {
+    delete (globalThis as { chrome?: unknown }).chrome;
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("open() records the stamper pubkey in the shared snapshot", async () => {
+    const { SessionManager } = await import("../SessionManager");
+    const mgr = new SessionManager();
+    await mgr.open({ account: makeAccount("a"), ttlSeconds: 600, bootstrap: okBootstrap() });
+
+    expect(store.get(SNAPSHOT_KEY)).toMatchObject({
+      accountId: "a",
+      publicKeyHex: "0xpub",
+    });
+  });
+
+  it("rehydrates in another context when the on-disk key matches the snapshot", async () => {
+    const { SessionManager } = await import("../SessionManager");
+    const opener = new SessionManager();
+    await opener.open({ account: makeAccount("a"), ttlSeconds: 600, bootstrap: okBootstrap() });
+
+    // Fresh manager = fresh JS realm (e.g. the Approve popup).
+    const other = new SessionManager();
+    await expect(other.ensureClient("a")).resolves.toBeTruthy();
+    expect(other.status().accountId).toBe("a");
+  });
+
+  it("refuses rehydration when another context rotated the on-disk key", async () => {
+    const { SessionManager } = await import("../SessionManager");
+    const opener = new SessionManager();
+    await opener.open({ account: makeAccount("a"), ttlSeconds: 600, bootstrap: okBootstrap() });
+
+    // Simulate a rotation that happened after the snapshot landed:
+    // the on-disk key now differs from the snapshot's pubkey.
+    mockGetPublicKey.mockReturnValue("0xrotated");
+
+    const other = new SessionManager();
+    await expect(other.ensureClient("a")).resolves.toBeNull();
+    // The stale snapshot must be dropped so no third context trusts it.
+    expect(store.has(SNAPSHOT_KEY)).toBe(false);
+  });
+
+  it("treats a legacy snapshot without a pubkey as absent (fail closed)", async () => {
+    store.set(SNAPSHOT_KEY, {
+      accountId: "a",
+      expiresAt: Date.now() + 600_000,
+    });
+
+    const { SessionManager } = await import("../SessionManager");
+    const mgr = new SessionManager();
+    await expect(mgr.ensureClient("a")).resolves.toBeNull();
+  });
+});
