@@ -285,7 +285,7 @@ export type VerifyRecoveryEmailResponse = {
    * it as "passkey" since email wallets did not exist yet.
    */
   authMethod: "passkey" | "email";
-  /** Seconds until the recovery API key expires; usually 900 (15 min). */
+  /** Seconds until the recovery API key expires; usually 86400 (24 h). */
   expiresInSeconds: number;
 };
 
