@@ -770,7 +770,7 @@ export default function Send({ networkStatus }: SendProps) {
   const isTestnet = state.network === "testnet4";
   const archExplorerBase = isTestnet
     ? "https://explorer.arch.network/testnet/tx/"
-    : "https://explorer.arch.network/mainnet/tx/";
+    : "https://explorer.arch.network/tx/";
   const btcExplorerBase = isTestnet
     ? "https://mempool.space/testnet4/tx/"
     : "https://mempool.space/tx/";

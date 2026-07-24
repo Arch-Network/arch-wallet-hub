@@ -264,11 +264,41 @@ async function markChallengeConsumed(
 }
 
 /**
+ * Normalize a Turnkey/wallet pubkey hex to BIP-340 x-only (32 bytes /
+ * 64 hex). Turnkey's `walletAccounts.publicKey` is typically the
+ * compressed 33-byte form (66 hex); Arch identity and schnorr.verify
+ * both want the untweaked x coordinate only. Mirrors
+ * `archAccountFromInternalKey` so session mint and signing-request
+ * verification agree on the same key bytes.
+ *
+ * Returns null when the input cannot be interpreted as a secp256k1
+ * pubkey of a known length.
+ */
+function toXOnlyPubkeyHex(publicKeyHex: string): string | null {
+  const clean = publicKeyHex.replace(/^0x/i, "").toLowerCase();
+  if (!/^[0-9a-f]+$/.test(clean)) return null;
+  if (clean.length === 64) return clean;
+  // Compressed: 02/03 || X
+  if (clean.length === 66 && (clean.startsWith("02") || clean.startsWith("03"))) {
+    return clean.slice(2);
+  }
+  // Uncompressed: 04 || X || Y
+  if (clean.length === 130 && clean.startsWith("04")) {
+    return clean.slice(2, 66);
+  }
+  return null;
+}
+
+/**
  * Verify the signature over the challenge's payload using the
  * resource's stored default Taproot xOnly pubkey. Returns true on
  * success. Implementation deliberately uses the same
  * `schnorr.verify` primitive the signing-requests route already
  * uses for Taproot sighash verification.
+ *
+ * Accepts compressed (66 hex) or uncompressed (130 hex) pubkeys as
+ * well as already-x-only (64 hex) — Turnkey persists the compressed
+ * form on `turnkey_resources.default_public_key_hex`.
  */
 export function verifyChallengeSignature(params: {
   payloadHex: string;
@@ -278,17 +308,17 @@ export function verifyChallengeSignature(params: {
   // Defensive shape checks: the noble primitive will throw on bad
   // inputs, so we convert those into a boolean here so callers can
   // reply with a consistent 400 rather than a 500.
-  const cleanSig = params.signatureHex.replace(/^0x/, "");
-  const cleanPayload = params.payloadHex.replace(/^0x/, "");
-  const cleanPub = params.defaultPublicKeyHex.replace(/^0x/, "");
+  const cleanSig = params.signatureHex.replace(/^0x/i, "");
+  const cleanPayload = params.payloadHex.replace(/^0x/i, "");
+  const xOnlyPub = toXOnlyPubkeyHex(params.defaultPublicKeyHex);
   if (cleanSig.length !== 128) return false;
   if (cleanPayload.length !== 64) return false;
-  if (cleanPub.length !== 64) return false;
+  if (!xOnlyPub) return false;
   try {
     return schnorr.verify(
       Buffer.from(cleanSig, "hex"),
       Buffer.from(cleanPayload, "hex"),
-      Buffer.from(cleanPub, "hex"),
+      Buffer.from(xOnlyPub, "hex"),
     );
   } catch {
     return false;

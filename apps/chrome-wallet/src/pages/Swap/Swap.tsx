@@ -571,7 +571,7 @@ export default function Swap() {
 
   const explorerBase =
     state.network === "mainnet"
-      ? "https://explorer.arch.network/mainnet/tx/"
+      ? "https://explorer.arch.network/tx/"
       : "https://explorer.arch.network/testnet/tx/";
 
   if (!sellToken || !buyToken) {

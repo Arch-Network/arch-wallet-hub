@@ -101,7 +101,7 @@ export default function History() {
   const [banner, setBanner] = useState<FetchBanner>({ kind: "none" });
 
   const isTestnet = state.network === "testnet4";
-  const archExplorer = isTestnet ? "https://explorer.arch.network/testnet/tx/" : "https://explorer.arch.network/mainnet/tx/";
+  const archExplorer = isTestnet ? "https://explorer.arch.network/testnet/tx/" : "https://explorer.arch.network/tx/";
   const btcExplorer = isTestnet ? "https://mempool.space/testnet4/tx/" : "https://mempool.space/tx/";
 
   const fetchTransactions = useCallback(async () => {
