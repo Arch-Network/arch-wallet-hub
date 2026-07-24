@@ -242,7 +242,7 @@ export function buildExplorerUrl(opts: {
   }
   return opts.network === "testnet4"
     ? `https://explorer.arch.network/testnet/tx/${opts.txid}`
-    : `https://explorer.arch.network/mainnet/tx/${opts.txid}`;
+    : `https://explorer.arch.network/tx/${opts.txid}`;
 }
 
 /** Test-only reset of the click map. */

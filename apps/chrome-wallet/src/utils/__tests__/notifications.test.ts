@@ -82,9 +82,9 @@ describe("notifications", () => {
         "https://mempool.space/testnet4/tx/abcd",
       );
     });
-    it("maps mainnet Arch to explorer.arch.network/mainnet", () => {
+    it("maps mainnet Arch to explorer.arch.network root", () => {
       expect(buildExplorerUrl({ kind: "arch", txid: "x", network: "mainnet" })).toBe(
-        "https://explorer.arch.network/mainnet/tx/x",
+        "https://explorer.arch.network/tx/x",
       );
     });
     it("maps testnet4 Arch to explorer.arch.network/testnet", () => {

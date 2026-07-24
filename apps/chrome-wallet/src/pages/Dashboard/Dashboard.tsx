@@ -266,7 +266,7 @@ export default function Dashboard() {
     const isTestnetNetwork = state.network === "testnet4";
     const archExplorerBase = isTestnetNetwork
       ? "https://explorer.arch.network/testnet/tx/"
-      : "https://explorer.arch.network/mainnet/tx/";
+      : "https://explorer.arch.network/tx/";
     const btcExplorerBase = isTestnetNetwork
       ? "https://mempool.space/testnet4/tx/"
       : "https://mempool.space/tx/";

@@ -336,7 +336,7 @@ export default function TokenDetail() {
   const isTestnet = state.network === "testnet4";
   const explorerBase = isTestnet
     ? "https://explorer.arch.network/testnet"
-    : "https://explorer.arch.network/mainnet";
+    : "https://explorer.arch.network";
 
   useEffect(() => {
     if (!activeAccount || !mint) return;
