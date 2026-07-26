@@ -7,6 +7,7 @@ import { deriveArchAccountAddress } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { formatUsd } from "../../utils/format";
+import { resolvePrimaryName } from "../../utils/name-service";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 
@@ -23,6 +24,7 @@ export default function Receive() {
   const wide = useWideMode(720);
   const [tab, setTab] = useState<Tab>("btc");
   const [archAddress, setArchAddress] = useState<string>("");
+  const [primaryName, setPrimaryName] = useState<string | null>(null);
 
   const btcAddress = useMemo(
     () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
@@ -50,7 +52,19 @@ export default function Receive() {
         // derivation is fine for receive-side display.
       }
     })();
-  }, [activeAccount]);
+  }, [activeAccount, state.network]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrimaryName(null);
+    if (!archAddress) return;
+    void resolvePrimaryName(archAddress, { network: state.network }).then((name) => {
+      if (!cancelled) setPrimaryName(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [archAddress, state.network]);
 
   if (!activeAccount) return null;
 
@@ -113,6 +127,9 @@ export default function Receive() {
         <div className="receive-meta">
           <div className="receive-meta-label">{meta.label} address</div>
           <div className="receive-meta-network">{networkLabel}</div>
+          {tab === "arch" && primaryName && (
+            <div className="receive-meta-network">{primaryName}</div>
+          )}
         </div>
 
         {address ? (

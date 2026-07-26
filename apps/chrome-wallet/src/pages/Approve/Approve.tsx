@@ -47,6 +47,7 @@ import {
 } from "../../session/ensure-signing-session";
 import SessionBootstrapper from "../../session/SessionBootstrapper";
 import { assessOriginRisk, hostnameFromOrigin } from "../../utils/phishing";
+import { resolveName, resolvePrimaryName } from "../../utils/name-service";
 import {
   buildExplorerUrl,
   notifyTxBroadcast,
@@ -333,6 +334,58 @@ function ArchMessageHashSummary({ payload }: { payload: any }) {
           {messageHashHex}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Optional verified `.arch` metadata for a transfer destination.
+ * Authorization always uses the canonical address; a supplied name is
+ * shown only after local SDK resolution confirms it maps to that address.
+ * Otherwise we fall back to a validated primary reverse lookup.
+ */
+function VerifiedDestinationName({
+  address,
+  suppliedName,
+  network,
+}: {
+  address: string;
+  suppliedName?: string;
+  network: NetworkId;
+}) {
+  const [verifiedName, setVerifiedName] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setVerifiedName(null);
+    if (!address) return;
+
+    void (async () => {
+      const trimmed = suppliedName?.trim();
+      if (trimmed) {
+        const resolved = await resolveName(trimmed, { network });
+        if (
+          !cancelled &&
+          resolved?.source === "arch-name" &&
+          resolved.address === address
+        ) {
+          setVerifiedName(resolved.name ?? trimmed.toLowerCase());
+          return;
+        }
+      }
+      const primary = await resolvePrimaryName(address, { network });
+      if (!cancelled) setVerifiedName(primary);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [address, suppliedName, network]);
+
+  if (!verifiedName) return null;
+  return (
+    <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)" }}>
+      Verified name: {verifiedName}
     </div>
   );
 }
@@ -1506,6 +1559,11 @@ export default function Approve() {
               <div style={{ marginBottom: 8 }}>
                 <div className="input-label">To</div>
                 <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
+                <VerifiedDestinationName
+                  address={request.payload.to}
+                  suppliedName={request.payload.name}
+                  network={state.network}
+                />
               </div>
               <div>
                 <div className="input-label">Amount</div>
@@ -1541,6 +1599,11 @@ export default function Approve() {
               <div style={{ marginBottom: 8 }}>
                 <div className="input-label">To</div>
                 <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
+                <VerifiedDestinationName
+                  address={request.payload.to}
+                  suppliedName={request.payload.name}
+                  network={state.network}
+                />
               </div>
               <div>
                 <div className="input-label">Amount (raw units)</div>
