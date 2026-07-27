@@ -46,7 +46,8 @@ import { isExternalAccount, isWatchAccount, type WalletAccount } from "../../sta
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
-import { buildSessionSigner, ensureHubSession } from "../../utils/hub-session";
+import { buildSessionSigner } from "../../utils/hub-session";
+import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
   EmailSessionNeededError,
   ensureSigningSessionForAccount,
@@ -623,7 +624,10 @@ export default function Send({ networkStatus }: SendProps) {
       client.setSessionSigner(
         buildSessionSigner(activeAccount, externalUserId, state.network),
       );
-      await ensureHubSession(activeAccount, state.network);
+      await mintHubSessionWithRecovery(activeAccount, state.network, {
+        onRecovery: () => setSignStatus("Refreshing signing session…"),
+      });
+      setSignStatus("Preparing signing request…");
 
       const submitViaHub = async (): Promise<string> => {
         const action =

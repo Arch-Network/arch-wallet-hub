@@ -40,7 +40,8 @@ import {
 import { signerForAccount } from "../../signers/Signer";
 import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
-import { ensureHubSession, buildSessionSigner } from "../../utils/hub-session";
+import { buildSessionSigner } from "../../utils/hub-session";
+import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
   ensureSigningSessionForAccount,
   EmailSessionNeededError,
@@ -1165,7 +1166,7 @@ export default function Approve() {
         client.setSessionSigner(
           buildSessionSigner(selectedAccount, externalUserId, state.network),
         );
-        await ensureHubSession(selectedAccount, state.network);
+        await mintHubSessionWithRecovery(selectedAccount, state.network);
       }
 
       if (request.type === "CONNECT") {

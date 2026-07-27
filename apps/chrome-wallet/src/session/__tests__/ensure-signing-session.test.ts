@@ -1,4 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  close: vi.fn(),
+  ensureClient: vi.fn(),
+  openPasskeySessionForAccount: vi.fn(),
+}));
+
+vi.mock("../SessionManager", () => ({
+  sessionManager: { close: mocks.close, ensureClient: mocks.ensureClient },
+}));
+
+vi.mock("../../state/wallet-store", () => ({
+  walletStore: { openPasskeySessionForAccount: mocks.openPasskeySessionForAccount },
+}));
+
 import {
   EmailSessionNeededError,
   WatchOnlyAccountError,
@@ -96,5 +111,68 @@ describe("ensureSigningSessionForAccount > watch-only refusal", () => {
         expect(e.account).toBe(watchAccount);
       }
     }
+  });
+});
+
+/**
+ * Contract tests for the `forceFresh` recovery option.
+ *
+ * `forceFresh` is the programmatic equivalent of the manual lock/unlock
+ * users discovered fixes mid-send auth failures: close whatever session
+ * looks live (its IndexedDB key may have been rotated by another
+ * extension context, or the Turnkey-side API key may have aged out) and
+ * bootstrap a brand-new one. The send/approve flows invoke it exactly
+ * once after a Hub session-mint failure.
+ */
+describe("ensureSigningSessionForAccount > forceFresh recovery", () => {
+  const passkeyAccount: WalletAccount = {
+    id: "acct-1",
+    label: "Passkey wallet",
+    kind: "turnkey",
+    authMethod: "passkey",
+    btcAddress: "bc1ptest",
+    archAddress: "arch1test",
+    publicKeyHex: "0".repeat(64),
+    organizationId: "org-1",
+    turnkeyResourceId: "res-1",
+    createdAt: 0,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("without forceFresh, a live session is reused (no close, no reopen)", async () => {
+    mocks.ensureClient.mockResolvedValue({});
+    await ensureSigningSessionForAccount(passkeyAccount);
+    expect(mocks.close).not.toHaveBeenCalled();
+    expect(mocks.openPasskeySessionForAccount).not.toHaveBeenCalled();
+  });
+
+  it("with forceFresh, closes the current session and bootstraps a new one", async () => {
+    await ensureSigningSessionForAccount(passkeyAccount, { forceFresh: true });
+    expect(mocks.close).toHaveBeenCalledTimes(1);
+    // The live-looking session must NOT be trusted on this path.
+    expect(mocks.ensureClient).not.toHaveBeenCalled();
+    expect(mocks.openPasskeySessionForAccount).toHaveBeenCalledWith(passkeyAccount);
+  });
+
+  it("with forceFresh, an email wallet routes to the OTP gate after closing", async () => {
+    const emailAccount = { ...passkeyAccount, authMethod: "email" as const };
+    await expect(
+      ensureSigningSessionForAccount(emailAccount, { forceFresh: true }),
+    ).rejects.toBeInstanceOf(EmailSessionNeededError);
+    expect(mocks.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("with forceFresh, external accounts are still a no-op (no Turnkey session involved)", async () => {
+    const externalAccount = {
+      ...passkeyAccount,
+      kind: "external",
+      externalProvider: "xverse",
+    } as unknown as WalletAccount;
+    await ensureSigningSessionForAccount(externalAccount, { forceFresh: true });
+    expect(mocks.close).not.toHaveBeenCalled();
+    expect(mocks.openPasskeySessionForAccount).not.toHaveBeenCalled();
   });
 });
