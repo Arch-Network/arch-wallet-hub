@@ -2617,7 +2617,7 @@ a {
 .receive-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
 }
 
 .receive-header {
@@ -2647,7 +2647,7 @@ a {
   background: var(--surface-card);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-pill);
-  padding: 4px;
+  padding: 3px;
   gap: 2px;
 }
 
@@ -2655,7 +2655,7 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
+  padding: 7px 14px;
   border-radius: var(--radius-pill);
   background: transparent;
   border: none;
@@ -2690,8 +2690,8 @@ a {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 18px;
-  padding: 24px 20px 22px;
+  gap: 12px;
+  padding: 16px;
   background: var(--surface-card);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-popup);
@@ -2714,12 +2714,12 @@ a {
 
 .receive-qr-frame {
   position: relative;
-  padding: 14px;
+  padding: 10px;
   background: #ffffff;
   border-radius: var(--radius-card);
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.08) inset,
-    0 18px 40px rgba(0, 0, 0, 0.45),
+    0 10px 24px rgba(0, 0, 0, 0.3),
     0 0 0 1px color-mix(in srgb, var(--color-primary) 25%, transparent);
   display: inline-flex;
   align-items: center;
@@ -2731,8 +2731,8 @@ a {
 }
 
 .receive-qr-skeleton {
-  width: 188px;
-  height: 188px;
+  width: 156px;
+  height: 156px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2766,7 +2766,7 @@ a {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 14px;
+  padding: 10px 12px;
   background: var(--surface-subtle);
   border: 1px solid color-mix(in srgb, var(--color-primary) 18%, transparent);
   border-radius: var(--radius-input);
@@ -2895,8 +2895,8 @@ a {
     font-size: 14px;
   }
   html[data-mode="sidepanel"] .receive-card {
-    padding: 28px 24px 24px;
-    gap: 20px;
+    padding: 18px 20px;
+    gap: 12px;
   }
   html[data-mode="sidepanel"] .receive-address-text {
     font-size: 13px;

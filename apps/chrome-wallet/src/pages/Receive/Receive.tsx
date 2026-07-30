@@ -107,23 +107,6 @@ export default function Receive() {
       </div>
 
       <div className="receive-card">
-        <div className="receive-qr-frame">
-          {address ? (
-            <QRCodeSVG
-              value={address}
-              size={wide ? 220 : 188}
-              bgColor="#ffffff"
-              fgColor="#0d0f17"
-              level="M"
-              marginSize={2}
-            />
-          ) : (
-            <div className="receive-qr-skeleton" aria-hidden>
-              <div className="spinner" />
-            </div>
-          )}
-        </div>
-
         <div className="receive-meta">
           <div className="receive-meta-label">{meta.label} address</div>
           <div className="receive-meta-network">{networkLabel}</div>
@@ -158,6 +141,23 @@ export default function Receive() {
             {tab === "arch" ? "Resolving Arch address..." : "No address available"}
           </div>
         )}
+
+        <div className="receive-qr-frame">
+          {address ? (
+            <QRCodeSVG
+              value={address}
+              size={wide ? 176 : 156}
+              bgColor="#ffffff"
+              fgColor="#0d0f17"
+              level="M"
+              marginSize={2}
+            />
+          ) : (
+            <div className="receive-qr-skeleton" aria-hidden>
+              <div className="spinner" />
+            </div>
+          )}
+        </div>
 
         {tab === "btc" && btcUsd && (
           <div className="receive-price">

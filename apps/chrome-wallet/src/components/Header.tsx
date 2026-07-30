@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { truncateAddress } from "../utils/format";
-import { reEncodeTaprootAddress } from "../utils/addressNetwork";
 import { hasConfirmedMainnet, markMainnetConfirmed } from "../utils/mainnet-confirm";
 import { openAnsManager, resolvePrimaryName } from "../utils/name-service";
 import { useWideMode } from "../hooks/useWideMode";
@@ -178,10 +177,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 }
 
 export default function Header({ account, network, networkStatus, onLock, onNetworkChange }: HeaderProps) {
-  const displayAddress = useMemo(
-    () => account ? reEncodeTaprootAddress(account.btcAddress, network) : "",
-    [account, network]
-  );
+  const displayAddress = account?.archAddress ?? "";
   const [primaryName, setPrimaryName] = useState<string | null>(null);
   const wide = useWideMode(720);
   const veryWide = useWideMode(1000);
