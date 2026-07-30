@@ -123,6 +123,7 @@ function StatusRow({ status }: { status: Status }) {
     borderRadius: 6,
     fontSize: 11,
     lineHeight: 1.4 as const,
+    overflowWrap: "anywhere" as const,
   };
 
   if (status.kind === "sent") {

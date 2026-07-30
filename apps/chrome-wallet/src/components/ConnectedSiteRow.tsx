@@ -179,11 +179,20 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
               fontWeight: 500,
               color: "var(--accent)",
               textDecoration: "none",
+              overflowWrap: "anywhere",
             }}
           >
             {site.name || origin} {"\u2197"}
           </a>
-          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{origin}</div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--text-muted)",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {origin}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
           <button

@@ -430,7 +430,7 @@ export default function Settings() {
                     }}
                   />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflowWrap: "anywhere" }}>
                       {acct.label}
                       <span
                         style={{

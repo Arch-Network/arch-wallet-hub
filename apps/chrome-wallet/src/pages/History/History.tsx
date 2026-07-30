@@ -526,6 +526,7 @@ export default function History() {
             background: "rgba(255,176,32,0.10)",
             border: "1px solid rgba(255,176,32,0.30)",
             fontSize: 12,
+            overflowWrap: "anywhere",
           }}
         >
           {banner.kind === "rate-limit" ? (
