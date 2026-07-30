@@ -32,6 +32,7 @@ import type { PoolClient } from "pg";
 import crypto from "node:crypto";
 import { schnorr } from "@noble/curves/secp256k1";
 import { Verifier } from "@saturnbtcio/bip322-js";
+import { bip341TweakedOutputKeyHex } from "../arch/address.js";
 
 export const SESSION_TOKEN_PREFIX = "whs_v1_";
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
@@ -299,6 +300,16 @@ function toXOnlyPubkeyHex(publicKeyHex: string): string | null {
  * Accepts compressed (66 hex) or uncompressed (130 hex) pubkeys as
  * well as already-x-only (64 hex) — Turnkey persists the compressed
  * form on `turnkey_resources.default_public_key_hex`.
+ *
+ * Two keys are accepted for the same resource: the stored internal
+ * key and its BIP-341 tweaked output key. Turnkey signs raw payloads
+ * for a P2TR wallet account with the *tweaked* key (that's what makes
+ * its signatures valid taproot key-path spends, and it's the key
+ * /signing-requests/:id/submit verifies against), while
+ * `default_public_key_hex` is the untweaked internal key. Verifying
+ * against only one of the two rejected every real wallet-minted
+ * signature. Both keys are deterministically derived from the same
+ * private key, so accepting either proves the same control.
  */
 export function verifyChallengeSignature(params: {
   payloadHex: string;
@@ -314,15 +325,28 @@ export function verifyChallengeSignature(params: {
   if (cleanSig.length !== 128) return false;
   if (cleanPayload.length !== 64) return false;
   if (!xOnlyPub) return false;
+
+  const verifyWith = (pubkeyHex: string): boolean => {
+    try {
+      return schnorr.verify(
+        Buffer.from(cleanSig, "hex"),
+        Buffer.from(cleanPayload, "hex"),
+        Buffer.from(pubkeyHex, "hex"),
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  if (verifyWith(xOnlyPub)) return true;
+
+  let tweakedHex: string;
   try {
-    return schnorr.verify(
-      Buffer.from(cleanSig, "hex"),
-      Buffer.from(cleanPayload, "hex"),
-      Buffer.from(xOnlyPub, "hex"),
-    );
+    tweakedHex = bip341TweakedOutputKeyHex(xOnlyPub);
   } catch {
     return false;
   }
+  return verifyWith(tweakedHex);
 }
 
 /**
