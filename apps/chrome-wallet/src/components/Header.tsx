@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { truncateAddress } from "../utils/format";
 import { reEncodeTaprootAddress } from "../utils/addressNetwork";
 import { hasConfirmedMainnet, markMainnetConfirmed } from "../utils/mainnet-confirm";
-import { resolvePrimaryName } from "../utils/name-service";
+import { openAnsManager, resolvePrimaryName } from "../utils/name-service";
 import { useWideMode } from "../hooks/useWideMode";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
@@ -218,9 +218,14 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
           )}
 
           {account && primaryName && (
-            <span className="address-chip" title={primaryName}>
+            <button
+              type="button"
+              className="address-chip address-chip-link"
+              title={`View ${primaryName} on ANS`}
+              onClick={() => void openAnsManager({ view: primaryName })}
+            >
               {primaryName}
-            </span>
+            </button>
           )}
 
           {account && displayAddress && (

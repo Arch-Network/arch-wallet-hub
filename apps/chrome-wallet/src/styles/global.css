@@ -2983,6 +2983,30 @@ a {
   white-space: nowrap;
 }
 
+button.address-chip-link {
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-primary);
+}
+button.address-chip-link:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 35%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.receive-meta-link {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-primary);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .address-chip-wrap {
   display: flex;
   align-items: flex-start;

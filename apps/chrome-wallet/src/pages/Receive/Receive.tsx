@@ -7,7 +7,7 @@ import { deriveArchAccountAddress } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { formatUsd } from "../../utils/format";
-import { resolvePrimaryName } from "../../utils/name-service";
+import { isAnsEnabledForNetwork, openAnsManager, resolvePrimaryName } from "../../utils/name-service";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 
@@ -128,7 +128,23 @@ export default function Receive() {
           <div className="receive-meta-label">{meta.label} address</div>
           <div className="receive-meta-network">{networkLabel}</div>
           {tab === "arch" && primaryName && (
-            <div className="receive-meta-network">{primaryName}</div>
+            <button
+              type="button"
+              className="receive-meta-network receive-meta-link"
+              title={`View ${primaryName} on ANS`}
+              onClick={() => void openAnsManager({ view: primaryName })}
+            >
+              {primaryName}
+            </button>
+          )}
+          {tab === "arch" && isAnsEnabledForNetwork(state.network) && !primaryName && (
+            <button
+              type="button"
+              className="receive-meta-network receive-meta-link"
+              onClick={() => void openAnsManager("register")}
+            >
+              Get a .arch name
+            </button>
           )}
         </div>
 

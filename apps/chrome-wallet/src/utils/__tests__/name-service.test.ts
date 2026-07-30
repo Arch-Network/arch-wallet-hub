@@ -1,8 +1,11 @@
 import bs58 from "bs58";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ansManagerUrl,
+  isAnsEnabledForNetwork,
   isArchAddress,
   isArchName,
+  openAnsManager,
   resolveName,
   resolvePrimaryName,
 } from "../name-service";
@@ -11,11 +14,42 @@ const owner = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
 const ownerAddress = bs58.encode(owner);
 
 describe("name service", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("recognizes ANS names and 32-byte base58 Arch addresses", () => {
     expect(isArchName("Alice.arch")).toBe(true);
     expect(isArchName("alice.eth")).toBe(false);
     expect(isArchAddress(ownerAddress)).toBe(true);
     expect(isArchAddress("not-an-address")).toBe(false);
+  });
+
+  it("enables ANS on testnet only until a mainnet manifest exists", () => {
+    expect(isAnsEnabledForNetwork("testnet4")).toBe(true);
+    expect(isAnsEnabledForNetwork("mainnet")).toBe(false);
+  });
+
+  it("builds ANS manager deep links", () => {
+    expect(ansManagerUrl("explore")).toBe("https://id.arch.network/#/explore");
+    expect(ansManagerUrl("manage")).toBe("https://id.arch.network/#/manage");
+    expect(ansManagerUrl("names")).toBe("https://id.arch.network/#/names");
+    expect(ansManagerUrl("register")).toBe("https://id.arch.network/#/register");
+    expect(ansManagerUrl({ view: "Matt.arch" })).toBe(
+      "https://id.arch.network/#/view?name=matt.arch",
+    );
+  });
+
+  it("opens ANS manager via chrome.tabs when available", async () => {
+    const create = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("chrome", { tabs: { create } });
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+
+    await openAnsManager("explore");
+    expect(create).toHaveBeenCalledWith({ url: "https://id.arch.network/#/explore" });
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("preserves literal Bitcoin and Arch addresses", async () => {

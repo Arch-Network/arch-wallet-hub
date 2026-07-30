@@ -57,7 +57,7 @@ import {
   rawTokenAmountToInput,
   usdInputToBtc,
 } from "../../utils/send-amounts";
-import { isArchName, resolveName, type NameResolution } from "../../utils/name-service";
+import { isArchName, isAnsEnabledForNetwork, resolveName, type NameResolution } from "../../utils/name-service";
 
 type AssetType = "btc" | "arch" | "apl";
 type RecipientResolution =
@@ -965,7 +965,7 @@ export default function Send({ networkStatus }: SendProps) {
       }
       if (recipientResolution.status !== "resolved") {
         setError(
-          isArchName(recipient) && state.network === "mainnet"
+          isArchName(recipient) && !isAnsEnabledForNetwork(state.network)
             ? "Arch Name Service is not available on mainnet yet."
             : "Enter a valid Arch address or a resolvable .arch name.",
         );
@@ -1156,7 +1156,7 @@ export default function Send({ networkStatus }: SendProps) {
           )}
           {asset !== "btc" && recipientResolution.status === "invalid" && (
             <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
-              {isArchName(recipient) && state.network === "mainnet"
+              {isArchName(recipient) && !isAnsEnabledForNetwork(state.network)
                 ? "Arch Name Service is not available on mainnet yet."
                 : "Unresolved name or invalid Arch address."}
             </div>
