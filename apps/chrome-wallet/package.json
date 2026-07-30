@@ -1,6 +1,6 @@
 {
   "name": "@arch/chrome-wallet",
-  "version": "0.7.13",
+  "version": "0.7.14",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "screenshots": "wxt build && playwright test --config screenshots/playwright.config.ts"
   },
   "dependencies": {
+    "@arch-network/ans-sdk": "0.1.0-testnet.3",
     "@arch-network/arch-sdk": "^0.0.26",
     "@arch-network/wallet-hub-sdk": "file:../../packages/wallet-hub-sdk",
     "@arch/swap-engine": "file:../../packages/arch-swap-engine",

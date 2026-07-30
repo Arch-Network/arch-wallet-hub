@@ -58,8 +58,12 @@ import {
   rawTokenAmountToInput,
   usdInputToBtc,
 } from "../../utils/send-amounts";
+import { isArchName, isAnsEnabledForNetwork, resolveName, type NameResolution } from "../../utils/name-service";
 
 type AssetType = "btc" | "arch" | "apl";
+type RecipientResolution =
+  | { status: "idle" | "resolving" | "invalid"; result: null }
+  | { status: "resolved"; result: NameResolution };
 
 interface TokenHolding {
   mint: string;
@@ -160,6 +164,11 @@ export default function Send({ networkStatus }: SendProps) {
   const [asset, setAsset] = useState<AssetType | null>(null);
   const [selectedToken, setSelectedToken] = useState<TokenHolding | null>(null);
   const [recipient, setRecipient] = useState("");
+  const [recipientResolution, setRecipientResolution] = useState<RecipientResolution>({
+    status: "idle",
+    result: null,
+  });
+  const [reviewRecipient, setReviewRecipient] = useState<string | null>(null);
   const [showQrScanner, setShowQrScanner] = useState(false);
   const [amount, setAmount] = useState("");
   const presetMint = searchParams.get("mint");
@@ -190,6 +199,32 @@ export default function Send({ networkStatus }: SendProps) {
   const [preparing, setPreparing] = useState(false);
   const [feeTiers, setFeeTiers] = useState<FeeTier[]>(() => buildFeeTiers(null));
   const [feeTierId, setFeeTierId] = useState<FeeTierId>(DEFAULT_FEE_TIER_ID);
+
+  useEffect(() => {
+    setReviewRecipient(null);
+    if (asset === "btc" || !recipient.trim()) {
+      setRecipientResolution({ status: "idle", result: null });
+      return;
+    }
+
+    let cancelled = false;
+    setRecipientResolution({ status: "resolving", result: null });
+    const timeout = setTimeout(() => {
+      void resolveName(recipient, { network: state.network }).then((result) => {
+        if (cancelled) return;
+        setRecipientResolution(
+          result
+            ? { status: "resolved", result }
+            : { status: "invalid", result: null },
+        );
+      });
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [asset, recipient, state.network]);
 
   useEffect(() => {
     if (!activeAccount) return;
@@ -598,6 +633,10 @@ export default function Send({ networkStatus }: SendProps) {
     if (asset === "btc") {
       return handleBtcSign();
     }
+    if (!reviewRecipient) {
+      setError("Recipient is no longer resolved. Return and review the address again.");
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -635,14 +674,14 @@ export default function Send({ networkStatus }: SendProps) {
             ? {
                 type: "arch.token_transfer" as const,
                 mintAddress: selectedToken.mint,
-                toAddress: recipient,
+                toAddress: reviewRecipient,
                 amount: aplRawAmount!.toString(),
                 sourceTokenAccount: selectedToken.tokenAccount,
                 decimals: selectedToken.decimals,
               }
             : {
                 type: "arch.transfer" as const,
-                toAddress: recipient,
+                toAddress: reviewRecipient,
                 lamports: archLamports,
               };
 
@@ -710,10 +749,14 @@ export default function Send({ networkStatus }: SendProps) {
       setTxResult({ txid: displayTxid, rawTxid: txid });
       if (asset === "apl" || asset === "arch") {
         void addRecentRecipient({
-          address: recipient.trim(),
+          address: reviewRecipient,
           asset,
           network: state.network,
           mint: asset === "apl" ? selectedToken?.mint : undefined,
+          label:
+            recipientResolution.result?.source === "arch-name"
+              ? recipientResolution.result.name
+              : undefined,
         });
       }
 
@@ -747,7 +790,7 @@ export default function Send({ networkStatus }: SendProps) {
       setLoading(false);
       setSignStatus(null);
     }
-  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, signWithExternalWallet, handleBtcSign, addRecentRecipient, state.network]);
+  }, [activeAccount, asset, selectedToken, reviewRecipient, amount, signWithPasskey, signWithExternalWallet, handleBtcSign, addRecentRecipient, state.network, recipientResolution.result]);
 
   const handleOtpReady = useCallback(() => {
     setOtpAccount(null);
@@ -759,6 +802,8 @@ export default function Send({ networkStatus }: SendProps) {
     setAsset(null);
     setSelectedToken(null);
     setRecipient("");
+    setReviewRecipient(null);
+    setRecipientResolution({ status: "idle", result: null });
     setAmount("");
     setError("");
     setTxResult(null);
@@ -920,7 +965,18 @@ export default function Send({ networkStatus }: SendProps) {
       setError("");
       if (asset === "btc") {
         handlePrepareBtc();
-      } else if (asset === "apl" && selectedToken) {
+        return;
+      }
+      if (recipientResolution.status !== "resolved") {
+        setError(
+          isArchName(recipient) && !isAnsEnabledForNetwork(state.network)
+            ? "Arch Name Service is not available on mainnet yet."
+            : "Enter a valid Arch address or a resolvable .arch name.",
+        );
+        return;
+      }
+      setReviewRecipient(recipientResolution.result.address);
+      if (asset === "apl" && selectedToken) {
         try {
           const rawAmount = parseTokenDisplayAmountToRaw(amount, selectedToken.decimals);
           const availableRaw = parseRawTokenAmount(selectedToken.rawAmount);
@@ -1093,6 +1149,22 @@ export default function Send({ networkStatus }: SendProps) {
               This address looks like {detectBtcNetwork(recipient.trim()) === "mainnet" ? "Mainnet" : "Testnet"} but you are on {state.network === "mainnet" ? "Mainnet" : "Testnet"}. Sending will fail or burn funds.
             </div>
           )}
+          {asset !== "btc" && recipientResolution.status === "resolving" && (
+            <div className="form-field-hint">Resolving recipient…</div>
+          )}
+          {asset !== "btc" && recipientResolution.status === "resolved" && (
+            <div className="form-field-hint mono">
+              {recipientResolution.result.source === "arch-name" ? "Resolved: " : "Address: "}
+              {recipientResolution.result.address}
+            </div>
+          )}
+          {asset !== "btc" && recipientResolution.status === "invalid" && (
+            <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+              {isArchName(recipient) && !isAnsEnabledForNetwork(state.network)
+                ? "Arch Name Service is not available on mainnet yet."
+                : "Unresolved name or invalid Arch address."}
+            </div>
+          )}
           {recentMatches.length > 0 && (
             <div className="recent-recipients" role="list" aria-label="Recent recipients">
               {recentMatches.map((r) => {
@@ -1205,7 +1277,12 @@ export default function Send({ networkStatus }: SendProps) {
 
         <button
           className="btn btn-primary btn-full"
-          disabled={!recipient || !amount || preparing}
+          disabled={
+            !recipient ||
+            !amount ||
+            preparing ||
+            (asset !== "btc" && recipientResolution.status !== "resolved")
+          }
           onClick={handleReview}
         >
           {preparing ? "Preparing…" : "Review"}
@@ -1270,7 +1347,12 @@ export default function Send({ networkStatus }: SendProps) {
           <div className="review-row">
             <div className="review-row-label">To</div>
             <div className="review-row-value">
-              <span className="review-row-mono">{recipient}</span>
+              <span className="review-row-mono">
+                {asset === "btc" ? recipient : reviewRecipient}
+              </span>
+              {asset !== "btc" && recipientResolution.result?.source === "arch-name" && (
+                <span className="review-row-sub">{recipientResolution.result.name}</span>
+              )}
             </div>
           </div>
           <div className="review-row">

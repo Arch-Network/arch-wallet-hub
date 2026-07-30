@@ -12,6 +12,7 @@ import { ConnectedSiteRow } from "../../components/ConnectedSiteRow";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
 import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "../../state/types";
 import { APP_VERSION } from "../../utils/version";
+import { isAnsEnabledForNetwork, openAnsManager } from "../../utils/name-service";
 import DiagnosticsLogView from "../../components/DiagnosticsLogView";
 import { isSentryAvailableForOptIn } from "../../utils/log";
 import {
@@ -589,6 +590,47 @@ export default function Settings() {
           </div>
         )}
       </div>
+
+      {isAnsEnabledForNetwork(state.network) && (
+        <div className="section">
+          <div className="section-title">Arch Name Service</div>
+          <div className="card" style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Testnet marketplace and name management open in the ANS manager.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => void openAnsManager("explore")}
+              >
+                Marketplace
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => void openAnsManager("names")}
+              >
+                My names
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-secondary"
+                onClick={() => void openAnsManager("manage")}
+              >
+                Manage
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={() => void openAnsManager("register")}
+              >
+                Register
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="section">
         <div className="section-title">

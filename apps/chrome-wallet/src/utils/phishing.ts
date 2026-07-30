@@ -76,6 +76,7 @@ export const TRUSTED_HOST_LIST: readonly string[] = [
   "arch.network",
   "hub.arch.network",
   "explorer.arch.network",
+  "id.arch.network",
 ];
 
 /**

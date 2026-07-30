@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { truncateAddress } from "../utils/format";
-import { reEncodeTaprootAddress } from "../utils/addressNetwork";
 import { hasConfirmedMainnet, markMainnetConfirmed } from "../utils/mainnet-confirm";
+import { openAnsManager, resolvePrimaryName } from "../utils/name-service";
 import { useWideMode } from "../hooks/useWideMode";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
@@ -177,13 +177,23 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 }
 
 export default function Header({ account, network, networkStatus, onLock, onNetworkChange }: HeaderProps) {
-  const displayAddress = useMemo(
-    () => account ? reEncodeTaprootAddress(account.btcAddress, network) : "",
-    [account, network]
-  );
+  const displayAddress = account?.archAddress ?? "";
+  const [primaryName, setPrimaryName] = useState<string | null>(null);
   const wide = useWideMode(720);
   const veryWide = useWideMode(1000);
   const addrChars = veryWide ? 16 : wide ? 10 : 5;
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrimaryName(null);
+    if (!account?.archAddress) return;
+    void resolvePrimaryName(account.archAddress, { network }).then((name) => {
+      if (!cancelled) setPrimaryName(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.archAddress, network]);
 
   return (
     <header className="app-header">
@@ -201,6 +211,17 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
               <span className={`network-dot ${dotClass(networkStatus)}`} />
               {network === "testnet4" ? "TESTNET" : "MAINNET"}
             </span>
+          )}
+
+          {account && primaryName && (
+            <button
+              type="button"
+              className="address-chip address-chip-link"
+              title={`View ${primaryName} on ANS`}
+              onClick={() => void openAnsManager({ view: primaryName })}
+            >
+              {primaryName}
+            </button>
           )}
 
           {account && displayAddress && (

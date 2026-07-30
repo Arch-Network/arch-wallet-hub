@@ -25,6 +25,7 @@ import { normalizeArchStatus } from "../../utils/tx-status";
 import {
   configureSwapEngineFromAppState,
 } from "../../utils/swap-engine";
+import { isAnsEnabledForNetwork, openAnsManager } from "../../utils/name-service";
 import ArchIcon from "../../components/ArchIcon";
 import PortfolioHero from "../../components/PortfolioHero";
 import { TokenIcon } from "../../components/TokenIcon";
@@ -574,6 +575,7 @@ export default function Dashboard() {
   }, [archAddress, archLamports]);
 
   const isTestnet = state.network === "testnet4";
+  const ansEnabled = isAnsEnabledForNetwork(state.network);
   const balancesReady = overviewLoaded;
 
   // The swap engine has its own NetworkConfig (token mints, program ids,
@@ -641,6 +643,23 @@ export default function Dashboard() {
                 )}
               </span>
               Airdrop
+            </button>
+          )}
+          {ansEnabled && (
+            <button
+              className="action-btn"
+              onClick={() => void openAnsManager("explore")}
+              title="Browse .arch names on testnet"
+            >
+              <span className="action-btn-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="9" />
+                  <path d="M3 12h18" />
+                  <path d="M12 3a14 14 0 0 1 0 18" />
+                  <path d="M12 3a14 14 0 0 0 0 18" />
+                </svg>
+              </span>
+              Names
             </button>
           )}
           <button className="action-btn" onClick={() => navigate("/tokens")}>
