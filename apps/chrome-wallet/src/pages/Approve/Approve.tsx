@@ -180,7 +180,7 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
       {summary.kind === "text" && (
         <>
           <div className="input-label">Message</div>
-          <div style={{ whiteSpace: "pre-wrap", fontSize: 13, marginBottom: 8 }}>{summary.text}</div>
+          <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 13, marginBottom: 8 }}>{summary.text}</div>
           <button className="btn-link" onClick={() => setShowHex((v) => !v)} style={{ background: "none", border: "none", padding: 0, color: "var(--text-muted)", fontSize: 11, textDecoration: "underline" }}>
             {showHex ? "Hide hex" : "Show hex"}
           </button>
@@ -221,12 +221,12 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
           )}
           <div style={{ marginBottom: 8 }}>
             <div className="input-label">Sign in to</div>
-            <div style={{ fontWeight: 600 }}>{summary.siwa.domain}</div>
+            <div style={{ fontWeight: 600, overflowWrap: "anywhere" }}>{summary.siwa.domain}</div>
           </div>
           {summary.siwa.statement && (
             <div style={{ marginBottom: 8 }}>
               <div className="input-label">Statement</div>
-              <div style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>
+              <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 13 }}>
                 {summary.siwa.statement}
               </div>
             </div>
@@ -243,7 +243,7 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
               {summary.siwa.uri}
             </div>
           </div>
-          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
             Chain: {summary.siwa.chainId} · Issued {summary.siwa.issuedAt}
             {summary.siwa.expirationTime ? ` · Expires ${summary.siwa.expirationTime}` : ""}
             {" · Nonce "}
@@ -271,9 +271,9 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
                 padding: 8,
                 borderRadius: 6,
                 fontSize: 11,
-                overflowX: "auto",
                 marginTop: 6,
                 whiteSpace: "pre-wrap",
+                overflowWrap: "anywhere",
               }}
             >
               {summary.text}
@@ -290,9 +290,9 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
             </div>
           )}
           <div className="input-label">Message</div>
-          <div style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{summary.text}</div>
+          <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 13 }}>{summary.text}</div>
           {summary.url && (
-            <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)" }}>
+            <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
               Embedded URL: {summary.url}
             </div>
           )}
@@ -385,7 +385,7 @@ function VerifiedDestinationName({
 
   if (!verifiedName) return null;
   return (
-    <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)" }}>
+    <div style={{ marginTop: 4, fontSize: 12, color: "var(--text-secondary)", overflowWrap: "anywhere" }}>
       Verified name: {verifiedName}
     </div>
   );
@@ -602,9 +602,9 @@ function TokenBalanceCard({
   return (
     <div className="card" style={{ marginTop: 8 }}>
       <div className="input-label">Pre-flight token balance (raw units)</div>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 4 }}><span>Current</span><span className="mono">{gate.snapshot.amount.toString()}</span></div>
-      {requestedAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 2 }}><span>This transfer</span><span className="mono">- {requestedAmount.toString()}</span></div>}
-      {gate.state === "ok" && gate.postAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--border)", fontWeight: 600 }}><span>After</span><span className="mono">{gate.postAmount.toString()}</span></div>}
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4 }}><span>Current</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{gate.snapshot.amount.toString()}</span></div>
+      {requestedAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 2 }}><span>This transfer</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>- {requestedAmount.toString()}</span></div>}
+      {gate.state === "ok" && gate.postAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--border)", fontWeight: 600 }}><span>After</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{gate.postAmount.toString()}</span></div>}
       {gate.state === "blocked" && <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>Insufficient token balance: requested {gate.requestedAmount.toString()}, available {gate.availableAmount.toString()}. Refusing to sign.</div>}
     </div>
   );
@@ -1608,7 +1608,7 @@ export default function Approve() {
               </div>
               <div>
                 <div className="input-label">Amount (raw units)</div>
-                <div style={{ fontWeight: 600 }}>{request.payload.amount}</div>
+                <div style={{ fontWeight: 600, overflowWrap: "anywhere", wordBreak: "break-all" }}>{request.payload.amount}</div>
               </div>
             </div>
             {tokenTransferGate && (

@@ -157,7 +157,7 @@ export default function TokenList() {
 
       <div className="card">
         {filtered.length === 0 ? (
-          <div style={{ padding: 16, textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
+          <div style={{ padding: 16, textAlign: "center", color: "var(--text-muted)", fontSize: 12, overflowWrap: "anywhere" }}>
             No tokens match "{searchQuery}"
           </div>
         ) : (
