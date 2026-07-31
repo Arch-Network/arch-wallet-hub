@@ -165,14 +165,19 @@ export async function resolveName(
   if (isArchAddress(trimmed)) return { address: trimmed, source: "literal" };
   if (!isArchName(trimmed) || !isAnsEnabledForNetwork(options.network)) return null;
 
+  // The `.arch` namespace is lowercase-only, so `Adams.arch` is the same name as
+  // `adams.arch`. Fold case before the lookup: `isArchName` accepts either, but
+  // older SDK builds reject a capitalized label instead of resolving it.
+  const canonical = trimmed.toLowerCase();
+
   try {
     const client = options.client ?? getClientForNetwork(options.network);
     if (!client) return null;
-    const owner = await client.resolveOwner(trimmed);
+    const owner = await client.resolveOwner(canonical);
     return {
       address: bs58.encode(owner),
       source: "arch-name",
-      name: trimmed.toLowerCase(),
+      name: canonical,
     };
   } catch {
     return null;

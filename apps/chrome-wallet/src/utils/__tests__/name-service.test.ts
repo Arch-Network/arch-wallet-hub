@@ -71,13 +71,39 @@ describe("name service", () => {
     };
 
     await expect(
-      resolveName("Alice.arch", { network: "testnet4", client }),
+      resolveName("alice.arch", { network: "testnet4", client }),
     ).resolves.toEqual({
       address: ownerAddress,
       source: "arch-name",
       name: "alice.arch",
     });
-    expect(client.resolveOwner).toHaveBeenCalledWith("Alice.arch");
+    expect(client.resolveOwner).toHaveBeenCalledWith("alice.arch");
+  });
+
+  /**
+   * `.arch` is lowercase-only, so a capitalized name is the same name and must
+   * reach the SDK folded — it used to be passed through and rejected.
+   */
+  it("folds case and whitespace before the lookup", async () => {
+    const client = {
+      resolveOwner: vi.fn().mockResolvedValue(owner),
+      resolvePrimary: vi.fn(),
+    };
+
+    for (const input of ["Alice.arch", "ALICE.ARCH", "  Alice.arch  "]) {
+      await expect(
+        resolveName(input, { network: "testnet4", client }),
+      ).resolves.toEqual({
+        address: ownerAddress,
+        source: "arch-name",
+        name: "alice.arch",
+      });
+    }
+    expect(client.resolveOwner.mock.calls).toEqual([
+      ["alice.arch"],
+      ["alice.arch"],
+      ["alice.arch"],
+    ]);
   });
 
   it("rejects invalid names and keeps ANS disabled on mainnet", async () => {
