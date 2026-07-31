@@ -17,15 +17,10 @@ npm install
 npx playwright install chromium   # required; new-headless build loads MV3 extensions
 ```
 
-- **`.env.local`** (optional but recommended): the Wallet Hub / Indexer keys
-  (`WXT_HUB_API_KEY_DEV`, `WXT_INDEXER_API_KEY_DEV`) are baked in at **build**
-  time, so they are picked up automatically by the `npm run build` step inside
-  `npm run screenshots`. Without them, a seeded wallet's data-rich screens
-  (balances, history) may render empty. See `.env.example`.
-- **`WALLET_SEED_FILE`** (optional): path to a JSON seed describing a real,
-  unlocked wallet's storage so data-rich screens can be captured. See
-  [Seeding a wallet](#seeding-a-wallet-for-data-rich-screens) below. Defaults
-  to `screenshots/seed.local.json` (gitignored) if present.
+No `.env.local`, real wallet, passkey, or network service is required. The
+harness creates an encrypted synthetic wallet and intercepts its fixture
+Indexer responses at the browser boundary. The resulting screens are real
+extension renders populated with non-sensitive testnet data.
 
 ## Run
 
@@ -46,49 +41,31 @@ why).
 | ------------ | ----------- | -------------------------------------- |
 | `onboarding` | no          | Welcome / create-wallet landing        |
 | `unlock`     | no          | Locked keystore (synthesized, no secret) |
-| `dashboard`  | yes         | Portfolio                              |
-| `send`       | yes         | Send form                              |
-| `receive`    | yes         | Receive / QR                           |
-| `history`    | yes         | Activity                               |
-| `settings`   | yes         | Settings                               |
+| `dashboard`  | synthetic  | Portfolio with fixture balances        |
+| `send`       | synthetic  | Send form with fixture fee tiers       |
+| `receive`    | synthetic  | Receive / QR                           |
+| `history`    | synthetic  | Activity empty state                   |
+| `settings`   | synthetic  | Settings                               |
 
 Each is captured in both `light` and `dark`.
 
-The `unlock` screen needs no real wallet: the harness synthesizes a
-structurally valid but empty sealed keystore (same AES-GCM/PBKDF2 crypto as the
-app) with **no session key**, which the app renders as the Unlock screen.
-
-## Seeding a wallet (for data-rich screens)
-
-Real onboarding uses passkey/email auth (Turnkey + Wallet Hub) and cannot be
-automated headlessly, so data-rich screens are driven from a developer-provided
-storage snapshot of an already-unlocked wallet.
-
-1. Build and load the extension, then unlock your wallet normally.
-2. Open the popup's DevTools console and run:
-
-   ```js
-   copy(JSON.stringify({
-     local: await chrome.storage.local.get(null),
-     session: await chrome.storage.session.get(null),
-   }))
-   ```
-
-3. Save the clipboard to `apps/chrome-wallet/screenshots/seed.local.json`
-   (or any path, then set `WALLET_SEED_FILE` to it).
-4. Re-run `npm run screenshots`.
-
-> ⚠️ **The seed file contains key material. It is gitignored. NEVER commit it.**
-
-If no seed is provided, the harness still runs end-to-end and captures the
-reachable screens (`onboarding`, `unlock`); the data-rich screens are logged as
-skipped.
+The `unlock` screen uses a structurally valid but empty sealed keystore (same
+AES-GCM/PBKDF2 crypto as the app) with **no session key**. The data-rich
+screens use a separate encrypted synthetic wallet with a temporary session key
+and testnet fixture data. Neither state contains a real credential, private
+key, or live account.
 
 ## Uploading to the Chrome Web Store
 
 1. Review the PNGs in `.screenshots/`.
 2. Go to the [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole)
    → the Arch Wallet item → **Store listing** → **Screenshots**.
-3. Upload the chosen 1280×800 PNGs (CWS also accepts 640×400). Order them so
-   the most compelling screen (e.g. dashboard) is first.
+3. Upload the chosen 1280×800 PNGs (CWS also accepts 640×400). Recommended
+   order: `dashboard-light`, `send-light`, `receive-dark`, then `settings-dark`.
 4. Save the draft and submit for review.
+
+Do not upload onboarding or unlock captures: they are valid harness coverage
+but do not communicate the wallet's primary user value. If the listing needs
+live-account data instead of the deterministic fixtures, capture it manually
+from an unlocked testnet-only wallet and redact addresses or balances as
+needed; never export or commit extension storage.

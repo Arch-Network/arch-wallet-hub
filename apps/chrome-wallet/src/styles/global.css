@@ -3012,6 +3012,72 @@ a {
   margin-bottom: 8px;
 }
 
+/* Settings links to the external ANS manager through one clear action.
+   Navigation within ANS belongs to that app, not in a second button bar here. */
+.ans-manager-card {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+
+.ans-manager-card:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--border-card));
+  background: color-mix(in srgb, var(--color-primary) 4%, var(--surface-card));
+}
+
+.ans-manager-card:active {
+  transform: scale(0.99);
+}
+
+.ans-manager-card:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.ans-manager-icon {
+  flex: 0 0 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  color: var(--color-primary);
+}
+
+.ans-manager-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.ans-manager-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.ans-manager-description {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.ans-manager-open {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.ans-manager-card:hover .ans-manager-open {
+  color: var(--color-primary);
+}
+
 /* ═══════════════════ Address Chip ═══════════════════ */
 
 .address-chip {

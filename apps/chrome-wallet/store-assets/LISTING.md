@@ -63,17 +63,33 @@ Arch Wallet serves a single purpose: it is a cryptocurrency wallet that lets use
 
 ## Screenshots & Store Icon
 
-These assets reflect the v0.7.0 design-system rebrand. Upload the screenshots and store icon manually via the Chrome Web Store developer dashboard.
+Generate the real extension captures before uploading:
 
-Screenshots (1280x800):
+```bash
+cd apps/chrome-wallet
+npm run screenshots
+```
 
-1. screenshot-home-light.png — Home dashboard in light theme with BTC + ARCH balances and quick actions
-2. screenshot-home-dark.png — Home dashboard in dark theme, showing the same view in the alternate theme
-3. screenshot-send-light.png — Send screen with address input, amount, and network fee
-4. screenshot-activity-dark.png — Activity screen with recent transaction history
+The command loads the built MV3 extension with a synthetic encrypted testnet
+wallet and intercepted fixture responses. It needs no live credentials or
+services. The generated images are intentionally gitignored in
+`apps/chrome-wallet/.screenshots/`; review and upload them manually rather
+than adding them to this repository.
+
+Screenshots (1280x800, recommended upload order):
+
+1. `.screenshots/dashboard-light.png` — portfolio dashboard with fixture BTC and ARCH balances
+2. `.screenshots/send-light.png` — send flow with available asset balances and fee tiers
+3. `.screenshots/receive-dark.png` — receive screen and QR code
+4. `.screenshots/settings-dark.png` — wallet preferences
+
+Do not use the onboarding or unlock captures in the public listing. They are
+generated for visual regression coverage, not product marketing.
 
 Store icon (128x128):
 
 - store-icon-128.png — Rebranded store icon
 
-> Note: The screenshots above are stylized promo mockups of the v0.7.0 design. Real-capture screenshots from the built extension are planned as a follow-up.
+Chrome Web Store accepts screenshots at 1280×800 or 640×400; this harness
+outputs 1280×800. See `apps/chrome-wallet/screenshots/README.md` for
+prerequisites, capture details, and the manual dashboard upload steps.
