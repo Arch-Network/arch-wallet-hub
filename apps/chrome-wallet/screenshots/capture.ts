@@ -1,11 +1,15 @@
 import { test, chromium, type BrowserContext, type Page } from "@playwright/test";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { compositeToCanvas, type CanvasTheme } from "./lib/composite";
-import { loadSeedFile, makeLockedKeystoreSeed, type StorageSeed } from "./lib/seed";
+import {
+  makeDeterministicWalletSeed,
+  makeLockedKeystoreSeed,
+  type StorageSeed,
+} from "./lib/seed";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.join(HERE, "..");
@@ -14,8 +18,6 @@ const OUTPUT_DIR = path.join(APP_ROOT, ".screenshots");
 const THEME_STORAGE_KEY = "arch_wallet_theme"; // src/utils/theme.ts
 const THEMES: CanvasTheme[] = ["light", "dark"];
 
-const SEED_FILE =
-  process.env.WALLET_SEED_FILE || path.join(HERE, "seed.local.json");
 const HEADED = process.env.HEADED === "1";
 
 interface ScreenDef {
@@ -27,8 +29,8 @@ interface ScreenDef {
 }
 
 // The wallet renders Onboarding when uninitialized and Unlock when sealed but
-// locked — both are reachable WITHOUT any secret. The remaining screens need a
-// seeded (unlocked) wallet supplied via WALLET_SEED_FILE.
+// locked — both are reachable WITHOUT any secret. The remaining screens use a
+// synthetic unlocked wallet and intercepted indexer responses.
 const SCREENS: ScreenDef[] = [
   { name: "onboarding", route: "", requiresSeed: false, settleMs: 1600, description: "Welcome / create wallet" },
   { name: "unlock", route: "", requiresSeed: false, settleMs: 1200, description: "Unlock (locked keystore)" },
@@ -47,25 +49,47 @@ interface CaptureResult {
   file?: string;
 }
 
-function detectEnvKeys(): Record<string, boolean> {
-  const envPath = path.join(APP_ROOT, ".env.local");
-  const wanted = ["WXT_HUB_API_KEY_DEV", "WXT_INDEXER_API_KEY_DEV"];
-  const present: Record<string, boolean> = Object.fromEntries(
-    wanted.map((k) => [k, false]),
-  );
-  if (!existsSync(envPath)) return present;
-  for (const line of readFileSync(envPath, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.+?)\s*$/);
-    if (m && wanted.includes(m[1]) && m[2].length > 0) present[m[1]] = true;
-  }
-  return present;
-}
-
 async function resolveExtensionId(context: BrowserContext): Promise<string> {
   let [sw] = context.serviceWorkers();
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 30_000 });
   // chrome-extension://<id>/background.js
   return new URL(sw.url()).host;
+}
+
+async function installDeterministicFixtures(context: BrowserContext): Promise<void> {
+  await context.route("https://screenshots.arch.network/**", async (route) => {
+    const pathName = new URL(route.request().url()).pathname;
+    const json = (body: unknown) =>
+      route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+
+    if (pathName.endsWith("/fee-estimates")) return json({ "1": 2, "3": 5, "6": 8 });
+    if (pathName.endsWith("/utxo")) {
+      return json([
+        {
+          txid: "11".repeat(32),
+          vout: 0,
+          value: 250_000,
+          status: { confirmed: true },
+        },
+      ]);
+    }
+    if (pathName.includes("/btc/address/")) {
+      return json({
+        chain_stats: { funded_txo_sum: 250_000, spent_txo_sum: 0 },
+        mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0 },
+      });
+    }
+    if (pathName.endsWith("/tokens")) return json({ tokens: [] });
+    if (pathName.includes("/transactions")) return json({ transactions: [] });
+    if (pathName.includes("/accounts/")) {
+      return json({
+        address: "11111111111111111111111111111111",
+        lamports_balance: 42_000_000_000,
+        transaction_count: 0,
+      });
+    }
+    return json({});
+  });
 }
 
 /** Reset extension storage, inject the seed for this screen, and reload. */
@@ -118,7 +142,7 @@ async function captureScreen(
       screen: screen.name,
       theme,
       status: "skipped",
-      reason: "seed did not unlock the wallet (set WALLET_SEED_FILE)",
+      reason: "synthetic wallet did not unlock the extension",
     };
   }
 
@@ -137,19 +161,13 @@ test("capture Chrome Web Store listing screenshots", async () => {
 
   mkdirSync(OUTPUT_DIR, { recursive: true });
 
-  const envKeys = detectEnvKeys();
-  const seedFromFile = loadSeedFile(SEED_FILE);
+  const deterministicSeed = await makeDeterministicWalletSeed();
   const lockedSeed = await makeLockedKeystoreSeed();
 
   console.log("\n=== Arch Wallet screenshot harness ===");
   console.log(`Extension: ${EXTENSION_DIR}`);
   console.log(`Output:    ${OUTPUT_DIR}`);
-  console.log(`Env keys:  ${JSON.stringify(envKeys)}`);
-  console.log(
-    seedFromFile
-      ? `Seed file: ${SEED_FILE} (present) — will attempt data-rich screens`
-      : `Seed file: none at ${SEED_FILE} — data-rich screens will be skipped`,
-  );
+  console.log("Data:      deterministic synthetic wallet + intercepted fixtures");
 
   const userDataDir = mkdtempSync(path.join(tmpdir(), "arch-wallet-screenshots-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -168,6 +186,7 @@ test("capture Chrome Web Store listing screenshots", async () => {
 
   const results: CaptureResult[] = [];
   try {
+    await installDeterministicFixtures(context);
     const extensionId = await resolveExtensionId(context);
     const baseUrl = `chrome-extension://${extensionId}/popup.html`;
     console.log(`Extension id: ${extensionId}\n`);
@@ -175,24 +194,13 @@ test("capture Chrome Web Store listing screenshots", async () => {
     const page = await context.newPage();
 
     for (const screen of SCREENS) {
-      const seed = screen.requiresSeed ? seedFromFile ?? undefined : undefined;
+      const seed = screen.requiresSeed ? deterministicSeed : undefined;
       if (screen.name === "unlock") {
         // Unlock needs a sealed-but-locked keystore (no secret involved).
         for (const theme of THEMES) {
           results.push(
             await captureScreen(page, baseUrl, screen, theme, lockedSeed),
           );
-        }
-        continue;
-      }
-      if (screen.requiresSeed && !seedFromFile) {
-        for (const theme of THEMES) {
-          results.push({
-            screen: screen.name,
-            theme,
-            status: "skipped",
-            reason: "no WALLET_SEED_FILE provided",
-          });
         }
         continue;
       }
@@ -215,7 +223,7 @@ test("capture Chrome Web Store listing screenshots", async () => {
 
   writeFileSync(
     path.join(OUTPUT_DIR, "manifest.json"),
-    JSON.stringify({ generatedAt: new Date().toISOString(), envKeys, results }, null, 2),
+    JSON.stringify({ generatedAt: new Date().toISOString(), results }, null, 2),
   );
 
   const captured = results.filter((r) => r.status === "captured");
@@ -226,8 +234,7 @@ test("capture Chrome Web Store listing screenshots", async () => {
   console.log(`\n${captured.length} captured, ${skipped.length} skipped.`);
   console.log(`Output: ${OUTPUT_DIR}\n`);
 
-  // The harness itself must succeed even when data-rich screens are skipped;
-  // we only fail if NOTHING could be captured (a real harness/extension fault).
+  // Fail only if the extension did not load or render at all.
   if (captured.length === 0) {
     throw new Error(
       "No screens captured — the extension failed to load or render. " +
