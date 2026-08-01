@@ -26,7 +26,13 @@
  */
 
 import bs58 from "bs58";
-import { TESTNET_CONFIG, MAINNET_CONFIG, type NetworkConfig, type TokenInfo } from "@arch/swap-engine";
+import {
+  TESTNET_CONFIG,
+  MAINNET_CONFIG,
+  type NetworkConfig,
+  type TokenInfo,
+  type TokenSymbol,
+} from "@arch/swap-engine";
 
 import type { NetworkId } from "../state/types";
 
@@ -35,6 +41,11 @@ export interface KnownTokenMeta {
   name: string;
   /** Short ticker, e.g. "BTC". */
   symbol: string;
+  /** The engine's canonical symbol for this mint, before any display
+   *  override. This is the asset the mint actually represents (aBTC's
+   *  engine symbol is "BTC"), so it — not `symbol` — is what pricing
+   *  and pool routing key off. */
+  engineSymbol: TokenSymbol;
   /** Decimals — authoritative; overrides any indexer-supplied value. */
   decimals: number;
   /** Asset path relative to the extension's public dir, e.g. "/btc.png".
@@ -117,6 +128,7 @@ function buildRegistry(
     const meta: KnownTokenMeta = {
       name: display.name,
       symbol: display.symbol,
+      engineSymbol: token.symbol,
       decimals: token.decimals,
       icon: token.icon,
       mintHex,
