@@ -16,7 +16,8 @@ import { InscriptionThumb } from "../../components/InscriptionThumb";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
-import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd } from "../../utils/format";
+import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd, formatUsd } from "../../utils/format";
+import { tokenUsdValue, usdPerUnitForMint } from "../../utils/token-usd";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { txHasRunestone } from "../../utils/btc-tx-classify";
@@ -596,6 +597,7 @@ export default function Dashboard() {
           btcSats={btcBalance ?? 0}
           archLamports={archLamports ?? 0}
           tokens={tokens ?? []}
+          network={state.network}
           btcUsd={btcUsd}
           archUsdFallback={null}
           refreshing={refreshing}
@@ -765,25 +767,37 @@ export default function Dashboard() {
                 const hiddenCount = allTokens.length - visible.length;
                 return (
                   <>
-                    {visible.map((tk) => (
-                      <div
-                        className="asset-row clickable"
-                        key={tk.mint}
-                        onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
-                      >
-                        <TokenIcon
-                          image={tk.image}
-                          symbol={tk.symbol}
-                          size={28}
-                          wrapperClassName="asset-icon apl"
-                        />
-                        <div className="asset-info">
-                          <div className="asset-name">{tk.name}</div>
-                          <div className="asset-sub">{tk.symbol}</div>
+                    {visible.map((tk) => {
+                      const usd = tokenUsdValue(
+                        tk.balance,
+                        tk.decimals,
+                        usdPerUnitForMint(tk.mint, state.network, btcUsd),
+                      );
+                      return (
+                        <div
+                          className="asset-row clickable"
+                          key={tk.mint}
+                          onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
+                        >
+                          <TokenIcon
+                            image={tk.image}
+                            symbol={tk.symbol}
+                            size={28}
+                            wrapperClassName="asset-icon apl"
+                          />
+                          <div className="asset-info">
+                            <div className="asset-name">{tk.name}</div>
+                            <div className="asset-sub">{tk.symbol}</div>
+                          </div>
+                          <div className="asset-balance-group">
+                            <div className="asset-balance">{tk.uiAmount}</div>
+                            {usd != null && (
+                              <div className="asset-balance-usd">{formatUsd(usd)}</div>
+                            )}
+                          </div>
                         </div>
-                        <div className="asset-balance">{tk.uiAmount}</div>
-                      </div>
-                    ))}
+                      );
+                    })}
                     {hiddenCount > 0 && (
                       <div className="token-more-row" onClick={() => navigate("/tokens")}>
                         <div className="asset-icon apl">

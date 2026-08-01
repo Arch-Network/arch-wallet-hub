@@ -1,8 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
+import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { getIndexer } from "../../utils/indexer";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
+import { formatUsd } from "../../utils/format";
+import { tokenUsdValue, usdPerUnitForMint } from "../../utils/token-usd";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
 
@@ -46,6 +49,7 @@ function BackArrow() {
 export default function TokenList() {
   const navigate = useNavigate();
   const { activeAccount, state } = useWallet();
+  const { price: btcUsd } = useBtcUsdPrice();
   const [tokens, setTokens] = useState<TokenHolding[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
@@ -161,36 +165,46 @@ export default function TokenList() {
             No tokens match "{searchQuery}"
           </div>
         ) : (
-          filtered.map((tk) => (
-            <div
-              key={tk.mint}
-              className="token-row"
-              role="button"
-              tabIndex={0}
-              onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  navigate(`/tokens/${encodeURIComponent(tk.mint)}`);
-                }
-              }}
-            >
-              <TokenIcon
-                image={tk.image}
-                symbol={tk.symbol}
-                size={28}
-                wrapperClassName="asset-icon apl"
-              />
-              <div className="asset-info" style={{ flex: 1, minWidth: 0 }}>
-                <div className="asset-name">{tk.name}</div>
-                <div className="asset-sub">{tk.symbol}</div>
+          filtered.map((tk) => {
+            const usd = tokenUsdValue(
+              tk.balance,
+              tk.decimals,
+              usdPerUnitForMint(tk.mint, state.network, btcUsd),
+            );
+            return (
+              <div
+                key={tk.mint}
+                className="token-row"
+                role="button"
+                tabIndex={0}
+                onClick={() => navigate(`/tokens/${encodeURIComponent(tk.mint)}`)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    navigate(`/tokens/${encodeURIComponent(tk.mint)}`);
+                  }
+                }}
+              >
+                <TokenIcon
+                  image={tk.image}
+                  symbol={tk.symbol}
+                  size={28}
+                  wrapperClassName="asset-icon apl"
+                />
+                <div className="asset-info" style={{ flex: 1, minWidth: 0 }}>
+                  <div className="asset-name">{tk.name}</div>
+                  <div className="asset-sub">{tk.symbol}</div>
+                </div>
+                <div className="asset-balance-group">
+                  <div className="asset-balance">{tk.uiAmount}</div>
+                  {usd != null && <div className="asset-balance-usd">{formatUsd(usd)}</div>}
+                </div>
+                <div className="token-row-chevron">
+                  <ChevronIcon />
+                </div>
               </div>
-              <div className="asset-balance">{tk.uiAmount}</div>
-              <div className="token-row-chevron">
-                <ChevronIcon />
-              </div>
-            </div>
-          ))
+            );
+          })
         )}
       </div>
     </>
