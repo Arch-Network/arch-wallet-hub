@@ -12,11 +12,15 @@
 import { useEffect, useState } from "react";
 import { valuatePortfolio, type PortfolioValuation } from "../utils/prices";
 import { formatArch } from "../utils/format";
+import type { NetworkId } from "../state/types";
 
 interface PortfolioHeroProps {
   btcSats: number;
   archLamports: string | number;
   tokens: { mint: string; balance: number; decimals: number }[];
+  /** Which network the balances came from; APL mints are resolved
+   *  per-network before they can be priced. */
+  network: NetworkId;
   /** BTC/USD rate already loaded by `useBtcUsdPrice`. We use it as a
    *  cheap shortcut to compute USD when CoinGecko also failed to load
    *  prices via the prices module. */
@@ -45,6 +49,7 @@ export default function PortfolioHero({
   btcSats,
   archLamports,
   tokens,
+  network,
   btcUsd,
   refreshing,
   onRefresh,
@@ -59,6 +64,7 @@ export default function PortfolioHero({
           btcSats,
           archLamports,
           tokens: tokens.map((t) => ({ mint: t.mint, rawAmount: t.balance, decimals: t.decimals })),
+          network,
         });
         if (!cancelled) setValuation(v);
       } catch {
@@ -68,7 +74,7 @@ export default function PortfolioHero({
     return () => {
       cancelled = true;
     };
-  }, [btcSats, archLamports, tokens]);
+  }, [btcSats, archLamports, tokens, network]);
 
   // Fall back to the legacy BTC-only USD shortcut when our prices
   // module produced 0 for BTC (e.g. CoinGecko offline) but we have a

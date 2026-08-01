@@ -40,6 +40,7 @@ import { isExternalAccount, isWatchAccount } from "../../state/types";
 import { getIndexer } from "../../utils/indexer";
 import { formatSwapAmount } from "../../utils/format";
 import { applyDisplayOverridesByMintHex, lookupKnownToken } from "../../utils/known-tokens";
+import { usdPerUnitForSymbol } from "../../utils/token-usd";
 import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
@@ -69,12 +70,6 @@ type TokenBalances = Partial<Record<TokenSymbol, number>>;
 type Direction = "sell" | "buy";
 
 type PickerState = { direction: Direction } | null;
-
-function priceForSymbol(symbol: TokenSymbol, btcPrice: number): number {
-  if (symbol === "BTC") return btcPrice;
-  if (symbol === "USDC" || symbol === "USDT") return 1;
-  return 0;
-}
 
 function pickTokens(
   symbols: TokenSymbol[],
@@ -361,8 +356,8 @@ export default function Swap() {
 
   const showUsdSell = state.network === "mainnet" && btcUsdPrice > 0;
   const showUsdBuy = showUsdSell;
-  const sellUsdValue = sellAmount * priceForSymbol(pair.sell, btcUsdPrice);
-  const buyUsdValue = buyAmount * priceForSymbol(pair.buy, btcUsdPrice);
+  const sellUsdValue = sellAmount * (usdPerUnitForSymbol(pair.sell, btcUsdPrice) ?? 0);
+  const buyUsdValue = buyAmount * (usdPerUnitForSymbol(pair.buy, btcUsdPrice) ?? 0);
 
   // ── validation ────────────────────────────────────────────────────
   const sellBalance = balances[pair.sell] ?? 0;
