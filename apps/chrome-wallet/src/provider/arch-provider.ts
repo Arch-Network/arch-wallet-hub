@@ -8,7 +8,12 @@ export const archProvider = {
   isArchWallet: true as const,
 
   async connect() {
-    const result = await channel.request<{ address: string; publicKey: string; archAddress: string }>("CONNECT");
+    const result = await channel.request<{
+      address: string;
+      publicKey: string;
+      archAddress: string;
+      kind?: string;
+    }>("CONNECT");
     emitter.emit("connect", result);
     return result;
   },
@@ -19,7 +24,12 @@ export const archProvider = {
   },
 
   async getAccount() {
-    return channel.request<{ address: string; publicKey: string; archAddress: string } | null>("GET_ACCOUNT");
+    return channel.request<{
+      address: string;
+      publicKey: string;
+      archAddress: string;
+      kind?: string;
+    } | null>("GET_ACCOUNT");
   },
 
   async getBalance() {

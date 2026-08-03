@@ -626,6 +626,7 @@ export default defineBackground(() => {
             address: reEncodeTaprootAddress(account.btcAddress, network),
             publicKey: account.publicKeyHex,
             archAddress: account.archAddress,
+            kind: account.kind,
           },
         };
       }

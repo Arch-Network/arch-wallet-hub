@@ -40,6 +40,7 @@ import {
 import { signerForAccount } from "../../signers/Signer";
 import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { signArchMessageHashWithExternalWallet } from "../../utils/external-arch-message-hash";
 import { buildSessionSigner } from "../../utils/hub-session";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
@@ -311,9 +312,22 @@ function MessageSummary({ payload, origin }: { payload: any; origin: string }) {
  * preview in its own UI; the user's job here is to confirm (a) the
  * dapp origin in the header above and (b) that the hash shown here
  * matches what the dapp claims to be signing.
+ *
+ * Linked external accounts sign via their source wallet's BIP-322
+ * `signMessage`, so Approve opens a second confirmation there.
  */
-function ArchMessageHashSummary({ payload }: { payload: any }) {
+function ArchMessageHashSummary({
+  payload,
+  account,
+}: {
+  payload: any;
+  account: WalletAccount | null | undefined;
+}) {
   const messageHashHex: string = payload?.messageHashHex ?? "";
+  const externalLabel =
+    account && isExternalAccount(account)
+      ? getExternalWalletAdapter(account.externalProvider).label
+      : null;
   return (
     <div className="card">
       <div style={{ marginBottom: 8 }}>
@@ -325,6 +339,12 @@ function ArchMessageHashSummary({ payload }: { payload: any }) {
         Blind sign — the wallet cannot decode this transaction's effects.
         Verify the hash matches the preview shown by the dapp before approving.
       </div>
+
+      {externalLabel ? (
+        <div className="approve-risk approve-risk-warn" style={{ marginBottom: 8 }}>
+          Approving will open {externalLabel} to confirm this signature.
+        </div>
+      ) : null}
 
       <div>
         <div className="input-label">Transaction message hash</div>
@@ -1251,12 +1271,14 @@ export default function Approve() {
             address: connectAddress,
             publicKey: selectedAccount.publicKeyHex,
             archAddress: selectedAccount.archAddress,
+            kind: selectedAccount.kind,
           },
         });
         sendApproved({
           address: connectAddress,
           publicKey: selectedAccount.publicKeyHex,
           archAddress: selectedAccount.archAddress,
+          kind: selectedAccount.kind,
         });
         return;
       }
@@ -1355,16 +1377,17 @@ export default function Approve() {
         if (!messageHashHex) {
           throw new Error("SIGN_ARCH_MESSAGE_HASH missing payload.messageHashHex");
         }
+        // Linked external wallets BIP-322-sign the hex string via their
+        // source wallet (same convention as Turnkey's local path), then
+        // we unwrap the witness to 64-byte Schnorr for the dapp.
         if (isExternalAccount(selectedAccount)) {
-          // Linked external wallets (Xverse / UniSat) don't expose a
-          // raw-hash signing path -- they'd have to BIP-322-sign the
-          // hash as a message string, which would produce a different
-          // sighash than the to-sign-taproot wrapper our session
-          // signer uses. Refuse cleanly rather than silently produce
-          // an invalid signature.
-          throw new Error(
-            "Raw Arch message-hash signing is not yet supported for linked external wallets. Use a Turnkey account.",
-          );
+          const { signature64Hex } = await signArchMessageHashWithExternalWallet({
+            account: selectedAccount,
+            messageHashHex,
+            network: state.network,
+          });
+          sendApproved({ signature64Hex });
+          return;
         }
         const signer = signerForAccount(selectedAccount);
         const { signature64Hex } = await signer.signArchMessageHash({
@@ -1622,7 +1645,7 @@ export default function Approve() {
         )}
 
         {request.type === "SIGN_ARCH_MESSAGE_HASH" && request.payload && (
-          <ArchMessageHashSummary payload={request.payload} />
+          <ArchMessageHashSummary payload={request.payload} account={selectedAccount} />
         )}
 
         {request.type === "SIGN_PSBT" && request.payload && (
