@@ -83,10 +83,15 @@ function hexToBytes(hex: string): Uint8Array {
  * quote/routing purposes.
  */
 const DISPLAY_OVERRIDES: Record<string, { symbol: string; name: string }> = {
-  // Testnet wrapped BTC
-  "726179cf49b6dc407c1438cec98815d92277b625b09de81818f5f3a57989f1f1": {
+  // Testnet wrapped BTC (live Autara / CLAMM aBTC)
+  "1d46e0dd87393236e4e01252439f46dcbaec7c2255d1fd734e61771a00e8f4e9": {
     symbol: "aBTC",
     name: "Arch Bitcoin",
+  },
+  // Testnet Arch USD (live Autara / CLAMM aUSD)
+  "55c6cee38a31732e2dad821ab1c38f902a7c51efaefb3641d51f3485c4617a45": {
+    symbol: "aUSD",
+    name: "Arch USD",
   },
   // Mainnet wrapped BTC
   "225b03d6f9e05fd834cd18906b019fb46372544b0eeb9f6f8b615472467d46b0": {

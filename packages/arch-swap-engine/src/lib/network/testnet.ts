@@ -14,8 +14,9 @@ const TESTNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
     name: "Bitcoin",
     icon: "/btc.png",
     decimals: 8,
-    mint: "726179cf49b6dc407c1438cec98815d92277b625b09de81818f5f3a57989f1f1",
-    mintAuthority: "14e1053749650b2381836b63045943a3ce86ebc4d6eb8f1b6c9173a8422bb9da",
+    // Live Autara / CLAMM aBTC (2yHWVNYyjnsxZqpnvTbPzWiHwpNQ2zBQU6BC4Lnbu7sW)
+    mint: "1d46e0dd87393236e4e01252439f46dcbaec7c2255d1fd734e61771a00e8f4e9",
+    mintAuthority: "2a533fae6d2aab9ca336f2bf5f07fc8048f5f4300337852a1d2a816d6ce25bda",
     pythHistorySymbol: "Crypto.BTC/USD",
   },
   USDC: {
@@ -23,8 +24,9 @@ const TESTNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
     name: "USD Coin",
     icon: "/usdc.png",
     decimals: 6,
-    mint: "a2ff4e218e9ddda64c35ee926c00a7715ec7116065b04d8c537f6030c87e49e5",
-    mintAuthority: "260ccf695ce535d40d51ee71a7c04074b9feba67b80f8bd65bd5b213548af44c",
+    // Live Autara / CLAMM aUSD (6mqUuwPYehXei6mGBY4bQ6XK1z7e6rrFAZRzYKdH8qkp)
+    mint: "55c6cee38a31732e2dad821ab1c38f902a7c51efaefb3641d51f3485c4617a45",
+    mintAuthority: "d0208cfc6086e663140b134b852d48564c22b57949ae4ceea9245006fd90b804",
     pythHistorySymbol: "Crypto.USDC/USD",
   },
 };
@@ -49,9 +51,9 @@ export const TESTNET_CONFIG: NetworkConfig = {
   tokens: TESTNET_TOKENS,
   tradingPair: { base: "BTC", quote: "USDC" },
   clammProgramId:
-    "5c748cd0eb8a1a4aa5793f744f3ba00b814a7bdbb3ec568cc9cbb985480fbe98",
+    "0a0129c4d864d1728c4b6e8f6e0e473197cb111153e379a59b9d93c038efe918",
   clammPoolAddress:
-    "00092b276b9ba8619f83c459e0e85fb265a68aca04fe889835dfa27a25382bc5",
+    "06db06761eb1f114167ea2bbc4cf98cf8f98fbfc0ad18d1821e724cfeeb03461",
   lendingProgramId:
     "53def2dc8516302842b10e356914d2a5f6b33425ba42aec684f706aa1cf64192",
   oracleProgramId:
