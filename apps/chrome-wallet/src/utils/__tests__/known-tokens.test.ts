@@ -58,9 +58,10 @@ describe("known-tokens registry", () => {
     expect(hit.name).toBe("Arch Bitcoin");
   });
 
-  it("leaves USDC unchanged by the override table", () => {
+  it("applies the aUSD display override to the USDC entry", () => {
     const hit = lookupKnownToken(usdc.mint, "testnet4")!;
-    expect(hit.symbol).toBe("USDC");
+    expect(hit.symbol).toBe("aUSD");
+    expect(hit.name).toBe("Arch USD");
   });
 
   it("returns null for an unknown mint", () => {

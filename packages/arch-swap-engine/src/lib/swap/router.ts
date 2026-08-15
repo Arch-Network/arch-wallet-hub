@@ -48,20 +48,37 @@ export async function getClammQuote(
   }
 
   const userPubkey = hexToBytes(wallet?.pubkeyXCoord ?? QUOTE_ONLY_PUBKEY);
-  const aToB = sellToken.symbol === "BTC";
 
   // Atomic scaling and sqrt-price math both need the active pair's *actual*
   // mint decimals — hardcoding 1e9 here was a holdover from an earlier
   // ArchVM convention and silently broke whenever a token's real on-chain
   // decimals differed (e.g. USDC = 6, BTC = 8 on testnet today).
   const { base: baseSym, quote: quoteSym } = config.tradingPair;
-  const decimalsA = getToken(baseSym, config).decimals;
-  const decimalsB = getToken(quoteSym, config).decimals;
-  const sellDecimals = sellToken.symbol === baseSym ? decimalsA : decimalsB;
-  const buyDecimals = sellToken.symbol === baseSym ? decimalsB : decimalsA;
+  const baseToken = getToken(baseSym, config);
+  const quoteToken = getToken(quoteSym, config);
+  const sellDecimals = sellToken.symbol === baseSym ? baseToken.decimals : quoteToken.decimals;
+  const buyDecimals = sellToken.symbol === baseSym ? quoteToken.decimals : baseToken.decimals;
   const scaledAmount = BigInt(Math.round(amount * 10 ** sellDecimals));
 
   const pool = await fetchWhirlpoolState(poolAddress);
+  // Token A/B is canonical mint order, not base/quote. Key direction and
+  // sqrt-price decimals off the pool's on-chain mints.
+  const mintA = bytesToHex(pool.tokenMintA).toLowerCase();
+  const mintB = bytesToHex(pool.tokenMintB).toLowerCase();
+  const sellMint = getToken(sellToken.symbol, config).mint.toLowerCase();
+  if (sellMint !== mintA && sellMint !== mintB) {
+    throw new Error(
+      `CLAMM sell mint ${sellMint} is not in the configured pool (${mintA}, ${mintB})`,
+    );
+  }
+  const aToB = sellMint === mintA;
+  const decimalsForMint = (mint: string): number => {
+    if (mint === baseToken.mint.toLowerCase()) return baseToken.decimals;
+    if (mint === quoteToken.mint.toLowerCase()) return quoteToken.decimals;
+    throw new Error(`CLAMM pool mint ${mint} is not in the network token registry`);
+  };
+  const decimalsA = decimalsForMint(mintA);
+  const decimalsB = decimalsForMint(mintB);
   const slippageBps = 100;
 
   const swapQuote = await getClammSwapQuote(
@@ -159,17 +176,17 @@ async function checkClammFillable(
     const pool = await fetchWhirlpoolState(poolAddress);
     const { tokenA, tokenB } = await fetchVaultBalances(pool);
 
-    // Pool token A = `tradingPair.base`, token B = `tradingPair.quote`. Selling
-    // base outputs quote → check vault B against quote decimals; selling quote
-    // outputs base → check vault A against base decimals.
+    // Output vault is the other side of the pool from the sell mint.
     const { base: baseSym, quote: quoteSym } = config.tradingPair;
+    const sellMint = getToken(sellIsBtc ? baseSym : quoteSym, config).mint.toLowerCase();
+    const mintA = bytesToHex(pool.tokenMintA).toLowerCase();
     const outputDecimals = sellIsBtc
       ? getToken(quoteSym, config).decimals
       : getToken(baseSym, config).decimals;
     const rawOutputAmount = BigInt(
       Math.round(quote.buyAmount * Math.pow(10, outputDecimals)),
     );
-    const availableBalance = sellIsBtc ? tokenB : tokenA;
+    const availableBalance = sellMint === mintA ? tokenB : tokenA;
     return availableBalance >= rawOutputAmount;
   } catch {
     return false;
