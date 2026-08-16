@@ -73,22 +73,36 @@ jobs:
           docker push $ECR_REGISTRY/$FRONTEND_REPO:${{ github.sha }}
           docker push $ECR_REGISTRY/$FRONTEND_REPO:latest
 
+      # Pin the running task definition to the SHA we just pushed.
+      # Do not --force-new-deployment :latest (issue #47): that re-pulls
+      # a mutable tag and is how live env/secrets already drifted from
+      # CDK. The helper clones the *live* revision and changes only the
+      # matching container image. Env/secret/CPU changes still belong
+      # in infra/cdk and must go through `cdk deploy`.
+      #
+      # IMAGE_TAG is passed through env (not interpolated into the
+      # script body) — same injection-sink rule as PR #43, even though
+      # github.sha is not user-controlled.
       - name: Deploy API service
+        env:
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $API_SERVICE \
-            --force-new-deployment \
-            --region $AWS_REGION
+          bash deploy/pin-ecs-image.sh \
+            --cluster "$ECS_CLUSTER" \
+            --service "$API_SERVICE" \
+            --region "$AWS_REGION" \
+            --image "$ECR_REGISTRY/$API_REPO:$IMAGE_TAG"
 
       - name: Deploy Frontend service
         if: false
+        env:
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $FRONTEND_SERVICE \
-            --force-new-deployment \
-            --region $AWS_REGION
+          bash deploy/pin-ecs-image.sh \
+            --cluster "$ECS_CLUSTER" \
+            --service "$FRONTEND_SERVICE" \
+            --region "$AWS_REGION" \
+            --image "$ECR_REGISTRY/$FRONTEND_REPO:$IMAGE_TAG"
 
       - name: Wait for API service stability
         run: |
