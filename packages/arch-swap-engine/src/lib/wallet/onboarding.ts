@@ -248,7 +248,7 @@ async function createAssociatedTokenAccountsIfNeeded(
       { pubkey: SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
       { pubkey: TOKEN_PROGRAM_ID, is_signer: false, is_writable: false },
     ],
-    data: new Uint8Array([]),
+    data: new Uint8Array([1]),
   }));
 
   // Defensive normalize — keeps the wire shape consistent with the
