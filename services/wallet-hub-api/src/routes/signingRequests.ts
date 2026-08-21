@@ -314,7 +314,7 @@ function getAplAssociatedTokenAddress(mint: Pubkey, owner: Pubkey): Pubkey {
   );
 }
 
-function buildCreateAssociatedTokenAccountInstruction(
+function buildCreateAssociatedTokenAccountIdempotentInstruction(
   payerPubkey: Pubkey,
   associatedTokenAccount: Pubkey,
   ownerPubkey: Pubkey,
@@ -330,7 +330,7 @@ function buildCreateAssociatedTokenAccountInstruction(
       { pubkey: PubkeyUtil.systemProgram(), is_signer: false, is_writable: false } as AccountMeta,
       { pubkey: APL_TOKEN_PROGRAM_ID, is_signer: false, is_writable: false } as AccountMeta,
     ],
-    data: new Uint8Array(0),
+    data: new Uint8Array([1]),
   };
 }
 
@@ -855,50 +855,14 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const toPubkey = parsePubkey(body.action.toAddress);
         const amount = BigInt(body.action.amount);
 
-        let sourceAta = body.action.sourceTokenAccount
+        const sourceAta = body.action.sourceTokenAccount
           ? parsePubkey(body.action.sourceTokenAccount)
           : getAplAssociatedTokenAddress(mintPubkey, payerPubkey);
-        let destAta = getAplAssociatedTokenAddress(mintPubkey, toPubkey);
-        let createDestAta = true;
-
-        try {
-          const indexer = indexerForRequest(request, reply);
-          if (!indexer) throw new Error("Indexer not configured");
-          const [senderTokens, recipientTokens] = await Promise.all([
-            indexer.getAccountTokens(signerArchAccountAddress),
-            indexer.getAccountTokens(body.action.toAddress)
-          ]);
-          const findTokenAccount = (tokensResponse: any): string | null => {
-            const tokens = Array.isArray(tokensResponse?.tokens) ? tokensResponse.tokens : [];
-            const mintInput = body.action.mintAddress;
-            const mintHex = Buffer.from(mintPubkey).toString("hex");
-            const match = tokens.find((t: any) =>
-              t?.mint_address === mintInput ||
-              t?.mint_address_hex === mintHex ||
-              t?.mint === mintInput
-            );
-            return typeof match?.token_account_address === "string" ? match.token_account_address : null;
-          };
-
-          const indexedSourceAta = findTokenAccount(senderTokens);
-          const indexedDestAta = findTokenAccount(recipientTokens);
-          if (indexedSourceAta) sourceAta = parsePubkey(indexedSourceAta);
-          if (indexedDestAta) {
-            destAta = parsePubkey(indexedDestAta);
-            createDestAta = false;
-          }
-        } catch (err: any) {
-          server.log.warn(
-            { err: String(err?.message ?? err), mint: body.action.mintAddress },
-            "Failed to resolve indexed token accounts; falling back to associated token derivation"
-          );
-        }
+        const destAta = getAplAssociatedTokenAddress(mintPubkey, toPubkey);
 
         actionType = "arch.token_transfer";
         instructions = [
-          ...(createDestAta
-            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
-            : []),
+          buildCreateAssociatedTokenAccountIdempotentInstruction(payerPubkey, destAta, toPubkey, mintPubkey),
           buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, amount)
         ];
 
@@ -915,7 +879,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           decimals: body.action.decimals ?? null,
           sourceAta: bs58.encode(Buffer.from(sourceAta)),
           destAta: bs58.encode(Buffer.from(destAta)),
-          createDestAta,
+          createDestAta: true,
         };
 
       } else if (body.action.type === "arch.anchor") {
@@ -1163,7 +1127,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const toPubkey = parsePubkey(toAddr);
         instructions = [
           ...(display?.createDestAta
-            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
+            ? [buildCreateAssociatedTokenAccountIdempotentInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
             : []),
           buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, BigInt(amountStr))
         ];
