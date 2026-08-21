@@ -32,6 +32,7 @@ import {
 import {
   getToken,
   getTokenSymbols,
+  resolveNetworkId,
   type NetworkConfig,
 } from "@/lib/network/config";
 
@@ -248,7 +249,10 @@ async function createAssociatedTokenAccountsIfNeeded(
       { pubkey: SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
       { pubkey: TOKEN_PROGRAM_ID, is_signer: false, is_writable: false },
     ],
-    data: new Uint8Array([1]),
+    data:
+      resolveNetworkId(config) === "testnet"
+        ? new Uint8Array([1])
+        : new Uint8Array(0),
   }));
 
   // Defensive normalize — keeps the wire shape consistent with the
