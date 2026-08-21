@@ -16,7 +16,7 @@ import bs58 from "bs58";
 import { secp256k1, schnorr } from "@noble/curves/secp256k1";
 import { resolveArchAccountAddress, archAccountFromInternalKey, archAccountFromWalletPublicKey } from "../arch/address.js";
 import { address as btcAddress } from "bitcoinjs-lib";
-import { indexerForRequest, archRpcUrlForRequest } from "../indexer/forRequest.js";
+import { indexerForRequest, archRpcUrlForRequest, requestNetwork } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
 
 const CreateSigningRequestBody = Type.Object({
@@ -318,7 +318,8 @@ function buildCreateAssociatedTokenAccountInstruction(
   payerPubkey: Pubkey,
   associatedTokenAccount: Pubkey,
   ownerPubkey: Pubkey,
-  mintPubkey: Pubkey
+  mintPubkey: Pubkey,
+  idempotent: boolean
 ): Instruction {
   return {
     program_id: APL_ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -330,7 +331,9 @@ function buildCreateAssociatedTokenAccountInstruction(
       { pubkey: PubkeyUtil.systemProgram(), is_signer: false, is_writable: false } as AccountMeta,
       { pubkey: APL_TOKEN_PROGRAM_ID, is_signer: false, is_writable: false } as AccountMeta,
     ],
-    data: new Uint8Array(0),
+    // Instruction 1 (CreateIdempotent) requires Arch validators > 0.8.
+    // Mainnet stays on instruction 0 until that upgrade lands.
+    data: idempotent ? new Uint8Array([1]) : new Uint8Array(0),
   };
 }
 
@@ -854,6 +857,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const mintPubkey = parsePubkey(body.action.mintAddress);
         const toPubkey = parsePubkey(body.action.toAddress);
         const amount = BigInt(body.action.amount);
+        const useIdempotentAtaCreate = requestNetwork(request) !== "mainnet";
 
         let sourceAta = body.action.sourceTokenAccount
           ? parsePubkey(body.action.sourceTokenAccount)
@@ -861,43 +865,48 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         let destAta = getAplAssociatedTokenAddress(mintPubkey, toPubkey);
         let createDestAta = true;
 
-        try {
-          const indexer = indexerForRequest(request, reply);
-          if (!indexer) throw new Error("Indexer not configured");
-          const [senderTokens, recipientTokens] = await Promise.all([
-            indexer.getAccountTokens(signerArchAccountAddress),
-            indexer.getAccountTokens(body.action.toAddress)
-          ]);
-          const findTokenAccount = (tokensResponse: any): string | null => {
-            const tokens = Array.isArray(tokensResponse?.tokens) ? tokensResponse.tokens : [];
-            const mintInput = body.action.mintAddress;
-            const mintHex = Buffer.from(mintPubkey).toString("hex");
-            const match = tokens.find((t: any) =>
-              t?.mint_address === mintInput ||
-              t?.mint_address_hex === mintHex ||
-              t?.mint === mintInput
-            );
-            return typeof match?.token_account_address === "string" ? match.token_account_address : null;
-          };
+        // Idempotent ATA create (validators > 0.8) is testnet-only until
+        // mainnet is upgraded. Mainnet still probes the indexer and skips
+        // the create ix when the dest ATA already exists.
+        if (!useIdempotentAtaCreate) {
+          try {
+            const indexer = indexerForRequest(request, reply);
+            if (!indexer) throw new Error("Indexer not configured");
+            const [senderTokens, recipientTokens] = await Promise.all([
+              indexer.getAccountTokens(signerArchAccountAddress),
+              indexer.getAccountTokens(body.action.toAddress)
+            ]);
+            const findTokenAccount = (tokensResponse: any): string | null => {
+              const tokens = Array.isArray(tokensResponse?.tokens) ? tokensResponse.tokens : [];
+              const mintInput = body.action.mintAddress;
+              const mintHex = Buffer.from(mintPubkey).toString("hex");
+              const match = tokens.find((t: any) =>
+                t?.mint_address === mintInput ||
+                t?.mint_address_hex === mintHex ||
+                t?.mint === mintInput
+              );
+              return typeof match?.token_account_address === "string" ? match.token_account_address : null;
+            };
 
-          const indexedSourceAta = findTokenAccount(senderTokens);
-          const indexedDestAta = findTokenAccount(recipientTokens);
-          if (indexedSourceAta) sourceAta = parsePubkey(indexedSourceAta);
-          if (indexedDestAta) {
-            destAta = parsePubkey(indexedDestAta);
-            createDestAta = false;
+            const indexedSourceAta = findTokenAccount(senderTokens);
+            const indexedDestAta = findTokenAccount(recipientTokens);
+            if (indexedSourceAta) sourceAta = parsePubkey(indexedSourceAta);
+            if (indexedDestAta) {
+              destAta = parsePubkey(indexedDestAta);
+              createDestAta = false;
+            }
+          } catch (err: any) {
+            server.log.warn(
+              { err: String(err?.message ?? err), mint: body.action.mintAddress },
+              "Failed to resolve indexed token accounts; falling back to associated token derivation"
+            );
           }
-        } catch (err: any) {
-          server.log.warn(
-            { err: String(err?.message ?? err), mint: body.action.mintAddress },
-            "Failed to resolve indexed token accounts; falling back to associated token derivation"
-          );
         }
 
         actionType = "arch.token_transfer";
         instructions = [
           ...(createDestAta
-            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
+            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey, useIdempotentAtaCreate)]
             : []),
           buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, amount)
         ];
@@ -916,6 +925,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           sourceAta: bs58.encode(Buffer.from(sourceAta)),
           destAta: bs58.encode(Buffer.from(destAta)),
           createDestAta,
+          createDestAtaIdempotent: createDestAta && useIdempotentAtaCreate,
         };
 
       } else if (body.action.type === "arch.anchor") {
@@ -1163,7 +1173,13 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const toPubkey = parsePubkey(toAddr);
         instructions = [
           ...(display?.createDestAta
-            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
+            ? [buildCreateAssociatedTokenAccountInstruction(
+                payerPubkey,
+                destAta,
+                toPubkey,
+                mintPubkey,
+                Boolean(display?.createDestAtaIdempotent)
+              )]
             : []),
           buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, BigInt(amountStr))
         ];
