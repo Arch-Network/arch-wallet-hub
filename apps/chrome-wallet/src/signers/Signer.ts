@@ -70,7 +70,7 @@ export interface SignPsbtResult {
  *
  * What gets BIP-322'd is the **hex string** form of the hash (its
  * UTF-8 bytes), not the 32 raw bytes the hex represents. That's the
- * convention `@saturnbtcio/arch-sdk` and the on-chain Arch validator
+ * convention `@arch-network/arch-sdk` and the on-chain Arch validator
  * agree on: `SanitizedMessageUtil.hash` itself returns
  * `TextEncoder().encode(hex.encode(finalHash))` -- i.e. the 64-char
  * lowercase hex string as UTF-8 bytes -- and `bip322-js`'s

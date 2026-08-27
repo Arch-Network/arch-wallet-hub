@@ -1,4 +1,4 @@
-import { PubkeyUtil } from "@saturnbtcio/arch-sdk";
+import { PubkeyUtil } from "@arch-network/arch-sdk";
 
 import {
   pollFeePayerEligibility,

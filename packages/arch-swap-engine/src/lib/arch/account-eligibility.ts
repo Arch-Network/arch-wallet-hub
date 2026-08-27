@@ -1,4 +1,4 @@
-import { isExempt } from "@saturnbtcio/arch-sdk";
+import { isExempt } from "@arch-network/arch-sdk";
 
 import { fetchAccountInfo } from "@/lib/indexer/accounts";
 import { SYSTEM_PROGRAM_ID } from "@/lib/arch/program-ids";

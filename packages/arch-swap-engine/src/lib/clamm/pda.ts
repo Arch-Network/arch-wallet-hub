@@ -1,4 +1,4 @@
-import { PubkeyUtil } from "@saturnbtcio/arch-sdk";
+import { PubkeyUtil } from "@arch-network/arch-sdk";
 
 import { encodeU16LE } from "@/lib/arch/borsh";
 import { TICK_ARRAY_SIZE } from "@/lib/clamm/constants";

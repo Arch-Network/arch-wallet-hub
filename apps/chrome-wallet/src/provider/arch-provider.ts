@@ -53,7 +53,7 @@ export const archProvider = {
 
   /**
    * Sign an Arch SanitizedMessage hash (the 32-byte digest produced
-   * by `SanitizedMessageUtil.hash(message)` in `@saturnbtcio/arch-sdk`)
+   * by `SanitizedMessageUtil.hash(message)` in `@arch-network/arch-sdk`)
    * and return the 64-byte (r||s) Schnorr signature as hex.
    *
    * The signer wraps the hash in the BIP-322 to-sign taproot sighash
