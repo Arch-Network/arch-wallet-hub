@@ -13,7 +13,7 @@ import { formatArchId, truncateAddress, formatBtc, timestampToMs } from "../../u
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { txHasRunestone } from "../../utils/btc-tx-classify";
 import { indexRuneTxsByTxid, runeRowLabel, formatRuneDelta } from "../../utils/rune-history";
-import type { BtcRuneTransaction } from "../../utils/indexer";
+import type { BtcRuneTransaction, BtcInscriptionSummary } from "../../utils/indexer";
 import { summarizeArchTx } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
@@ -71,6 +71,24 @@ function parseBtcTx(tx: any, walletAddress: string): { direction: "in" | "out" |
         : "unknown";
 
   return { direction, amountSats: netSats };
+}
+
+/**
+ * Prev-output outpoints ("txid:vout") spent by a tx, across both
+ * indexer shapes: Esplora-like `vin[].{txid,vout}` and the Titan-native
+ * `input[].previous_output.{txid,vout}`. Used to spot a tx that spends
+ * a known inscription UTXO (an inscription send).
+ */
+function inputOutpoints(tx: any): string[] {
+  const out: string[] = [];
+  for (const i of Array.isArray(tx.vin) ? tx.vin : []) {
+    if (i?.txid != null && i?.vout != null) out.push(`${i.txid}:${i.vout}`);
+  }
+  for (const i of Array.isArray(tx.input) ? tx.input : []) {
+    const po = i?.previous_output;
+    if (po?.txid != null && po?.vout != null) out.push(`${po.txid}:${po.vout}`);
+  }
+  return out;
 }
 
 function isAplTransaction(tx: any): boolean {
@@ -315,6 +333,35 @@ export default function History() {
         }
       }
 
+      // Inscription transfer labels. Best-effort, like the rune join:
+      // there's no inscription-history endpoint, so we use the address's
+      // current inscriptions (satpoint = "txid:vout:offset") to recognize
+      // (a) a tx that SPENDS an inscription UTXO -> outbound send, and
+      // (b) a tx whose output now HOLDS the inscription -> inbound receive.
+      // A pending send still shows the inscription at its old (input-side)
+      // satpoint, so (a) catches it; once confirmed under the recipient,
+      // (b) catches their receive. A fully-sent, already-reindexed
+      // inscription drops off the sender's list -> that historical row
+      // degrades to a plain BTC label (same limitation as fully-sent runes).
+      const inscriptionByOutpoint = new Map<string, BtcInscriptionSummary>();
+      const inscriptionByLandingTxid = new Map<string, BtcInscriptionSummary>();
+      {
+        try {
+          const insRes = await indexer.getBtcAddressInscriptions(btcAddr);
+          for (const ins of insRes?.inscriptions ?? []) {
+            const sp = ins?.satpoint;
+            if (typeof sp !== "string") continue;
+            const [stxid, svout] = sp.split(":");
+            if (stxid && svout != null && svout !== "") {
+              inscriptionByOutpoint.set(`${stxid}:${svout}`, ins);
+              inscriptionByLandingTxid.set(stxid, ins);
+            }
+          }
+        } catch {
+          // Inscription labels are non-essential; never block BTC history.
+        }
+      }
+
       try {
         const btcTxs = await indexer.getBtcAddressTxs(btcAddr);
         const rawList = btcTxs ?? [];
@@ -389,6 +436,25 @@ export default function History() {
           const runeEvent = runeTxByTxid.get(txid);
           const isRune = Boolean(runeEvent) || txHasRunestone(tx);
 
+          // Inscription send/receive: a spent input that is a known
+          // inscription UTXO => outbound; otherwise an inscription that
+          // landed in THIS tx (satpoint txid === txid) => inbound. Runes
+          // win if both somehow match (disjoint in practice).
+          let inscriptionHit: { ins: BtcInscriptionSummary; dir: "out" | "in" } | null = null;
+          if (!isRune) {
+            for (const op of inputOutpoints(tx)) {
+              const ins = inscriptionByOutpoint.get(op);
+              if (ins) {
+                inscriptionHit = { ins, dir: "out" };
+                break;
+              }
+            }
+            if (!inscriptionHit) {
+              const landed = inscriptionByLandingTxid.get(txid);
+              if (landed) inscriptionHit = { ins: landed, dir: "in" };
+            }
+          }
+
           let rowLabel: string;
           let rowDirection: TxItem["direction"] = direction;
           let rowAmountLabel: string | undefined;
@@ -400,6 +466,17 @@ export default function History() {
               rowDirection = amt.direction;
               rowAmountLabel = amt.amountLabel;
             }
+          } else if (inscriptionHit) {
+            // Label without a BTC amount: the only sats that move are the
+            // inscription's dust postage + fee, which would misrepresent
+            // the transfer as a tiny BTC payment.
+            const num = inscriptionHit.ins.number;
+            const suffix = typeof num === "number" ? ` #${num}` : "";
+            rowLabel =
+              inscriptionHit.dir === "out"
+                ? `Sent Inscription${suffix}`
+                : `Received Inscription${suffix}`;
+            rowDirection = inscriptionHit.dir;
           } else if (isRune) {
             // Runestone detected locally but not yet in the rune index.
             // Label without an amount -- the BTC dust+fee debit (~1500-
@@ -421,8 +498,8 @@ export default function History() {
           }
 
           // Only attach raw sats (drives the USD subtitle) for genuine
-          // BTC rows; rune rows carry a rune amount, not a BTC value.
-          const showBtcAmount = !isRune && amountSats > 0;
+          // BTC rows; rune/inscription rows aren't a BTC value movement.
+          const showBtcAmount = !isRune && !inscriptionHit && amountSats > 0;
           items.push({
             txid,
             displayTxid: truncateAddress(txid, 8),
