@@ -73,6 +73,15 @@ jobs:
           docker push $ECR_REGISTRY/$FRONTEND_REPO:${{ github.sha }}
           docker push $ECR_REGISTRY/$FRONTEND_REPO:latest
 
+      # NOTE: This job ONLY rolls the running tasks onto the newest image
+      # (`update-service --force-new-deployment`). It does NOT register a
+      # new task definition. Any change to the task def, environment
+      # variables, or secrets (e.g. DB_*, AUDIT_HMAC_SECRET, CORS) MUST go
+      # through the CDK stack (infra/cdk) and `cdk deploy` — editing them
+      # here or by hand in the console causes the live task to drift from
+      # the source of truth (which is exactly what happened before the
+      # chore/wallet-hub-cdk-reconcile reconciliation). Keep task-def
+      # config in CDK only.
       - name: Deploy API service
         run: |
           aws ecs update-service \
