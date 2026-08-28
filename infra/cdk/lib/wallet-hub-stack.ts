@@ -183,6 +183,14 @@ export class WalletHubStack extends cdk.Stack {
       props.corsAllowOrigins ?? this.node.tryGetContext("corsAllowOrigins");
 
     const apiContainer = apiTaskDef.addContainer("api", {
+      // `:latest` is the CDK bootstrap / `cdk deploy` fallback so a
+      // first-time stack has a pullable tag. CI then pins the *running*
+      // service to an immutable git-SHA tag by cloning the live task
+      // def (deploy/pin-ecs-image.sh, issue #47). Do not have CI
+      // register a revision synthesized from this file — live env and
+      // secrets have drifted from this stack; image-only clone is the
+      // safe deploy path. A later `cdk deploy` may briefly re-point at
+      // `:latest` until the next successful workflow run re-pins.
       image: ecs.ContainerImage.fromEcrRepository(apiRepo, "latest"),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "wallet-hub-api",
@@ -313,6 +321,9 @@ export class WalletHubStack extends cdk.Stack {
     );
 
     frontendTaskDef.addContainer("frontend", {
+      // Same split as the API container: CDK keeps `:latest` as the
+      // synth default; CI pins the live revision to a SHA tag. See
+      // deploy/pin-ecs-image.sh / issue #47.
       image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "latest"),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "wallet-hub-frontend",

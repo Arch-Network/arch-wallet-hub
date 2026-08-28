@@ -84,11 +84,16 @@ curl -H "X-Api-Key: YOUR_API_KEY" \
 ## CI/CD
 
 Push to `main` triggers `.github/workflows/deploy.yml`:
-1. Builds Docker images for API and frontend
-2. Pushes to ECR
-3. Updates ECS services (rolling deployment)
+1. Builds Docker images for API (frontend steps are currently `if: false`; see the workflow comment)
+2. Pushes to ECR as both `:${{ github.sha }}` (immutable) and `:latest` (operator convenience / CDK fallback)
+3. Pins the running ECS task definition to the SHA tag via `deploy/pin-ecs-image.sh` (rolling deployment of that revision)
 
-**Prerequisites:** Set `AWS_DEPLOY_ROLE_ARN` in GitHub repo secrets (IAM role with ECR push + ECS update permissions).
+The pin helper **clones the live task definition** and changes only the matching container image. It does **not** `--force-new-deployment` of `:latest` (that re-pulls a mutable tag; issue #47) and it does **not** register a CDK-shaped revision (live env/secrets have drifted from `infra/cdk`). Env, secret, CPU, and networking changes still belong in CDK and must go through `cdk deploy`.
+
+**Prerequisites:** Set `AWS_DEPLOY_ROLE_ARN` in GitHub repo secrets. The role needs ECR push plus:
+
+- `ecs:UpdateService`, `ecs:DescribeServices`, `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition`
+- `iam:PassRole` on the existing task role and execution role (the helper re-registers the live ARNs; it does not create new roles)
 
 ## Manual Operations
 
@@ -99,24 +104,33 @@ Push to `main` triggers `.github/workflows/deploy.yml`:
 aws ecr get-login-password --region us-east-1 | \
   docker login --username AWS --password-stdin 590184001652.dkr.ecr.us-east-1.amazonaws.com
 
-# Build and push API
+SHA="$(git rev-parse HEAD)"
+ECR=590184001652.dkr.ecr.us-east-1.amazonaws.com
+
+# Build and push API (SHA tag is what ECS will run; :latest is a convenience alias)
 docker build --platform linux/amd64 \
-  -t 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-api:latest \
+  -t $ECR/wallet-hub-api:$SHA \
+  -t $ECR/wallet-hub-api:latest \
   -f deploy/Dockerfile.api .
-docker push 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-api:latest
+docker push $ECR/wallet-hub-api:$SHA
+docker push $ECR/wallet-hub-api:latest
 
 # Build and push frontend
 docker build --platform linux/amd64 \
   --build-arg VITE_WALLET_HUB_BASE_URL=/v1 \
   --build-arg VITE_WALLET_HUB_API_KEY=YOUR_API_KEY \
   --build-arg NGINX_CONF=deploy/nginx-fargate.conf.template \
-  -t 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-frontend:latest \
+  -t $ECR/wallet-hub-frontend:$SHA \
+  -t $ECR/wallet-hub-frontend:latest \
   -f deploy/Dockerfile.frontend .
-docker push 590184001652.dkr.ecr.us-east-1.amazonaws.com/wallet-hub-frontend:latest
+docker push $ECR/wallet-hub-frontend:$SHA
+docker push $ECR/wallet-hub-frontend:latest
 
-# Force ECS to pull new images
-aws ecs update-service --cluster wallet-hub --service wallet-hub-api --force-new-deployment
-aws ecs update-service --cluster wallet-hub --service wallet-hub-frontend --force-new-deployment
+# Pin the live task defs to the SHA (does not re-pull :latest)
+bash deploy/pin-ecs-image.sh --cluster wallet-hub --service wallet-hub-api \
+  --region us-east-1 --image $ECR/wallet-hub-api:$SHA
+bash deploy/pin-ecs-image.sh --cluster wallet-hub --service wallet-hub-frontend \
+  --region us-east-1 --image $ECR/wallet-hub-frontend:$SHA
 ```
 
 ### Update secrets
@@ -127,7 +141,11 @@ aws secretsmanager put-secret-value \
   --secret-string '{"TURNKEY_API_PUBLIC_KEY":"...","TURNKEY_API_PRIVATE_KEY":"...","TURNKEY_ORGANIZATION_ID":"...","PLATFORM_ADMIN_API_KEY":"...","INDEXER_API_KEY":"...","INTERNAL_API_KEY":"...","DB_PASSWORD":"..."}'
 ```
 
-After updating secrets, force a new API deployment to pick up the changes.
+After updating secrets, roll the API tasks so they re-read Secrets Manager. If the service is already pinned to a SHA tag, this is one of the few remaining legitimate uses of `--force-new-deployment` (same task def, new tasks):
+
+```bash
+aws ecs update-service --cluster wallet-hub --service wallet-hub-api --force-new-deployment
+```
 
 ### Infrastructure changes (CDK)
 
