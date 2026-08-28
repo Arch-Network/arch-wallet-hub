@@ -4,6 +4,7 @@ import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import {
+  findEmailWalletByRecoveryEmail,
   getTurnkeyResourceByIdForApp,
   insertTurnkeyResource,
   listTurnkeyResourcesForUserForApp,
@@ -504,6 +505,54 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       const userId = (consumed as { userId: string }).userId;
       const externalUserId = body.externalUserId;
       const userEmail = body.userEmail;
+
+      // Get-or-create keyed on recovery email: one email → one wallet. The
+      // recovery email was just persisted above, so an existing email wallet
+      // for this address (under any user that shares the email) means we
+      // should hand it back instead of minting another sub-org. Without this,
+      // every email login that reaches create — including ones triggered when
+      // /recovery/email/init returns an empty (rate-limited, anti-enumeration)
+      // candidate list — accumulates duplicate wallets under one identity.
+      const existing = await withDbTransaction(db, (client) =>
+        findEmailWalletByRecoveryEmail(client, { appId, email: userEmail })
+      );
+      if (existing) {
+        const responseBody = {
+          resourceId: existing.id,
+          userId: existing.user_id ?? userId,
+          externalUserId,
+          organizationId: existing.organization_id,
+          walletId: existing.wallet_id ?? "",
+          addresses: existing.default_address ? [existing.default_address] : [],
+          defaultAddress: existing.default_address,
+          defaultPublicKeyHex: existing.default_public_key_hex,
+          // No Turnkey activity ran — this is a reuse, not a create.
+          activityId: ""
+        };
+        await withDbTransaction(db, async (client) => {
+          await auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId,
+            eventType: "turnkey.wallet.create",
+            entityType: "turnkey_resource",
+            entityId: existing.id,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              mode: "email_suborg",
+              reused: true,
+              organizationId: existing.organization_id,
+              walletId: existing.wallet_id
+            },
+            outcome: "succeeded"
+          });
+          await markIdempotencySucceeded(client, consumed.row.id, responseBody);
+        });
+        return responseBody;
+      }
+
       const walletName =
         body.walletName ??
         `arch-embedded-${userId.slice(0, 8)}-${Date.now().toString(36)}`;
