@@ -1,5 +1,10 @@
 import { ApiKeyStamper } from "@turnkey/api-key-stamper";
 import { TurnkeyClient } from "@turnkey/http";
+import {
+  extractOtpId,
+  waitForActivity,
+  type TurnkeyActivityLike
+} from "./activity.js";
 
 type CreateBitcoinWalletParams = {
   walletName: string;
@@ -142,10 +147,6 @@ function looksLikeBase64(s: string) {
   return /^[A-Za-z0-9+/=]+$/.test(s) && s.length % 4 === 0;
 }
 
-async function sleep(ms: number) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export class TurnkeyService {
   private client: TurnkeyClient;
   private organizationId: string;
@@ -169,32 +170,36 @@ export class TurnkeyService {
     return await this.client.getWhoami({ organizationId: this.organizationId });
   }
 
-  private async pollActivity(activityId: string, organizationId?: string) {
-    // Keep polling conservative for Phase 0; callers should expect < a few seconds.
-    const maxAttempts = 60;
-    const delayMs = 500;
-    const orgId = organizationId ?? this.organizationId;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const res = await this.client.getActivity({
-        organizationId: orgId,
-        activityId
-      });
-
-      const activity = res.activity;
-      if (
-        activity.status === "ACTIVITY_STATUS_COMPLETED" ||
-        activity.status === "ACTIVITY_STATUS_FAILED" ||
-        activity.status === "ACTIVITY_STATUS_REJECTED" ||
-        activity.status === "ACTIVITY_STATUS_CONSENSUS_NEEDED"
-      ) {
-        return activity;
+  private settleActivity(
+    activityId: string,
+    organizationId?: string,
+    initial?: TurnkeyActivityLike
+  ) {
+    return waitForActivity({
+      activityId,
+      organizationId: organizationId ?? initial?.organizationId ?? this.organizationId,
+      initial,
+      getActivity: async ({ activityId: id, organizationId: orgId }) => {
+        const res = await this.client.getActivity({
+          organizationId: orgId,
+          activityId: id
+        });
+        return res.activity;
       }
+    });
+  }
 
-      await sleep(delayMs);
-    }
-
-    throw new Error(`Turnkey activity polling timed out: ${activityId}`);
+  private async pollActivity(
+    activityId: string,
+    organizationId?: string,
+    initial?: TurnkeyActivityLike
+  ): Promise<any> {
+    const { activity } = await this.settleActivity(
+      activityId,
+      organizationId,
+      initial
+    );
+    return activity;
   }
 
   async createBitcoinWallet(
@@ -219,7 +224,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
 
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey createWallet did not complete: ${activityId}`);
@@ -277,7 +282,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey createSubOrganization did not complete: ${activityId}`);
     }
@@ -353,7 +358,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(
         `Turnkey createSubOrganization (email) did not complete: ${activityId}`,
@@ -410,7 +415,11 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(
+      activityId,
+      params.organizationId,
+      res.activity
+    );
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey createApiKeys did not complete: ${activityId}`);
     }
@@ -436,7 +445,14 @@ export class TurnkeyService {
     userId: string;
     contact: string;
     emailCustomization?: Record<string, unknown>;
-  }): Promise<{ otpId: string; activityId: string }> {
+  }): Promise<{
+    otpId: string;
+    activityId: string;
+    submitElapsedMs: number;
+    pollElapsedMs: number;
+    pollAttempts: number;
+  }> {
+    const submitStartedAt = Date.now();
     const res = await (this.client as any).initOtpAuth({
       type: "ACTIVITY_TYPE_INIT_OTP_AUTH",
       timestampMs: nowMs(),
@@ -450,15 +466,22 @@ export class TurnkeyService {
           : {})
       }
     });
+    const submitElapsedMs = Date.now() - submitStartedAt;
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, params.organizationId);
+    const pollStartedAt = Date.now();
+    const { activity, pollAttempts } = await this.settleActivity(
+      activityId,
+      params.organizationId,
+      res.activity
+    );
+    const pollElapsedMs = Date.now() - pollStartedAt;
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey initOtpAuth did not complete: ${activityId}`);
     }
-    const otpId = (activity.result as any)?.initOtpAuthResult?.otpId;
+    const otpId = extractOtpId(activity);
     if (!otpId) throw new Error("Turnkey initOtpAuth did not return otpId");
-    return { otpId, activityId };
+    return { otpId, activityId, submitElapsedMs, pollElapsedMs, pollAttempts };
   }
 
   /**
@@ -501,7 +524,11 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, params.organizationId);
+    const activity = await this.pollActivity(
+      activityId,
+      params.organizationId,
+      res.activity
+    );
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey otpAuth did not complete: ${activityId}`);
     }
@@ -531,7 +558,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, targetOrgId);
+    const activity = await this.pollActivity(activityId, targetOrgId, res.activity);
 
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnky signRawPayload did not complete: ${activityId}`);
@@ -568,7 +595,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
 
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey signTransaction did not complete: ${activityId}`);
