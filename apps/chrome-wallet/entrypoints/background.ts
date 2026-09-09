@@ -3,6 +3,7 @@
 // module init when used from the service worker context.
 import "../src/utils/buffer-polyfill";
 import { walletStore } from "../src/state/wallet-store";
+import { OPEN_AS_KEY, readOpenAsPreference } from "../src/state/open-as-preference";
 import { pendingRequestsStore } from "../src/messaging/pending-requests";
 import { keystore } from "../src/crypto/keystore";
 import type { PendingRequest } from "../src/messaging/types";
@@ -92,13 +93,19 @@ async function applyOpenAsPreference(mode: OpenAsMode): Promise<void> {
   }
 }
 
-async function syncOpenAsFromStorage(): Promise<void> {
-  try {
-    const state = await walletStore.getState();
-    await applyOpenAsPreference(state.openAs ?? "popup");
-  } catch {
-    await applyOpenAsPreference("popup");
-  }
+let openAsSync = Promise.resolve();
+function syncOpenAsFromStorage(): Promise<void> {
+  // Serialize Chrome's two action-setting calls so rapid toggles cannot
+  // leave a popup configured alongside side-panel click behavior.
+  openAsSync = openAsSync.then(async () => {
+    const saved = await readOpenAsPreference();
+    const mode = saved ?? (await walletStore.getState()).openAs;
+    await applyOpenAsPreference(mode);
+  }).catch((err) => {
+    // A transient read failure should not reset the user's toolbar mode.
+    console.warn("[arch-wallet] Could not restore open mode", err);
+  });
+  return openAsSync;
 }
 
 /**
@@ -344,7 +351,7 @@ export default defineBackground(() => {
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.arch_wallet_keystore) {
+    if (changes.arch_wallet_keystore || changes[OPEN_AS_KEY]) {
       // Re-sync open-as in case the user toggled it from the UI.
       syncOpenAsFromStorage();
     }

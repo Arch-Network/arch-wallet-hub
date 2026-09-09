@@ -183,6 +183,8 @@ html, body, #root {
 }
 
 .app-body {
+  width: 100%;
+  min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
@@ -203,7 +205,7 @@ html[data-mode="sidepanel"] #root {
 /* Narrow side panel keeps the popup-style centered column.
    Wide side panel takes over and switches to the sidebar shell below. */
 html[data-mode="sidepanel"] .app-body {
-  max-width: 480px;
+  max-width: 100%;
   margin: 0 auto;
 }
 
@@ -246,6 +248,7 @@ a {
 
 .app-main {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -356,6 +359,8 @@ a {
      the popup, so let content use it. Horizontal padding slimmed from 24
      to 16 -- the cards inside provide their own visual containment. */
   html[data-mode="sidepanel"] .app-body {
+    --body-gutter-x: 16px;
+    --body-gutter-y: 20px;
     max-width: 880px;
     margin: 0 auto;
     padding: 20px 16px;
@@ -374,6 +379,7 @@ a {
   /* Wide-content routes (e.g. Token Detail) -- no max-width cap so the
      activity feed and hero stretch to fill the available main column. */
   html[data-mode="sidepanel"] .app-body-wide {
+    --body-gutter-x: 18px;
     max-width: none;
     padding: 20px 18px;
   }
@@ -713,7 +719,7 @@ a {
   overflow-y: auto;
   /* Slim horizontal gutter so the cards inside have room to breathe.
      The card adds its own internal padding for content separation. */
-  padding: 14px 10px;
+  padding: var(--body-gutter-y, 14px) var(--body-gutter-x, 10px);
 }
 
 /* ═══════════════════ Bottom Nav ═══════════════════ */
@@ -727,7 +733,8 @@ a {
 }
 
 .app-nav button {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -744,6 +751,14 @@ a {
 
 .app-nav button.active {
   color: var(--accent);
+}
+
+@media (max-width: 380px) {
+  .app-nav button {
+    font-size: 10px;
+    letter-spacing: 0;
+    padding-inline: 2px;
+  }
 }
 
 .app-nav button.active::before {
@@ -1140,15 +1155,23 @@ a {
 
 .collectibles-page {
   position: relative;
+  width: 100%;
+  container-type: inline-size;
 }
 
 /* Wide side panel splits gallery (left) + sticky detail pane (right).
    Compact stays single-column and opens detail as a sheet instead. */
 .collectibles-layout.is-wide {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+}
+
+@container (min-width: 620px) {
+  .collectibles-layout.is-wide:has(.collectibles-detail-pane) {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
 }
 
 .collectibles-grid {
@@ -1533,8 +1556,8 @@ a {
   position: sticky;
   top: 0;
   z-index: 30;
-  margin: -14px -10px 10px;
-  padding: 8px 10px;
+  margin: calc(-1 * var(--body-gutter-y, 14px)) calc(-1 * var(--body-gutter-x, 10px)) 10px;
+  padding: 8px var(--body-gutter-x, 10px);
   background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
   border-bottom: 1px solid var(--border-primary);
   backdrop-filter: blur(10px);
@@ -1544,6 +1567,10 @@ a {
 .back-bar {
   display: flex;
   align-items: center;
+}
+
+.back-bar + .page-header {
+  padding-top: 12px;
 }
 
 @media (min-width: 720px) {
@@ -2995,6 +3022,16 @@ a {
 .empty-state-icon {
   font-size: 32px;
   margin-bottom: 4px;
+}
+
+.empty-state-art {
+  display: block;
+  width: 128px;
+  height: 128px;
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 24px;
+  margin-bottom: 8px;
 }
 
 /* ═══════════════════ Sections ═══════════════════ */
@@ -5224,4 +5261,3 @@ button.address-chip-link:hover {
   color: var(--text-secondary);
   line-height: 1.4;
 }
-

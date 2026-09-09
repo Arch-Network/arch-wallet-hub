@@ -1,3 +1,4 @@
+import EmptyStateArt from "../../components/EmptyStateArt";
 /**
  * Collectibles -- the Ordinals/inscription gallery.
  *
@@ -236,7 +237,7 @@ export default function Collectibles() {
     if (items.length === 0) {
       return (
         <div className="empty-state">
-          <div className="empty-state-icon">{"\uD83D\uDDBC\uFE0F"}</div>
+          <EmptyStateArt kind="collectibles" />
           <div className="empty-state-title">No inscriptions yet</div>
           <div className="empty-state-sub">
             Ordinals received by this wallet will appear here.

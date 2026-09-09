@@ -1,3 +1,4 @@
+import EmptyStateArt from "../../components/EmptyStateArt";
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
@@ -560,7 +561,7 @@ export default function History() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-state-icon">📭</div>
+          <EmptyStateArt kind="activity" />
           <div>
             {banner.kind === "none" ? "No transactions yet" : "Nothing to show"}
           </div>
@@ -590,4 +591,3 @@ export default function History() {
     </>
   );
 }
-
