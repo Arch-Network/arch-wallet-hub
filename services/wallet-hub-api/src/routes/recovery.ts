@@ -774,7 +774,13 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
 
       try {
         const turnkey = getTurnkeyClient();
-        const { otpId, activityId } = await turnkey.initOtpAuth({
+        const {
+          otpId,
+          activityId,
+          submitElapsedMs,
+          pollElapsedMs,
+          pollAttempts
+        } = await turnkey.initOtpAuth({
           organizationId: candidate.organizationId,
           userId: candidate.rootUserId,
           contact: email,
@@ -843,6 +849,9 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
               ? { previousOtpIdHash: fingerprintOtpId(previousOtpId) }
               : {}),
             turnkeyElapsedMs,
+            turnkeySubmitElapsedMs: submitElapsedMs,
+            turnkeyPollElapsedMs: pollElapsedMs,
+            turnkeyPollAttempts: pollAttempts,
             turnkeyActivityId: activityId
           },
           "recovery.otp_start.succeeded"
