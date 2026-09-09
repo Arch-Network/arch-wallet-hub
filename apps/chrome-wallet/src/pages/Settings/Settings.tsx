@@ -350,7 +350,10 @@ export default function Settings() {
                   thinking about recovery. The button is its own
                   component because the status-row state machine is
                   big enough to warrant separation. */}
-              <TestRecoveryEmailButton email={activeAccount.recoveryEmail} />
+              <TestRecoveryEmailButton
+                email={activeAccount.recoveryEmail}
+                resourceId={activeAccount.turnkeyResourceId}
+              />
             </>
           )}
         </div>
