@@ -23,6 +23,7 @@ import History from "../../src/pages/History/History";
 import Collectibles from "../../src/pages/Collectibles/Collectibles";
 import TokenList from "../../src/pages/TokenList/TokenList";
 import TokenDetail from "../../src/pages/TokenDetail/TokenDetail";
+import RuneDetail from "../../src/pages/RuneDetail/RuneDetail";
 import Approve from "../../src/pages/Approve/Approve";
 import Settings from "../../src/pages/Settings/Settings";
 import Recover from "../../src/pages/Recover/Recover";
@@ -300,6 +301,7 @@ function AppRoutes() {
           <Routes>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/send" element={<Send networkStatus={networkStatus} />} />
+            <Route path="/rune/:runeId" element={<RuneDetail />} />
             <Route path="/send-rune/:runeId" element={<SendRune />} />
             <Route path="/send-inscription/:inscriptionId" element={<SendInscription />} />
             <Route path="/receive" element={<Receive />} />

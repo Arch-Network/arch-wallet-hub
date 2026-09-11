@@ -782,6 +782,26 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
   );
 
   server.get(
+    "/indexer/btc/runes/:rune",
+    {
+      schema: {
+        summary: "Rune metadata by rune id or spaced name (proxied)",
+        tags: ["indexer"],
+        params: Type.Object({
+          rune: Type.String({ minLength: 1, maxLength: 256 }),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { rune } = request.params as { rune: string };
+      const result = await forward(reply, () => indexer.getBtcRune(rune));
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
     "/indexer/btc/inscriptions/:id",
     {
       schema: {
