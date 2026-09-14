@@ -626,6 +626,7 @@ export default function Swap() {
           phase={onboarding.phase}
           error={onboarding.error}
           isInitializing={onboarding.isInitializing}
+          network={state.network}
           onInitialize={handleInitialize}
         />
 

@@ -75,5 +75,5 @@ export const MAINNET_CONFIG: NetworkConfig = {
   xverseNetworkType: "Mainnet",
   mempoolUrl: "https://mempool.space",
 
-  faucetEnabled: true,
+  faucetEnabled: false,
 };

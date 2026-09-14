@@ -130,6 +130,15 @@ export async function ensureSwapOnboardingForAccount({
   network,
   onPhase,
 }: EnsureOnboardingInput): Promise<void> {
+  if (network === "mainnet") {
+    const readiness = await probeAccountReadiness(account, config);
+    if (!readiness.eligibility.eligible) {
+      throw new Error(
+        "Mainnet account setup is required before swapping. " +
+          "Initialize this wallet in Arch Prime, then return here to create token accounts.",
+      );
+    }
+  }
   await ensureSwapSigningSession(account);
   const signChallenge = swapTransactionSignerForAccount(account, network);
   const pubkeyHex = xOnlyPubkeyHexForAccount(account);
