@@ -36,7 +36,7 @@ import {
 
 import { useWallet } from "../../hooks/useWallet";
 import { useArchOnboarding } from "../../hooks/useArchOnboarding";
-import { isExternalAccount, isWatchAccount } from "../../state/types";
+import { isWatchAccount } from "../../state/types";
 import { getIndexer } from "../../utils/indexer";
 import { formatSwapAmount } from "../../utils/format";
 import { applyDisplayOverridesByMintHex, lookupKnownToken } from "../../utils/known-tokens";
@@ -365,7 +365,6 @@ export default function Swap() {
   const validation: SwapValidation = useMemo(() => {
     if (!activeAccount) return { kind: "no-account" };
     if (isWatchAccount(activeAccount)) return { kind: "watch-only" };
-    if (isExternalAccount(activeAccount)) return { kind: "external-unsupported" };
     // Block swap submission until the on-chain account + ATAs exist.
     // The OnboardingPanel above gives the user the path to fix this; the
     // submit button label points them at it so the page is self-documenting.
@@ -514,7 +513,7 @@ export default function Swap() {
 
     try {
       await ensureSwapSigningSession(activeAccount);
-      const signer = swapTransactionSignerForAccount(activeAccount);
+      const signer = swapTransactionSignerForAccount(activeAccount, state.network);
       const txHash = await signAndSendTransaction(quote.runtimeTx, signer, {
         label: SWAP_LABEL,
         // PropAMM/CLAMM transactions arrive with the program's

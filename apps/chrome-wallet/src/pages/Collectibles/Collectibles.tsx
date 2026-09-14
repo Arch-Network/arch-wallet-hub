@@ -1,21 +1,19 @@
 import EmptyStateArt from "../../components/EmptyStateArt";
 /**
- * Collectibles -- the Ordinals/inscription gallery.
+ * Collectibles -- unified Ordinals inscription and APL NFT gallery.
  *
  * Phase 3 of the IA rework. Gives inscriptions a real home (the
  * dashboard Ordinals row used to dead-end) with responsive depth:
  *
  *   - Popup / narrow panel: a compact thumbnail grid. Tapping a tile
  *     opens a full-bleed detail sheet over the grid.
- *   - Wide side panel (>=720px): a two-column layout -- the grid on
+ *   - Wide side panel (>=880px): a two-column layout -- the grid on
  *     the left, a persistent detail pane on the right that updates as
  *     you select tiles. The first inscription auto-selects so the
  *     pane is never empty.
  *
- * Data comes from the same indexer path the dashboard already uses
- * (`getBtcAddressInscriptions`). Sending an inscription lands in
- * Phase 4 (unified Send); for now the detail pane links out to the
- * transaction on the block explorer.
+ * Data comes from the indexer's Bitcoin inscription and Arch token
+ * endpoints. Each asset keeps its native detail and send flow.
  */
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
@@ -32,6 +30,14 @@ import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { InscriptionThumb } from "../../components/InscriptionThumb";
 import BackBar from "../../components/BackBar";
 import CopyButton from "../../components/CopyButton";
+import { NftArtwork } from "../../components/NftArtwork";
+import {
+  enrichIndexerTokens,
+  isRawNftCandidate,
+  isNftToken,
+  type EnrichedToken,
+} from "../../utils/enrich-token";
+import { AplCollectibleDetail } from "./AplCollectibleDetail";
 
 function formatBytes(n?: number): string {
   if (n == null || !Number.isFinite(n)) return "\u2014";
@@ -65,6 +71,12 @@ interface DetailProps {
   /** Navigate to the send-inscription flow for this inscription. */
   onSend: () => void;
 }
+
+type CollectibleSelection =
+  | { kind: "inscription"; id: string }
+  | { kind: "apl"; mint: string };
+
+const NFT_BATCH_SIZE = 60;
 
 function InscriptionDetail({ indexer, summary, btcExplorerBase, onSend }: DetailProps) {
   const txid = txidFromSatpoint(summary.satpoint);
@@ -128,42 +140,91 @@ function InscriptionDetail({ indexer, summary, btcExplorerBase, onSend }: Detail
 export default function Collectibles() {
   const { activeAccount, state } = useWallet();
   const navigate = useNavigate();
-  const wide = useWideMode(720);
+  const wide = useWideMode(880);
 
   const [indexer, setIndexer] = useState<IndexerClient | null>(null);
   const [items, setItems] = useState<BtcInscriptionSummary[] | null>(null);
+  const [aplNfts, setAplNfts] = useState<EnrichedToken[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<CollectibleSelection | null>(null);
+  const [visibleNftCount, setVisibleNftCount] = useState(NFT_BATCH_SIZE);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!activeAccount) {
         setItems([]);
+        setAplNfts([]);
         return;
       }
       setError(null);
       setItems(null);
+      setAplNfts(null);
+      setSelection(null);
+      setVisibleNftCount(NFT_BATCH_SIZE);
       try {
         const ix = await getIndexer();
         if (cancelled) return;
         setIndexer(ix);
-        const addr = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
-        const r = await ix.getBtcAddressInscriptions(addr);
+
+        const btcAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
+        const archAddress = activeAccount.archAddress || activeAccount.btcAddress;
+        const [inscriptionsResult, tokensResult] = await Promise.allSettled([
+          ix.getBtcAddressInscriptions(btcAddress),
+          ix.getAccountTokens(archAddress),
+        ]);
         if (cancelled) return;
-        setItems(Array.isArray(r?.inscriptions) ? r.inscriptions : []);
+
+        const failures: unknown[] = [];
+        if (inscriptionsResult.status === "fulfilled") {
+          setItems(
+            Array.isArray(inscriptionsResult.value?.inscriptions)
+              ? inscriptionsResult.value.inscriptions
+              : [],
+          );
+        } else {
+          setItems([]);
+          failures.push(inscriptionsResult.reason);
+        }
+
+        if (tokensResult.status === "fulfilled") {
+          const candidates = (tokensResult.value?.tokens ?? []).filter(isRawNftCandidate);
+          const enriched = await enrichIndexerTokens(
+            candidates,
+            state.network,
+            ix,
+          );
+          if (cancelled) return;
+          setAplNfts(enriched.filter(isNftToken));
+        } else {
+          setAplNfts([]);
+          failures.push(tokensResult.reason);
+        }
+
+        if (failures.length === 2) {
+          const authFailure = failures.some(isIndexerAuthError);
+          setError(
+            authFailure
+              ? "Unlock the wallet to load your collectibles."
+              : "Failed to load collectibles.",
+          );
+        } else if (failures.length === 1) {
+          setError("Some collectibles could not be loaded.");
+        }
       } catch (e: any) {
         if (cancelled) return;
         if (isIndexerNotFoundError(e)) {
           setItems([]);
+          setAplNfts([]);
           return;
         }
         setError(
           isIndexerAuthError(e)
-            ? "Unlock the wallet to load your inscriptions."
-            : e?.message || "Failed to load inscriptions.",
+            ? "Unlock the wallet to load your collectibles."
+            : e?.message || "Failed to load collectibles.",
         );
         setItems([]);
+        setAplNfts([]);
       }
     })();
     return () => {
@@ -176,44 +237,58 @@ export default function Collectibles() {
       ? "https://mempool.space/testnet4/tx/"
       : "https://mempool.space/tx/";
 
-  const selected = items?.find((i) => i.id === selectedId) ?? null;
+  const selectedInscription =
+    selection?.kind === "inscription"
+      ? items?.find((item) => item.id === selection.id) ?? null
+      : null;
+  const selectedAplNft =
+    selection?.kind === "apl"
+      ? aplNfts?.find((token) => token.mint === selection.mint) ?? null
+      : null;
+  const totalItems = (items?.length ?? 0) + (aplNfts?.length ?? 0);
+  const visibleAplNfts = aplNfts?.slice(0, visibleNftCount) ?? [];
+  const showingCompactDetail = !wide && selection !== null;
 
   // Wide layout keeps a detail pane visible at all times, so default
-  // the selection to the first inscription. Compact layout starts
+  // the selection to the first collectible. Compact layout starts
   // with nothing selected (grid only) until the user taps a tile.
   useEffect(() => {
-    if (wide && items && items.length > 0 && !selectedId) {
-      setSelectedId(items[0]!.id);
+    if (!wide || selection || items == null || aplNfts == null) return;
+    if (aplNfts.length > 0) {
+      setSelection({ kind: "apl", mint: aplNfts[0]!.mint });
+    } else if (items.length > 0) {
+      setSelection({ kind: "inscription", id: items[0]!.id });
     }
-  }, [wide, items, selectedId]);
+  }, [wide, items, aplNfts, selection]);
 
   // In the compact layout a tapped tile replaces the grid with the
   // detail view, so the single sticky back control steps back to the
   // gallery first, then out to the dashboard -- one affordance, no
   // stacked "Back" + "Back to gallery" buttons.
   const onPageBack = () => {
-    if (!wide && selected) {
-      setSelectedId(null);
+    if (!wide && selection) {
+      setSelection(null);
     } else {
       navigate("/dashboard");
     }
   };
 
   return (
-    <div className="collectibles-page">
-      <BackBar onBack={onPageBack} />
-      <div className="page-header">
-        <h2 className="page-title">Collectibles</h2>
-        <div className="page-subtitle">
-          {items == null
-            ? "Loading your inscriptions\u2026"
-            : items.length === 0
-              ? "Ordinal inscriptions held by this wallet"
-              : items.length === 1
-                ? "1 inscription"
-                : `${items.length} inscriptions`}
+    <div className={`collectibles-page${showingCompactDetail ? " is-detail" : ""}`}>
+      <BackBar onBack={onPageBack} title="Collectibles" />
+      {!showingCompactDetail && (
+        <div className="page-header">
+          <div className="page-subtitle">
+            {items == null || aplNfts == null
+              ? "Loading your collectibles\u2026"
+              : totalItems === 0
+                ? "Ordinal inscriptions and APL NFTs held by this wallet"
+                : totalItems === 1
+                  ? "1 collectible"
+                  : `${totalItems} collectibles`}
+          </div>
         </div>
-      </div>
+      )}
 
       {error && <div className="error-banner">{error}</div>}
 
@@ -222,7 +297,7 @@ export default function Collectibles() {
   );
 
   function renderBody() {
-    if (items == null) {
+    if (items == null || aplNfts == null) {
       return (
         <div className="collectibles-grid">
           {Array.from({ length: 6 }).map((_, i) => (
@@ -234,13 +309,13 @@ export default function Collectibles() {
       );
     }
 
-    if (items.length === 0) {
+    if (totalItems === 0) {
       return (
         <div className="empty-state">
           <EmptyStateArt kind="collectibles" />
-          <div className="empty-state-title">No inscriptions yet</div>
+          <div className="empty-state-title">No collectibles yet</div>
           <div className="empty-state-sub">
-            Ordinals received by this wallet will appear here.
+            Ordinal inscriptions and APL NFTs received by this wallet will appear here.
           </div>
         </div>
       );
@@ -251,32 +326,54 @@ export default function Collectibles() {
     // Compact: tapping a tile swaps the grid out for the detail view
     // (with a back affordance) rather than overlaying -- avoids the
     // short-grid sizing trap and keeps one thing on screen at a time.
-    if (!wide && selected) {
-      return (
-        <InscriptionDetail
-          indexer={indexer}
-          summary={selected}
-          btcExplorerBase={btcExplorerBase}
-          onSend={() => navigate(`/send-inscription/${encodeURIComponent(selected.id)}`)}
-        />
-      );
+    if (!wide && selection) {
+      return renderSelectedDetail();
     }
 
     const grid = (
-      <div className="collectibles-grid">
-        {items.map((insc) => (
+      <div className="collectibles-gallery">
+        <div className="collectibles-grid">
+          {visibleAplNfts.map((token) => (
+            <button
+              className={`collectible-card ${selection?.kind === "apl" && selection.mint === token.mint ? "selected" : ""}`}
+              key={`apl-${token.mint}`}
+              onClick={() => setSelection({ kind: "apl", mint: token.mint })}
+              title={token.name}
+            >
+              <div className="collectible-card-thumb">
+                <NftArtwork
+                  className="apl-collectible-thumb"
+                  image={token.image}
+                  name={token.name}
+                  decorative
+                />
+              </div>
+              <div className="collectible-card-label">{token.name}</div>
+            </button>
+          ))}
+          {items.map((insc) => (
+            <button
+              className={`collectible-card ${selection?.kind === "inscription" && selection.id === insc.id ? "selected" : ""}`}
+              key={insc.id}
+              onClick={() => setSelection({ kind: "inscription", id: insc.id })}
+              title={inscriptionTitle(insc)}
+            >
+              <div className="collectible-card-thumb">
+                <InscriptionThumb indexer={indexer} summary={insc} size={wide ? 104 : 92} />
+              </div>
+              <div className="collectible-card-label">{inscriptionTitle(insc)}</div>
+            </button>
+          ))}
+        </div>
+        {aplNfts.length > visibleAplNfts.length && (
           <button
-            className={`collectible-card ${selectedId === insc.id ? "selected" : ""}`}
-            key={insc.id}
-            onClick={() => setSelectedId(insc.id)}
-            title={inscriptionTitle(insc)}
+            type="button"
+            className="btn btn-secondary collectibles-load-more"
+            onClick={() => setVisibleNftCount((count) => count + NFT_BATCH_SIZE)}
           >
-            <div className="collectible-card-thumb">
-              <InscriptionThumb indexer={indexer} summary={insc} size={wide ? 104 : 92} />
-            </div>
-            <div className="collectible-card-label">{inscriptionTitle(insc)}</div>
+            Load {Math.min(NFT_BATCH_SIZE, aplNfts.length - visibleAplNfts.length)} more
           </button>
-        ))}
+        )}
       </div>
     );
 
@@ -286,17 +383,38 @@ export default function Collectibles() {
     return (
       <div className="collectibles-layout is-wide">
         {grid}
-        {selected && (
+        {selection && (
           <aside className="collectibles-detail-pane">
-            <InscriptionDetail
-              indexer={indexer}
-              summary={selected}
-              btcExplorerBase={btcExplorerBase}
-              onSend={() => navigate(`/send-inscription/${encodeURIComponent(selected.id)}`)}
-            />
+            {renderSelectedDetail()}
           </aside>
         )}
       </div>
     );
+  }
+
+  function renderSelectedDetail() {
+    if (selectedAplNft) {
+      return (
+        <AplCollectibleDetail
+          token={selectedAplNft}
+          onSend={() => navigate(`/send?asset=apl&mint=${encodeURIComponent(selectedAplNft.mint)}`)}
+        />
+      );
+    }
+
+    if (selectedInscription && indexer) {
+      return (
+        <InscriptionDetail
+          indexer={indexer}
+          summary={selectedInscription}
+          btcExplorerBase={btcExplorerBase}
+          onSend={() =>
+            navigate(`/send-inscription/${encodeURIComponent(selectedInscription.id)}`)
+          }
+        />
+      );
+    }
+
+    return null;
   }
 }

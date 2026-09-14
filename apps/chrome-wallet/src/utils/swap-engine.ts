@@ -37,6 +37,7 @@ import { isExternalAccount, type AppState, type NetworkId, type WalletAccount } 
 import { INDEXER_BASE_URL, DEFAULT_INDEXER_API_KEY } from "./explorer-config";
 import { getBtcUsdPrice } from "./btc-price";
 import { signerForAccount, type Signer } from "../signers/Signer";
+import { signArchMessageHashWithExternalWallet } from "./external-arch-message-hash";
 
 /**
  * The wallet ships its PropAMM quote URL alongside the build for now.
@@ -175,9 +176,19 @@ export function walletStateForEngine(
  * Hub-signing branch; bootstrap is what differs between passkey and
  * email wallets, and that happens before this signer is built).
  */
-export function digestSignerForAccount(account: WalletAccount): WalletDigestSigner {
+export function digestSignerForAccount(
+  account: WalletAccount,
+  network: NetworkId,
+): WalletDigestSigner {
   if (isExternalAccount(account)) {
-    throw new Error("Swaps with linked external wallets are not supported yet.");
+    return {
+      signArchMessageHash: async ({ messageHashHex }) =>
+        signArchMessageHashWithExternalWallet({
+          account,
+          messageHashHex,
+          network,
+        }),
+    };
   }
   const signer: Signer = signerForAccount(account);
   return signer;
@@ -188,6 +199,9 @@ export function digestSignerForAccount(account: WalletAccount): WalletDigestSign
  * `TransactionSigner` (the BIP-322 witness-wrapped callback). Use this
  * directly with `signAndSendTransaction(quote.runtimeTx, signer, ...)`.
  */
-export function swapTransactionSignerForAccount(account: WalletAccount) {
-  return makeSwapSigner(digestSignerForAccount(account));
+export function swapTransactionSignerForAccount(
+  account: WalletAccount,
+  network: NetworkId,
+) {
+  return makeSwapSigner(digestSignerForAccount(account, network));
 }

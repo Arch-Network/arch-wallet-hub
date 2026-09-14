@@ -1180,6 +1180,15 @@ a {
   gap: 10px;
 }
 
+.collectibles-gallery {
+  min-width: 0;
+}
+
+.collectibles-load-more {
+  display: flex;
+  margin: 16px auto 0;
+}
+
 .collectibles-layout.is-wide .collectibles-detail-pane {
   position: sticky;
   top: 0;
@@ -1219,6 +1228,32 @@ a {
   justify-content: center;
 }
 
+.apl-collectible-thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg-primary);
+}
+
+.nft-artwork-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.nft-artwork-placeholder svg {
+  width: 40px;
+  height: 40px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
 .collectible-card-label {
   font-size: 10px;
   font-weight: 600;
@@ -1243,6 +1278,17 @@ a {
   background: var(--bg-card);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-md);
+}
+
+.collectible-detail-preview:has(.nft-image-preview) {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.collectible-detail-preview .nft-image-preview {
+  width: min(260px, 100%);
+  margin-bottom: 0;
 }
 
 .collectible-detail-title {
@@ -1567,6 +1613,24 @@ a {
 .back-bar {
   display: flex;
   align-items: center;
+}
+
+.back-bar.has-title {
+  min-height: 42px;
+}
+
+.back-bar-title {
+  position: absolute;
+  left: 50%;
+  max-width: calc(100% - 160px);
+  transform: translateX(-50%);
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .back-bar + .page-header {
@@ -4168,9 +4232,16 @@ button.address-chip-link:hover {
 
 /* ═══════════════════ Token Detail Screen ═══════════════════ */
 
-/* Narrow default: just lay children out in source order. */
+/* Query the usable content column rather than the full side-panel viewport.
+   At 760px viewport width the persistent 220px nav leaves too little room
+   for two detail columns, which previously squeezed Recent Activity. */
+.token-detail-container {
+  container-type: inline-size;
+}
+
+/* Narrow default: lay children out in source order. */
 .token-detail-grid {
-  display: contents;
+  display: block;
 }
 
 /* Restore a comfortable gap between the Send/Receive actions and the
@@ -4184,7 +4255,7 @@ button.address-chip-link:hover {
 /* Wide side panel: split summary on the left from activity on the right.
    The collapsible "Details" section follows the summary in the left
    column so the activity feed stays full-height. */
-@media (min-width: 760px) {
+@container (min-width: 760px) {
   html[data-mode="sidepanel"] .token-detail-grid {
     display: grid;
     grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
@@ -4207,6 +4278,136 @@ button.address-chip-link:hover {
   gap: 4px;
   padding: 18px 12px 12px;
   text-align: center;
+}
+
+.nft-image-preview {
+  position: relative;
+  width: min(200px, 70%);
+  aspect-ratio: 1;
+  flex: 0 0 auto;
+  overflow: hidden;
+  padding: 0;
+  margin-bottom: 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: 16px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.nft-image-preview > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.nft-image-preview > .nft-artwork-placeholder {
+  width: 100%;
+  height: 100%;
+}
+
+.nft-image-expand {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-primary);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--bg-card) 90%, transparent);
+  color: var(--text-secondary);
+}
+
+.nft-image-expand svg {
+  width: 14px;
+  height: 14px;
+}
+
+.nft-image-preview:hover {
+  border-color: var(--text-muted);
+}
+
+.nft-image-preview:focus-visible,
+.nft-image-lightbox-header button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.nft-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.82);
+}
+
+.nft-image-lightbox-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow: hidden;
+  border: 1px solid var(--border-primary);
+  border-radius: 18px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-pop);
+}
+
+.nft-image-lightbox-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 52px;
+  padding: 8px 10px 8px 16px;
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--surface-header);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.nft-image-lightbox-header span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nft-image-lightbox-header button {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--surface-subtle);
+  color: var(--text-secondary);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.nft-image-lightbox-content {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--bg-primary);
+}
+
+.nft-image-lightbox-content img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 116px);
+  object-fit: contain;
+}
+
+.nft-image-lightbox-content .nft-artwork-placeholder {
+  width: min(420px, 100%);
+  aspect-ratio: 1;
 }
 
 .token-detail-icon {
