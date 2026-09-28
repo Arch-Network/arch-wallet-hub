@@ -22,6 +22,19 @@
     //     uses TypeBox schemas with `additionalProperties:false`, so a
     //     body-validation bypass still produces an unusable payload.
     // Target removal: 2026-07-15 (after fastify@5 migration).
-    "GHSA-jx2c-rxcm-jvmq"
+    "GHSA-jx2c-rxcm-jvmq",
+
+    // --- find-my-way via fastify@4
+    // GHSA-c96f-x56v-gq3h — "find-my-way: DDoS with HTTP2". Patched in
+    // find-my-way 9.7.0; fastify@4 pins find-my-way ^8, so only fastify@5
+    // picks it up. The crash needs a request method like `__proto__`,
+    // which only Node's HTTP/2 server passes through. We don't set
+    // `http2` in createServer() (src/server.ts), Node's HTTP/1.1 parser
+    // rejects unknown methods, and the ALB target group uses the default
+    // HTTP/1 protocol version. Plausibly unreachable; re-check if
+    // `http2` is ever enabled.
+    // Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/118
+    // Target removal: 2026-10-31 (after fastify@5 migration).
+    "GHSA-c96f-x56v-gq3h"
   ]
 }
