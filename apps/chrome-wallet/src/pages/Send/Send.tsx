@@ -47,6 +47,10 @@ import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
 import { buildSessionSigner } from "../../utils/hub-session";
+import { hubIntentFee, verifyHubSigningRequest } from "../../utils/hub-signing-request-verify";
+import { feeChargedTo } from "../../utils/arch-fee";
+import { parseU64DecimalString } from "../../utils/u64-amount";
+import { buildSendHubAction } from "../../utils/send-hub-action";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
   EmailSessionNeededError,
@@ -669,21 +673,18 @@ export default function Send({ networkStatus }: SendProps) {
       setSignStatus("Preparing signing request…");
 
       const submitViaHub = async (): Promise<string> => {
-        const action =
+        const { action, intent } = buildSendHubAction(
           asset === "apl" && selectedToken
             ? {
-                type: "arch.token_transfer" as const,
+                asset: "apl",
                 mintAddress: selectedToken.mint,
                 toAddress: reviewRecipient,
                 amount: aplRawAmount!.toString(),
                 sourceTokenAccount: selectedToken.tokenAccount,
                 decimals: selectedToken.decimals,
               }
-            : {
-                type: "arch.transfer" as const,
-                toAddress: reviewRecipient,
-                lamports: archLamports,
-              };
+            : { asset: "arch", toAddress: reviewRecipient, lamports: archLamports },
+        );
 
         const sr = await client.createSigningRequest({
           externalUserId,
@@ -696,9 +697,15 @@ export default function Send({ networkStatus }: SendProps) {
             : { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
           action,
         });
+        const verified = verifyHubSigningRequest({
+          intent,
+          account: activeAccount,
+          payloadToSign: sr.payloadToSign,
+          display: sr.display,
+        });
 
         if (isExternalAccount(activeAccount)) {
-          const psbtBase64 = (sr.payloadToSign as any)?.psbtBase64;
+          const psbtBase64 = verified.psbtBase64;
           if (!psbtBase64) throw new Error("No PSBT available for external wallet signing");
           return await signWithExternalWallet(sr.signingRequestId, psbtBase64);
         }
@@ -707,9 +714,7 @@ export default function Send({ networkStatus }: SendProps) {
         // The session-stamped signer takes care of whichever bootstrap
         // (WebAuthn or OTP) opened the IndexedDB session; the Hub
         // never sees the signing key.
-        const payloadHex = (sr.payloadToSign as any)?.payloadHex;
-        if (!payloadHex) throw new Error("No payload available for signing");
-        return await signWithPasskey(sr.signingRequestId, payloadHex);
+        return await signWithPasskey(sr.signingRequestId, verified.payloadHex);
       };
 
       let txid: string;
@@ -1031,7 +1036,16 @@ export default function Send({ networkStatus }: SendProps) {
           setBtcUsdAmount(btcInputToUsd(maxBtc, btcUsd));
         }
       } else if (asset === "arch" && archBalance) {
-        setAmount((Number(archBalance) / 1e9).toFixed(4));
+        // The signer set (and so the fee) doesn't depend on the recipient.
+        const archAddress = activeAccount?.archAddress;
+        const fee = feeChargedTo(
+          hubIntentFee({ type: "arch.transfer", toAddress: archAddress ?? "", lamports: "0" }, archAddress),
+          archAddress,
+        );
+        const balance = parseU64DecimalString(archBalance);
+        if (fee !== null && balance !== null) {
+          setAmount(rawTokenAmountToInput(String(balance > fee ? balance - fee : 0n), 9));
+        }
       } else if (asset === "apl" && selectedToken) {
         setAmount(
           rawTokenAmountToInput(selectedToken.rawAmount, selectedToken.decimals),

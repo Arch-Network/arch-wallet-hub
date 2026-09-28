@@ -28,8 +28,18 @@ import {
 import { getIndexer } from "../../utils/indexer";
 import { deriveAssociatedTokenAddress } from "../../utils/associated-token";
 import DappHeader from "../../components/Approve/DappHeader";
+import TransferSummary, { AddressText } from "../../components/Approve/TransferSummary";
+import {
+  ARCH_DECIMALS,
+  formatBaseUnits,
+  formatSatsAsBtc,
+  formatTokenAmountDisplay,
+  type TokenAmountDisplay,
+} from "../../utils/amount-display";
+import { lookupKnownToken, type KnownTokenMeta } from "../../utils/known-tokens";
 import { interpretMessage } from "../../utils/sign-message";
 import {
+  parsePsbt,
   summarizePsbt,
   formatSats,
   evaluatePsbtGate,
@@ -37,6 +47,11 @@ import {
   type PsbtGate,
   type PsbtSummary,
 } from "../../utils/psbt-summary";
+import {
+  assertPsbtSighashTypesAllowed,
+  assertSignedInputsAreNetworkUtxos,
+  selectPsbtInputsToSign,
+} from "../../utils/psbt-checks";
 import { signerForAccount } from "../../signers/Signer";
 import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
@@ -60,6 +75,28 @@ import {
   getRecentSpend,
   recordSpend,
 } from "../../utils/spend-tracker";
+import { parseU64DecimalString } from "../../utils/u64-amount";
+import { resolveOriginSigningAccount } from "../../utils/origin-account";
+import {
+  hubIntentFee,
+  verifyHubSigningRequest,
+  type VerifiedHubSigningRequest,
+} from "../../utils/hub-signing-request-verify";
+import bs58 from "bs58";
+import {
+  feeChargedTo,
+  MIN_WALLET_BALANCE_LAMPORTS,
+  TOKEN_ACCOUNT_DEPOSIT_LAMPORTS,
+  type ArchFee,
+} from "../../utils/arch-fee";
+import {
+  computeArchTransferGate,
+  computeTokenTransferGate,
+  computeArchSpendCapGate,
+  type ArchBalanceGate,
+  type TokenBalanceGate,
+  type ArchSpendCapGate,
+} from "../../utils/transfer-gates";
 
 interface RequestDetails {
   type: string;
@@ -69,6 +106,11 @@ interface RequestDetails {
   dappIconUrl?: string;
   autoApproveAllowed?: boolean;
 }
+
+const INVALID_AMOUNT_MESSAGE =
+  "The requested amount is not a plain decimal integer between 0 and 2^64-1. Refusing to sign.";
+const ARCH_FEE_UNKNOWN_MESSAGE =
+  "Couldn't compute the Arch network fee for this request. Refusing to sign.";
 
 /**
  * Defence against display-vs-sign drift: recompute the canonical
@@ -107,7 +149,7 @@ async function signAndSubmitRequest(
   client: Awaited<ReturnType<typeof getClient>>,
   activeAccount: WalletAccount,
   signingRequestId: string,
-  payloadToSign: any,
+  verified: VerifiedHubSigningRequest,
   externalUserId: string,
   network: NetworkId,
 ): Promise<any> {
@@ -116,7 +158,7 @@ async function signAndSubmitRequest(
   // *active* account's cached token (clobbering the selected account's)
   // between create and submit.
   if (isExternalAccount(activeAccount)) {
-    const psbtBase64 = payloadToSign?.psbtBase64;
+    const psbtBase64 = verified.psbtBase64;
     if (!psbtBase64) throw new Error("No PSBT available for external wallet signing");
     const adapter = getExternalWalletAdapter(activeAccount.externalProvider);
     const signature64Hex = await adapter.signPsbt({
@@ -131,9 +173,6 @@ async function signAndSubmitRequest(
     return (submitRes as any).result ?? submitRes;
   }
 
-  const payloadHex = payloadToSign?.payloadHex;
-  if (!payloadHex) throw new Error("No payload available for signing");
-
   // Both passkey and email wallets sign locally with the
   // session-stamped signer now -- which path bootstrapped the
   // session (WebAuthn vs OTP) is invisible at this layer. The Hub
@@ -141,7 +180,7 @@ async function signAndSubmitRequest(
   const signer = signerForAccount(activeAccount);
   const { signature64Hex } = await signer.signArchPayload({
     signingRequestId,
-    payloadHex,
+    payloadHex: verified.payloadHex,
   });
   const submitRes = await client.submitSigningRequest(signingRequestId, {
     externalUserId,
@@ -411,85 +450,6 @@ function VerifiedDestinationName({
   );
 }
 
-/**
- * Pre-flight balance check for `arch.transfer` (the SEND_TRANSFER
- * dapp request type).
- *
- * Why static analysis instead of true simulation: the Arch SDK
- * (v0.0.26) exposes no `simulateTransaction` RPC; the available
- * methods (`read_account_info`, `send_transaction`, ...) don't let
- * us dry-run state changes. The closest meaningful pre-flight is
- * to fetch the sender's current lamport balance and predict the
- * post-balance by simple subtraction. Arch transfers don't deduct
- * a lamport fee (anchoring happens via the user's BTC UTXO), so
- * the prediction is exact when the indexer returned a value.
- *
- * SEND_TOKEN_TRANSFER (APL tokens) is intentionally NOT covered
- * here -- token balances live in an associated-token account that
- * needs ATA derivation plus token-account data parsing. Tracked
- * as a follow-up.
- */
-type ArchBalanceGate =
-  | { state: "loading" }
-  | { state: "ok"; snapshot: ArchBalanceSnapshot; postLamports: bigint | null }
-  | {
-      state: "blocked";
-      snapshot: ArchBalanceSnapshot;
-      requestedLamports: bigint;
-      availableLamports: bigint;
-    };
-
-function parseLamportsToBigInt(raw: unknown): bigint | null {
-  // Dapps send lamports as either number or string. BigInt parses
-  // both; an empty / non-numeric string returns null so we
-  // gracefully fail open rather than crashing the modal.
-  if (raw === undefined || raw === null) return null;
-  if (typeof raw === "number") {
-    if (!Number.isFinite(raw)) return null;
-    return BigInt(Math.trunc(raw));
-  }
-  if (typeof raw === "string") {
-    if (!/^-?\d+$/.test(raw.trim())) return null;
-    try {
-      return BigInt(raw.trim());
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-function computeArchTransferGate(
-  snapshot: ArchBalanceSnapshot | null,
-  requestedLamports: bigint | null,
-): ArchBalanceGate {
-  if (!snapshot) return { state: "loading" };
-  if (snapshot.kind !== "found") {
-    // not_found / error: surface to the user but don't block.
-    // Blocking on a transient indexer outage would brick the
-    // wallet for legitimate users.
-    return { state: "ok", snapshot, postLamports: null };
-  }
-  if (requestedLamports === null) {
-    // Malformed amount upstream -- the existing render path will
-    // also surface this; we don't block here.
-    return { state: "ok", snapshot, postLamports: snapshot.lamports };
-  }
-  if (requestedLamports > snapshot.lamports) {
-    return {
-      state: "blocked",
-      snapshot,
-      requestedLamports,
-      availableLamports: snapshot.lamports,
-    };
-  }
-  return {
-    state: "ok",
-    snapshot,
-    postLamports: snapshot.lamports - requestedLamports,
-  };
-}
-
 function ArchBalanceCard({
   gate,
   requestedLamports,
@@ -505,6 +465,31 @@ function ArchBalanceCard({
       </div>
     );
   }
+  if (gate.state === "invalid-amount" || gate.state === "fee-unknown") {
+    return (
+      <div className="card" style={{ marginTop: 8 }}>
+        <div className="input-label">Pre-flight balance</div>
+        <div className="approve-risk approve-risk-danger">
+          {gate.state === "invalid-amount" ? INVALID_AMOUNT_MESSAGE : ARCH_FEE_UNKNOWN_MESSAGE}
+        </div>
+      </div>
+    );
+  }
+  const notices = (
+    <>
+      {gate.state === "blocked" && (
+        <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+          {archGateBlockedMessage(gate)}
+        </div>
+      )}
+      {gate.state === "ok" && gate.recipientUnverified && (
+        <div className="approve-risk approve-risk-warn" style={{ marginTop: 6 }}>
+          Couldn&apos;t read the recipient&apos;s balance. If its account is empty, a send under{" "}
+          {MIN_WALLET_BALANCE_LAMPORTS.toString()} lamports will fail on chain.
+        </div>
+      )}
+    </>
+  );
   if (gate.snapshot.kind === "not_found") {
     return (
       <div className="card" style={{ marginTop: 8 }}>
@@ -513,6 +498,7 @@ function ArchBalanceCard({
           No on-chain balance found for this account yet. If it&apos;s a fresh
           wallet, the transfer may fail until it&apos;s funded.
         </div>
+        {notices}
       </div>
     );
   }
@@ -524,6 +510,7 @@ function ArchBalanceCard({
           Could not check current balance ({gate.snapshot.reason}). Proceed
           with caution.
         </div>
+        {notices}
       </div>
     );
   }
@@ -539,6 +526,16 @@ function ArchBalanceCard({
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 2 }}>
           <span>This transfer</span>
           <span className="mono">- {formatArch(requestedLamports.toString())}</span>
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 2 }}>
+        <span>Network fee</span>
+        <span className="mono">- {archFeeText(gate.feeLamports)}</span>
+      </div>
+      {gate.depositLamports > 0n && (
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginTop: 2 }}>
+          <span>Token account deposit</span>
+          <span className="mono">- {archFeeText(gate.depositLamports)}</span>
         </div>
       )}
       {gate.state === "ok" && gate.postLamports !== null && (
@@ -557,55 +554,37 @@ function ArchBalanceCard({
           <span className="mono">{formatArch(gate.postLamports.toString())}</span>
         </div>
       )}
-      {gate.state === "blocked" && (
-        <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
-          Insufficient balance: requested {formatArch(gate.requestedLamports.toString())}, available{" "}
-          {formatArch(gate.availableLamports.toString())}. Refusing to sign.
-        </div>
-      )}
+      {notices}
     </div>
   );
 }
 
-type TokenBalanceGate =
-  | { state: "loading" }
-  | { state: "ok"; snapshot: TokenBalanceSnapshot; postAmount: bigint | null }
-  | {
-      state: "blocked";
-      snapshot: TokenBalanceSnapshot;
-      requestedAmount: bigint;
-      availableAmount: bigint;
-    };
-
-function computeTokenTransferGate(
-  snapshot: TokenBalanceSnapshot | null,
-  requestedAmount: bigint | null,
-): TokenBalanceGate {
-  if (!snapshot) return { state: "loading" };
-  if (snapshot.kind !== "found") return { state: "ok", snapshot, postAmount: null };
-  if (requestedAmount === null || requestedAmount <= 0n) {
-    return { state: "ok", snapshot, postAmount: snapshot.amount };
+function archGateBlockedMessage(gate: Extract<ArchBalanceGate, { state: "blocked" }>): string {
+  const min = `${MIN_WALLET_BALANCE_LAMPORTS.toString()} lamports`;
+  if (gate.reason === "sender-dust") {
+    return `This would leave your account with ${gate.dustLamports} lamports; Arch requires 0 or at least ${min}. Refusing to sign.`;
   }
-  if (requestedAmount > snapshot.amount) {
-    return {
-      state: "blocked",
-      snapshot,
-      requestedAmount,
-      availableAmount: snapshot.amount,
-    };
+  if (gate.reason === "recipient-dust") {
+    return `This would leave the recipient with ${gate.dustLamports} lamports; Arch requires 0 or at least ${min}. Refusing to sign.`;
   }
-  return { state: "ok", snapshot, postAmount: snapshot.amount - requestedAmount };
+  const deposit = gate.depositLamports > 0n ? ` + ${archFeeText(gate.depositLamports)} token account deposit` : "";
+  return `Insufficient balance: requested ${formatArch(gate.requestedLamports.toString())} + ${archFeeText(gate.feeLamports)} network fee${deposit}, available ${formatArch(gate.availableLamports.toString())}. Refusing to sign.`;
 }
 
 function TokenBalanceCard({
   gate,
   requestedAmount,
+  meta,
 }: {
   gate: TokenBalanceGate;
   requestedAmount: bigint | null;
+  meta: KnownTokenMeta | null;
 }) {
   if (gate.state === "loading") {
     return <div className="card" style={{ marginTop: 8 }}><div className="input-label">Pre-flight token balance</div><div style={{ fontSize: 12, opacity: 0.7 }}>Checking associated token account...</div></div>;
+  }
+  if (gate.state === "invalid-amount") {
+    return <div className="card" style={{ marginTop: 8 }}><div className="input-label">Pre-flight token balance</div><div className="approve-risk approve-risk-danger">{INVALID_AMOUNT_MESSAGE}</div></div>;
   }
   if (gate.snapshot.kind !== "found") {
     return (
@@ -619,15 +598,41 @@ function TokenBalanceCard({
       </div>
     );
   }
+  const fmt = (raw: bigint) => tokenAmountText(formatTokenAmountDisplay(raw, meta));
   return (
     <div className="card" style={{ marginTop: 8 }}>
-      <div className="input-label">Pre-flight token balance (raw units)</div>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4 }}><span>Current</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{gate.snapshot.amount.toString()}</span></div>
-      {requestedAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 2 }}><span>This transfer</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>- {requestedAmount.toString()}</span></div>}
-      {gate.state === "ok" && gate.postAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--border-divider)", fontWeight: 600 }}><span>After</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{gate.postAmount.toString()}</span></div>}
-      {gate.state === "blocked" && <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>Insufficient token balance: requested {gate.requestedAmount.toString()}, available {gate.availableAmount.toString()}. Refusing to sign.</div>}
+      <div className="input-label">Pre-flight token balance</div>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4 }}><span>Current</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{fmt(gate.snapshot.amount)}</span></div>
+      {requestedAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 2 }}><span>This transfer</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>- {fmt(requestedAmount)}</span></div>}
+      {gate.state === "ok" && gate.postAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--border-divider)", fontWeight: 600 }}><span>After</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{fmt(gate.postAmount)}</span></div>}
+      {gate.state === "blocked" && <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>Insufficient token balance: requested {fmt(gate.requestedAmount)}, available {fmt(gate.availableAmount)}. Refusing to sign.</div>}
     </div>
   );
+}
+
+function archFeeText(lamports: bigint): string {
+  return `${formatBaseUnits(lamports, ARCH_DECIMALS)} ARCH`;
+}
+
+/** Fee row for a Hub-built Arch transfer; the fee is only the user's when they are `account_keys[0]`. */
+function archFeeRow(fee: ArchFee | null, archAddress: string | undefined, extraNote?: string): { value: string; note?: string } {
+  if (!fee) return { value: "Unknown", note: ARCH_FEE_UNKNOWN_MESSAGE };
+  if (fee.feePayer !== archAddress) {
+    return { value: "Not charged to you", note: `Paid by ${truncateAddress(fee.feePayer)}.` };
+  }
+  return {
+    value: archFeeText(fee.feeLamports),
+    note: ["Paid in ARCH from this account.", extraNote].filter(Boolean).join(" "),
+  };
+}
+
+function tokenAmountText(display: TokenAmountDisplay): string {
+  return display.kind === "scaled" ? `${display.amount} ${display.symbol}` : `${display.amount} raw units`;
+}
+
+function btcText(sats: number): string {
+  const btc = formatSatsAsBtc(sats);
+  return btc === null ? "Invalid amount" : `${btc} BTC`;
 }
 
 function PsbtSummaryCard({
@@ -652,55 +657,47 @@ function PsbtSummaryCard({
   }
 
   const isOutflow = summary.netUserSats < 0;
+  const netBtc = formatSatsAsBtc(Math.abs(summary.netUserSats));
+  const external = summary.outputs.filter((o) => !o.isMine);
+  const ownOutputs = summary.outputs.filter((o) => o.isMine);
 
   return (
-    <div className="card">
-      <div style={{ marginBottom: 8 }}>
-        <div className="input-label">Action</div>
-        <div style={{ fontWeight: 600 }}>Sign Bitcoin Transaction (PSBT)</div>
-      </div>
-
-      <div style={{ marginBottom: 10 }}>
-        <div className="input-label">Net change for your wallet</div>
-        <div
-          style={{
-            fontWeight: 700,
-            fontSize: 18,
-            color: isOutflow ? "var(--danger)" : "var(--success)",
-          }}
-        >
-          {isOutflow ? "" : "+"}{formatSats(summary.netUserSats)}
-        </div>
-      </div>
-
-      {summary.exactFee && (
-        <div style={{ marginBottom: 10 }}>
-          <div className="input-label">Network fee</div>
-          <div>{formatSats(summary.feeSats)}</div>
-        </div>
+    <TransferSummary
+      title="Sign Bitcoin transaction (PSBT)"
+      amountLabel={isOutflow ? "Leaves your wallet" : "Net change for your wallet"}
+      amount={netBtc === null ? null : `${isOutflow || summary.netUserSats === 0 ? "" : "+"}${netBtc}`}
+      symbol="BTC"
+      amountNote={
+        summary.exactFee
+          ? "Your inputs minus the outputs that come back to you."
+          : "Not verified: some input amounts are missing, so this may be understated."
+      }
+      recipients={external.map((o) => ({ label: "Sending to", address: o.address, amount: btcText(o.valueSats) }))}
+      fee={summary.exactFee ? { value: btcText(summary.feeSats) } : { value: "Unknown", note: "Some inputs have no prevout amount." }}
+    >
+      {external.length === 0 && (
+        <div className="transfer-note">No outputs go to addresses outside this wallet.</div>
       )}
 
-      <details>
+      <details style={{ marginTop: 12 }}>
         <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
-          Inputs ({summary.inputs.length}) and outputs ({summary.outputs.length})
+          Inputs ({summary.inputs.length}) and outputs back to you ({ownOutputs.length})
         </summary>
         <div style={{ marginTop: 6 }}>
           <div className="input-label" style={{ marginBottom: 4 }}>Inputs</div>
           {summary.inputs.map((i, idx) => (
             <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>
               <span className="mono">{i.address ? truncateAddress(i.address, 10) : `${i.txid.slice(0, 8)}...:${i.vout}`}</span>
-              <span style={{ color: i.isMine ? "var(--text-primary)" : "var(--text-muted)" }}>
-                {i.isMine ? "you" : ""} {formatSats(i.valueSats)}
+              <span style={{ color: i.isMine ? "var(--text-primary)" : "var(--text-secondary)" }}>
+                {i.isMine ? "you" : "not yours"} {btcText(i.valueSats)}
               </span>
             </div>
           ))}
-          <div className="input-label" style={{ marginTop: 8, marginBottom: 4 }}>Outputs</div>
-          {summary.outputs.map((o, idx) => (
-            <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2 }}>
+          <div className="input-label" style={{ marginTop: 8, marginBottom: 4 }}>Outputs back to you</div>
+          {ownOutputs.map((o, idx) => (
+            <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 2, color: "var(--text-secondary)" }}>
               <span className="mono">{o.address ? truncateAddress(o.address, 10) : "(non-standard)"}</span>
-              <span style={{ color: o.isMine ? "var(--text-primary)" : "var(--text-muted)" }}>
-                {o.isChange ? "change" : o.isMine ? "you" : ""} {formatSats(o.valueSats)}
-              </span>
+              <span>{o.isChange ? "change" : "you"} {btcText(o.valueSats)}</span>
             </div>
           ))}
         </div>
@@ -711,7 +708,7 @@ function PsbtSummaryCard({
           Some inputs are missing prevout amounts. Fee is unknown — proceed with caution.
         </div>
       )}
-    </div>
+    </TransferSummary>
   );
 }
 
@@ -843,7 +840,7 @@ function ConnectNetworkCard({
 
 export default function Approve() {
   const { requestId } = useParams<{ requestId: string }>();
-  const { state, activeAccount, setNetwork } = useWallet();
+  const { state, activeAccount, setNetwork, loading: walletLoading } = useWallet();
   const [request, setRequest] = useState<RequestDetails | null>(null);
   const [isReturning, setIsReturning] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -855,6 +852,8 @@ export default function Approve() {
   const [psbtLargeOutflowAck, setPsbtLargeOutflowAck] = useState(false);
   const [archBalance, setArchBalance] = useState<ArchBalanceSnapshot | null>(null);
   const [tokenBalance, setTokenBalance] = useState<TokenBalanceSnapshot | null>(null);
+  const [recipientArchBalance, setRecipientArchBalance] = useState<ArchBalanceSnapshot | null>(null);
+  const [destTokenAccount, setDestTokenAccount] = useState<TokenBalanceSnapshot | null>(null);
   // When an email-wallet user clicks Approve without a live Turnkey
   // session, `ensureSigningSessionForAccount` throws
   // `EmailSessionNeededError`. Previously we surfaced that as a text
@@ -863,11 +862,34 @@ export default function Approve() {
   // OTP without leaving the approve flow; on success we re-run the
   // approve handler.
   const [otpAccount, setOtpAccount] = useState<WalletAccount | null>(null);
+  const [originRefusal, setOriginRefusal] = useState<string | null>(null);
 
-  const selectedAccount = useMemo(
-    () => state.accounts.find((a) => a.id === selectedAccountId) ?? activeAccount,
-    [state.accounts, selectedAccountId, activeAccount],
+  const originAccount = useMemo(
+    () =>
+      request && request.type !== "CONNECT" && !walletLoading && !state.locked
+        ? resolveOriginSigningAccount(state, request.origin)
+        : null,
+    [request, walletLoading, state],
   );
+
+  // SIGN_* / SEND_* sign with the origin's bound account only; CONNECT
+  // is where the user picks one.
+  const selectedAccount = useMemo(() => {
+    if (request && request.type !== "CONNECT") {
+      return originAccount?.ok && !originRefusal ? originAccount.account : null;
+    }
+    return state.accounts.find((a) => a.id === selectedAccountId) ?? activeAccount;
+  }, [request, originAccount, originRefusal, state.accounts, selectedAccountId, activeAccount]);
+
+  useEffect(() => {
+    if (!requestId || originRefusal || !originAccount || originAccount.ok) return;
+    setOriginRefusal(originAccount.reason);
+    chrome.runtime.sendMessage({
+      type: "REJECT_REQUEST",
+      requestId,
+      reason: "The account connected to this site is not the wallet's active account",
+    });
+  }, [requestId, originAccount, originRefusal]);
 
   // Decode SIGN_PSBT payloads once at the Approve level so the same
   // summary feeds both the body card and the footer gating logic
@@ -886,19 +908,66 @@ export default function Approve() {
       return {
         summary: summarizePsbt(
           psbtPayload,
-          selectedAccount?.btcAddress ? [selectedAccount.btcAddress] : [],
+          selectedAccount?.btcAddress ? [reEncodeTaprootAddress(selectedAccount.btcAddress, state.network)] : [],
+          state.network === "mainnet" ? "mainnet" : "testnet",
         ),
         error: null,
       };
     } catch (e: any) {
       return { summary: null, error: e?.message || "Could not decode PSBT" };
     }
-  }, [request, selectedAccount?.btcAddress]);
+  }, [request, selectedAccount?.btcAddress, state.network]);
 
   const psbtGate = useMemo<PsbtGate | null>(
     () => (psbtDecode.summary ? evaluatePsbtGate(psbtDecode.summary) : null),
     [psbtDecode.summary],
   );
+
+  const psbtPolicy = useMemo<
+    { ok: true; inputsToSign: number[] } | { ok: false; error: string } | null
+  >(() => {
+    if (request?.type !== "SIGN_PSBT" || !selectedAccount?.btcAddress) return null;
+    try {
+      const psbt = parsePsbt((request.payload as any)?.psbt);
+      assertPsbtSighashTypesAllowed(psbt);
+      return {
+        ok: true,
+        inputsToSign: selectPsbtInputsToSign(psbt, selectedAccount.btcAddress, (request.payload as any)?.signInputs),
+      };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || "Could not check this PSBT" };
+    }
+  }, [request, selectedAccount?.btcAddress]);
+
+  const [psbtPrevouts, setPsbtPrevouts] = useState<
+    { state: "n/a" } | { state: "loading" } | { state: "ok" } | { state: "blocked"; reason: string }
+  >({ state: "n/a" });
+
+  useEffect(() => {
+    if (request?.type !== "SIGN_PSBT" || !psbtPolicy?.ok || !selectedAccount?.btcAddress) {
+      setPsbtPrevouts({ state: "n/a" });
+      return;
+    }
+    let cancelled = false;
+    setPsbtPrevouts({ state: "loading" });
+    const address = reEncodeTaprootAddress(selectedAccount.btcAddress, state.network);
+    (async () => {
+      const utxos = await (await getIndexer()).getBtcAddressUtxos(address);
+      assertSignedInputsAreNetworkUtxos(parsePsbt((request.payload as any).psbt), psbtPolicy.inputsToSign, utxos);
+    })().then(
+      () => {
+        if (!cancelled) setPsbtPrevouts({ state: "ok" });
+      },
+      (e: any) => {
+        if (!cancelled) {
+          setPsbtPrevouts({ state: "blocked", reason: e?.message || "Could not read this wallet's Bitcoin outputs." });
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [request, psbtPolicy, selectedAccount?.btcAddress, state.network]);
 
   // Switching account or request type invalidates a stale "I
   // acknowledged the large outflow" tick -- the user is now looking
@@ -912,11 +981,12 @@ export default function Approve() {
   // a slow first request overwriting a faster second one.
   const requestedArchLamports = useMemo<bigint | null>(() => {
     if (request?.type !== "SEND_TRANSFER") return null;
-    return parseLamportsToBigInt((request.payload as any)?.lamports);
+    return parseU64DecimalString((request.payload as any)?.lamports);
   }, [request]);
 
+  // Token transfers read it too: the fee payer pays the network fee in ARCH.
   useEffect(() => {
-    if (request?.type !== "SEND_TRANSFER") {
+    if (request?.type !== "SEND_TRANSFER" && request?.type !== "SEND_TOKEN_TRANSFER") {
       setArchBalance(null);
       return;
     }
@@ -943,14 +1013,101 @@ export default function Approve() {
     };
   }, [request, selectedAccount?.archAddress]);
 
+  // Fee of the message the Hub will build for this request, compiled
+  // with the same builders the Hub response is verified against.
+  const archFee = useMemo<ArchFee | null>(() => {
+    const p = request?.payload as any;
+    if (request?.type === "SEND_TRANSFER") {
+      return hubIntentFee({ type: "arch.transfer", toAddress: p?.to, lamports: p?.lamports }, selectedAccount?.archAddress);
+    }
+    if (request?.type === "SEND_TOKEN_TRANSFER") {
+      return hubIntentFee(
+        { type: "arch.token_transfer", mintAddress: p?.mint, toAddress: p?.to, amount: p?.amount },
+        selectedAccount?.archAddress,
+      );
+    }
+    return null;
+  }, [request, selectedAccount?.archAddress]);
+
+  // check_rent covers the recipient too: an empty recipient can't end
+  // with 1-255 lamports. A self-send has no separate recipient balance.
+  const recipientIsOther =
+    request?.type === "SEND_TRANSFER" && (request.payload as any)?.to !== selectedAccount?.archAddress;
+  useEffect(() => {
+    if (!recipientIsOther) {
+      setRecipientArchBalance(null);
+      return;
+    }
+    const to = (request?.payload as any)?.to;
+    let cancelled = false;
+    setRecipientArchBalance(null);
+    (async () => {
+      try {
+        const snap = await fetchArchAccountBalance(await getIndexer(), to);
+        if (!cancelled) setRecipientArchBalance(snap);
+      } catch (e: any) {
+        if (!cancelled) setRecipientArchBalance({ kind: "error", reason: e?.message || "Failed to read balance" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [request, recipientIsOther]);
+
+  // Whether the recipient's token account exists decides if the Hub's
+  // message creates it, which costs the payer TOKEN_ACCOUNT_DEPOSIT_LAMPORTS.
+  useEffect(() => {
+    if (request?.type !== "SEND_TOKEN_TRANSFER") {
+      setDestTokenAccount(null);
+      return;
+    }
+    const { mint, to } = (request.payload ?? {}) as any;
+    let cancelled = false;
+    setDestTokenAccount(null);
+    (async () => {
+      try {
+        const ownerHex = Array.from(bs58.decode(to), (b) => b.toString(16).padStart(2, "0")).join("");
+        const snap = await fetchAssociatedTokenBalance(
+          await getIndexer(),
+          deriveAssociatedTokenAddress(mint, ownerHex),
+          mint,
+          ownerHex,
+        );
+        if (!cancelled) setDestTokenAccount(snap);
+      } catch (e: any) {
+        if (!cancelled) setDestTokenAccount({ kind: "error", reason: e?.message || "Failed to read token account" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [request]);
+
+  // Deposit is waived only when the indexer confirms the account exists.
+  const tokenDepositLamports = useMemo<bigint | null>(() => {
+    if (request?.type !== "SEND_TOKEN_TRANSFER" || !destTokenAccount) return null;
+    return destTokenAccount.kind === "found" ? 0n : TOKEN_ACCOUNT_DEPOSIT_LAMPORTS;
+  }, [request, destTokenAccount]);
+
+  // SEND_TRANSFER: amount + fee, sender and recipient rent-checked.
+  // SEND_TOKEN_TRANSFER: fee + any token-account deposit.
   const archTransferGate = useMemo<ArchBalanceGate | null>(() => {
-    if (request?.type !== "SEND_TRANSFER") return null;
-    return computeArchTransferGate(archBalance, requestedArchLamports);
-  }, [request, archBalance, requestedArchLamports]);
+    const fee = feeChargedTo(archFee, selectedAccount?.archAddress);
+    if (request?.type === "SEND_TRANSFER") {
+      return computeArchTransferGate(archBalance, requestedArchLamports, fee, {
+        recipient: recipientIsOther ? recipientArchBalance : undefined,
+      });
+    }
+    if (request?.type === "SEND_TOKEN_TRANSFER") {
+      if (tokenDepositLamports === null) return { state: "loading" };
+      return computeArchTransferGate(archBalance, 0n, fee, { depositLamports: tokenDepositLamports });
+    }
+    return null;
+  }, [request, archBalance, requestedArchLamports, archFee, selectedAccount?.archAddress, recipientIsOther, recipientArchBalance, tokenDepositLamports]);
 
   const requestedTokenAmount = useMemo<bigint | null>(() => {
     if (request?.type !== "SEND_TOKEN_TRANSFER") return null;
-    return parseLamportsToBigInt((request.payload as any)?.amount);
+    return parseU64DecimalString((request.payload as any)?.amount);
   }, [request]);
 
   useEffect(() => {
@@ -997,53 +1154,33 @@ export default function Approve() {
   // SitePermissions.spendingLimitSatsPerDay (in lamports). Reads
   // are async (chrome.storage.local lookup) so we materialize the
   // result via a useEffect rather than a useMemo.
-  const [archSpendCapGate, setArchSpendCapGate] = useState<
-    | { state: "n/a" }
-    | { state: "loading" }
-    | { state: "ok" }
-    | { state: "cap-blocked"; capLamports: bigint; recentLamports: bigint }
-  >({ state: "n/a" });
+  const [archSpendCapGate, setArchSpendCapGate] = useState<ArchSpendCapGate>({ state: "n/a" });
 
   useEffect(() => {
-    if (request?.type !== "SEND_TRANSFER") {
-      setArchSpendCapGate({ state: "n/a" });
-      return;
-    }
-    if (!request.origin || requestedArchLamports === null) {
+    if (request?.type !== "SEND_TRANSFER" || !request.origin) {
       setArchSpendCapGate({ state: "n/a" });
       return;
     }
     let cancelled = false;
     setArchSpendCapGate({ state: "loading" });
-    (async () => {
+    computeArchSpendCapGate({
+      requestedLamports: requestedArchLamports,
       // Cap lives in the site's permissions; absent permissions or
       // an undefined cap mean "no enforcement". We do an explicit
       // lookup rather than relying on a hook because the popup may
       // be opened with no connectedSites entry for this origin yet
       // (first-touch SEND_TRANSFER from a brand-new site).
-      const perms = await walletStore.getSitePermissions(request.origin);
-      const capRaw = perms?.spendingLimitSatsPerDay;
-      if (capRaw === undefined || capRaw === null) {
-        if (!cancelled) setArchSpendCapGate({ state: "ok" });
-        return;
-      }
-      const cap = BigInt(capRaw);
-      const recent = await getRecentSpend({
-        origin: request.origin,
-        asset: "arch",
-        network: state.network,
-      });
-      if (cancelled) return;
-      if (exceedsCap({ pending: requestedArchLamports, recent, cap })) {
-        setArchSpendCapGate({
-          state: "cap-blocked",
-          capLamports: cap,
-          recentLamports: recent,
-        });
-      } else {
-        setArchSpendCapGate({ state: "ok" });
-      }
-    })().catch(() => {
+      readCapLamports: async () =>
+        (await walletStore.getSitePermissions(request.origin))?.spendingLimitSatsPerDay,
+      readRecentLamports: () =>
+        getRecentSpend({
+          origin: request.origin,
+          asset: "arch",
+          network: state.network,
+        }),
+    }).then((gate) => {
+      if (!cancelled) setArchSpendCapGate(gate);
+    }).catch(() => {
       // Fail open: a storage-read error shouldn't brick all dapp
       // transfers. The user already opted into the cap; a transient
       // read failure simply skips enforcement for this request.
@@ -1168,13 +1305,13 @@ export default function Approve() {
   );
 
   const signPsbtLocally = useCallback(
-    async (psbtHex: string): Promise<string> => {
+    async (psbtHex: string, inputsToSign: number[]): Promise<string> => {
       if (!selectedAccount) throw new Error("No account selected");
       // The session-stamped signer covers both passkey and email
       // wallets transparently -- it uses whichever IndexedDB key was
       // registered at unlock-time. No Hub round-trip for signing.
       const { signedPsbtHex } = await signerForAccount(selectedAccount).signPsbt(
-        { psbtHex },
+        { psbtHex, inputsToSign },
       );
       return signedPsbtHex;
     },
@@ -1193,6 +1330,24 @@ export default function Approve() {
     }
     if (request.type === "SEND_TOKEN_TRANSFER" && tokenTransferGate?.state === "blocked") {
       setError("Insufficient token balance. Refusing to sign.");
+      return;
+    }
+    if (
+      (request.type === "SEND_TRANSFER" || request.type === "SEND_TOKEN_TRANSFER") &&
+      (archTransferGate?.state === "blocked" || archTransferGate?.state === "fee-unknown")
+    ) {
+      setError(
+        archTransferGate.state === "blocked"
+          ? archGateBlockedMessage(archTransferGate)
+          : ARCH_FEE_UNKNOWN_MESSAGE,
+      );
+      return;
+    }
+    if (
+      (request.type === "SEND_TRANSFER" && requestedArchLamports === null) ||
+      (request.type === "SEND_TOKEN_TRANSFER" && requestedTokenAmount === null)
+    ) {
+      setError(INVALID_AMOUNT_MESSAGE);
       return;
     }
     if (request.type === "SIGN_PSBT" && btcSpendCapGate.state === "cap-blocked") {
@@ -1309,7 +1464,23 @@ export default function Approve() {
           action,
         });
         await assertDisplayHashMatches(sr);
-        const submitResult = await signAndSubmitRequest(client, selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
+        const verified = verifyHubSigningRequest({
+          intent: action,
+          account: selectedAccount,
+          payloadToSign: sr.payloadToSign,
+          display: sr.display,
+        });
+        if (request.type === "SEND_TOKEN_TRANSFER") {
+          // Verified above: the message creates the token account iff
+          // display.createDestAta. The idempotent variant is charged the
+          // same, since the ATA program source can't confirm it's free.
+          const signedGate = computeArchTransferGate(archBalance, 0n, feeChargedTo(archFee, selectedAccount.archAddress), {
+            depositLamports: (sr.display as any)?.createDestAta === true ? TOKEN_ACCOUNT_DEPOSIT_LAMPORTS : 0n,
+          });
+          if (signedGate.state === "blocked") throw new Error(archGateBlockedMessage(signedGate));
+          if (signedGate.state === "fee-unknown") throw new Error(ARCH_FEE_UNKNOWN_MESSAGE);
+        }
+        const submitResult = await signAndSubmitRequest(client, selectedAccount, sr.signingRequestId, verified, externalUserId, state.network);
         const txid = extractTxid(submitResult, sr.signingRequestId);
         sendApproved({ txid });
 
@@ -1365,7 +1536,13 @@ export default function Approve() {
           action: { type: "arch.sign_message", messageHex },
         });
         await assertDisplayHashMatches(sr);
-        const submitResult = await signAndSubmitRequest(client, selectedAccount, sr.signingRequestId, sr.payloadToSign, externalUserId, state.network);
+        const verified = verifyHubSigningRequest({
+          intent: { type: "arch.sign_message", messageHex },
+          account: selectedAccount,
+          payloadToSign: sr.payloadToSign,
+          display: sr.display,
+        });
+        const submitResult = await signAndSubmitRequest(client, selectedAccount, sr.signingRequestId, verified, externalUserId, state.network);
         const signature = submitResult?.signature64Hex || submitResult?.signature;
         if (!signature) throw new Error("Hub did not return a signature");
         sendApproved({ signature });
@@ -1403,11 +1580,15 @@ export default function Approve() {
         if (isExternalAccount(selectedAccount)) {
           throw new Error("Raw PSBT signing is not supported for linked external wallets yet. Open the source wallet directly.");
         }
+        if (!psbtPolicy?.ok) throw new Error(psbtPolicy?.error ?? "This PSBT has not been checked.");
+        if (psbtPrevouts.state !== "ok") {
+          throw new Error("This PSBT's inputs have not been confirmed on the selected network. Refusing to sign.");
+        }
 
         // Same path for both auth methods now: the session-stamped
         // signer signs locally regardless of how the session was
         // bootstrapped. No more server-side PSBT signing.
-        const signedHex = await signPsbtLocally(psbtPayload);
+        const signedHex = await signPsbtLocally(psbtPayload, psbtPolicy.inputsToSign);
         sendApproved({ psbt: signedHex });
         if (deterministicPsbtSpend !== null) {
           void recordSpend({
@@ -1446,7 +1627,7 @@ export default function Approve() {
     } finally {
       setLoading(false);
     }
-  }, [request, selectedAccount, requestId, sendApproved, signPsbtLocally, state.network, deterministicPsbtSpend, tokenTransferGate, btcSpendCapGate.state]);
+  }, [request, selectedAccount, requestId, sendApproved, signPsbtLocally, state.network, deterministicPsbtSpend, tokenTransferGate, archTransferGate, archBalance, archFee, btcSpendCapGate.state, requestedArchLamports, requestedTokenAmount, psbtPolicy, psbtPrevouts.state]);
 
   const handleOtpReady = useCallback(() => {
     // Session is now open. Drop the bootstrapper and re-attempt the
@@ -1475,8 +1656,10 @@ export default function Approve() {
     return (
       <div className="approve-page">
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
-          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--success)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontSize: 28 }}>
-            ?
+          <div style={{ width: 56, height: 56, borderRadius: "50%", background: "var(--success)", display: "flex", alignItems: "center", justifyContent: "center", color: "white" }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
           </div>
           <div style={{ fontWeight: 600 }}>Approved</div>
         </div>
@@ -1534,6 +1717,15 @@ export default function Approve() {
         ? { level: "warn" as const, label: "New site requesting a signature. Verify the URL above." }
         : undefined);
 
+  // Only the bundled registry is trusted for decimals and symbol; an
+  // unknown mint is shown in raw units rather than guessed.
+  const tokenMeta =
+    request.type === "SEND_TOKEN_TRANSFER" && request.payload
+      ? lookupKnownToken(request.payload.mint, state.network)
+      : null;
+  const tokenDisplay =
+    requestedTokenAmount === null ? null : formatTokenAmountDisplay(requestedTokenAmount, tokenMeta);
+
   return (
     <div className="approve-page" data-network={state.network}>
       <DappHeader
@@ -1546,6 +1738,22 @@ export default function Approve() {
 
       <div className="approve-body">
         {error && <div className="error-banner">{error}</div>}
+
+        {originRefusal && (
+          <div className="approve-risk approve-risk-danger" style={{ marginBottom: 10 }}>
+            {originRefusal} This request was rejected.
+          </div>
+        )}
+
+        {request.type !== "CONNECT" && originAccount?.account && (
+          <div className="card" style={{ marginBottom: 10 }}>
+            <div className="input-label">Signing with</div>
+            <div style={{ fontWeight: 600 }}>{originAccount.account.label}</div>
+            <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
+              {reEncodeTaprootAddress(originAccount.account.btcAddress, state.network)}
+            </div>
+          </div>
+        )}
 
         {request.type === "CONNECT" && (
           <>
@@ -1575,25 +1783,26 @@ export default function Approve() {
 
         {request.type === "SEND_TRANSFER" && request.payload && (
           <>
-            <div className="card">
-              <div style={{ marginBottom: 8 }}>
-                <div className="input-label">Action</div>
-                <div style={{ fontWeight: 600 }}>Send ARCH</div>
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <div className="input-label">To</div>
-                <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
-                <VerifiedDestinationName
-                  address={request.payload.to}
-                  suppliedName={request.payload.name}
-                  network={state.network}
-                />
-              </div>
-              <div>
-                <div className="input-label">Amount</div>
-                <div style={{ fontWeight: 600 }}>{formatArch(request.payload.lamports)}</div>
-              </div>
-            </div>
+            <TransferSummary
+              title="Send ARCH"
+              amountLabel="You send"
+              amount={requestedArchLamports === null ? null : formatBaseUnits(requestedArchLamports, ARCH_DECIMALS)}
+              symbol="ARCH"
+              recipients={[
+                {
+                  label: "To",
+                  address: request.payload.to,
+                  detail: (
+                    <VerifiedDestinationName
+                      address={request.payload.to}
+                      suppliedName={request.payload.name}
+                      network={state.network}
+                    />
+                  ),
+                },
+              ]}
+              fee={archFeeRow(archFee, selectedAccount?.archAddress)}
+            />
             {archTransferGate && (
               <ArchBalanceCard gate={archTransferGate} requestedLamports={requestedArchLamports} />
             )}
@@ -1611,32 +1820,52 @@ export default function Approve() {
 
         {request.type === "SEND_TOKEN_TRANSFER" && request.payload && (
           <>
-            <div className="card">
-              <div style={{ marginBottom: 8 }}>
-                <div className="input-label">Action</div>
-                <div style={{ fontWeight: 600 }}>Send APL Token</div>
+            <TransferSummary
+              title="Send APL token"
+              amountLabel="You send"
+              amount={tokenDisplay?.amount ?? null}
+              symbol={tokenDisplay?.kind === "scaled" ? tokenDisplay.symbol : undefined}
+              amountTag={tokenDisplay?.kind === "raw" ? "raw units" : undefined}
+              amountNote={
+                tokenDisplay?.kind === "raw"
+                  ? "Unknown token: its decimals and symbol aren't known to this wallet, so the amount is shown unscaled."
+                  : undefined
+              }
+              recipients={[
+                {
+                  label: "To",
+                  address: request.payload.to,
+                  detail: (
+                    <VerifiedDestinationName
+                      address={request.payload.to}
+                      suppliedName={request.payload.name}
+                      network={state.network}
+                    />
+                  ),
+                },
+              ]}
+              fee={archFeeRow(
+                archFee,
+                selectedAccount?.archAddress,
+                tokenDepositLamports === null
+                  ? "The token amount isn't reduced. Checking whether the recipient has a token account…"
+                  : tokenDepositLamports > 0n
+                    ? `The token amount isn't reduced. Token account deposit: ${archFeeText(tokenDepositLamports)} (the recipient has no token account yet, or it couldn't be confirmed).`
+                    : "The token amount isn't reduced. The recipient already has a token account, so no deposit is needed.",
+              )}
+            >
+              <div className="transfer-row">
+                <div className="transfer-row-head">
+                  <span className="input-label">Token mint</span>
+                  <span className="transfer-row-amount">{tokenMeta ? tokenMeta.name : "Unknown token"}</span>
+                </div>
+                <AddressText address={request.payload.mint} />
               </div>
-              <div style={{ marginBottom: 8 }}>
-                <div className="input-label">Token Mint</div>
-                <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.mint}</div>
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <div className="input-label">To</div>
-                <div className="mono" style={{ wordBreak: "break-all", fontSize: 11 }}>{request.payload.to}</div>
-                <VerifiedDestinationName
-                  address={request.payload.to}
-                  suppliedName={request.payload.name}
-                  network={state.network}
-                />
-              </div>
-              <div>
-                <div className="input-label">Amount (raw units)</div>
-                <div style={{ fontWeight: 600, overflowWrap: "anywhere", wordBreak: "break-all" }}>{request.payload.amount}</div>
-              </div>
-            </div>
+            </TransferSummary>
             {tokenTransferGate && (
-              <TokenBalanceCard gate={tokenTransferGate} requestedAmount={requestedTokenAmount} />
+              <TokenBalanceCard gate={tokenTransferGate} requestedAmount={requestedTokenAmount} meta={tokenMeta} />
             )}
+            {archTransferGate && <ArchBalanceCard gate={archTransferGate} requestedLamports={null} />}
           </>
         )}
 
@@ -1651,6 +1880,21 @@ export default function Approve() {
         {request.type === "SIGN_PSBT" && request.payload && (
           <>
             <PsbtSummaryCard summary={psbtDecode.summary} decodeError={psbtDecode.error} />
+            {psbtPolicy && !psbtPolicy.ok && (
+              <div className="approve-risk approve-risk-danger" style={{ marginTop: 8 }}>
+                {psbtPolicy.error} Refusing to sign.
+              </div>
+            )}
+            {psbtPrevouts.state === "loading" && (
+              <div className="approve-risk approve-risk-warn" style={{ marginTop: 8 }}>
+                Confirming this PSBT&apos;s inputs on the selected network…
+              </div>
+            )}
+            {psbtPrevouts.state === "blocked" && (
+              <div className="approve-risk approve-risk-danger" style={{ marginTop: 8 }}>
+                {psbtPrevouts.reason} Refusing to sign.
+              </div>
+            )}
             {psbtGate?.block && (
               <div className="approve-risk approve-risk-danger" style={{ marginTop: 8 }}>
                 {psbtGate.block.reason}
@@ -1704,6 +1948,7 @@ export default function Approve() {
             switchingNetwork ||
             confirmingMainnet ||
             !selectedAccount ||
+            !!originRefusal ||
             // Watch-only accounts have no signing key. Disable
             // Approve outright; the in-card "Watch-only wallet" risk
             // banner (rendered above) tells the user why.
@@ -1713,21 +1958,28 @@ export default function Approve() {
             // risk banner above explains why; the user must navigate to
             // the genuine site rather than override here.
             phishingRisk.level === "danger" ||
-            // SIGN_PSBT: decode must have succeeded; gate must not be
-            // blocking; if a confirm checkbox is required it must be ticked.
+            // SIGN_PSBT: decode, input policy and prevout confirmation must
+            // have succeeded; gate must not be blocking; if a confirm
+            // checkbox is required it must be ticked.
             (request.type === "SIGN_PSBT" &&
               (!!psbtDecode.error ||
                 !psbtDecode.summary ||
+                !psbtPolicy?.ok ||
+                psbtPrevouts.state !== "ok" ||
                 !!psbtGate?.block ||
                 (!!psbtGate?.requireConfirm && !psbtLargeOutflowAck))) ||
-            // SEND_TRANSFER: refuse when the pre-flight balance gate
-            // confirmed insufficient funds. We do NOT block while the
-            // gate is still loading or on indexer error -- only on a
-            // positively-known insufficient balance.
-            (request.type === "SEND_TRANSFER" && archTransferGate?.state === "blocked") ||
+            // SEND_TRANSFER / SEND_TOKEN_TRANSFER: refuse when the ARCH
+            // balance can't cover amount + network fee, or the fee can't
+            // be computed. We do NOT block while the balance is still
+            // loading or on indexer error.
+            ((request.type === "SEND_TRANSFER" || request.type === "SEND_TOKEN_TRANSFER") &&
+              (archTransferGate?.state === "blocked" || archTransferGate?.state === "fee-unknown")) ||
             // SEND_TOKEN_TRANSFER: refuse only on a positively verified
             // insufficient associated-token balance.
             (request.type === "SEND_TOKEN_TRANSFER" && tokenTransferGate?.state === "blocked") ||
+            (request.type === "SEND_TRANSFER" &&
+              (archTransferGate?.state === "invalid-amount" || archSpendCapGate.state === "invalid-amount")) ||
+            (request.type === "SEND_TOKEN_TRANSFER" && tokenTransferGate?.state === "invalid-amount") ||
             // Per-origin daily spend cap (Permission Center). We
             // explicitly do NOT block while the gate is loading; the
             // user can still approve after the lookup resolves.
