@@ -40,6 +40,7 @@ export class WalletHubStack extends cdk.Stack {
           TURNKEY_ORGANIZATION_ID: "CHANGE_ME",
           PLATFORM_ADMIN_API_KEY: "CHANGE_ME",
           INDEXER_API_KEY: "",
+          INDEXER_SERVICE_KEY: "CHANGE_ME",
           INTERNAL_API_KEY: "CHANGE_ME",
         }),
         generateStringKey: "PLACEHOLDER",
@@ -210,6 +211,7 @@ export class WalletHubStack extends cdk.Stack {
         ARCH_RPC_NODE_URL_TESTNET: "https://rpc.testnet.arch.network",
         ARCH_RPC_NODE_URL_MAINNET: "https://rpc.mainnet.arch.network",
         INDEXER_BASE_URL: "https://explorer.arch.network/api/v1/testnet",
+        INDEXER_INTERNAL_BASE_URL: "https://explorer.arch.network",
         ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: "false",
         // Rate limiting is currently DISABLED to remove throttling. The
         // application code defaults this to "true"; we override to "false"
@@ -260,6 +262,10 @@ export class WalletHubStack extends cdk.Stack {
         INDEXER_API_KEY: ecs.Secret.fromSecretsManager(
           appSecrets,
           "INDEXER_API_KEY"
+        ),
+        INDEXER_SERVICE_KEY: ecs.Secret.fromSecretsManager(
+          appSecrets,
+          "INDEXER_SERVICE_KEY"
         ),
         INTERNAL_API_KEY: ecs.Secret.fromSecretsManager(
           appSecrets,

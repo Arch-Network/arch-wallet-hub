@@ -25,6 +25,7 @@ import { registerBtcTransactionRoutes } from "./routes/btcTransactions.js";
 import { registerRecoveryRoutes } from "./routes/recovery.js";
 import { registerExtensionRoutes } from "./routes/extension.js";
 import { registerIndexerRoutes } from "./routes/indexer.js";
+import { registerPushRoutes } from "./routes/push.js";
 import { configureAudit } from "./audit/audit.js";
 import { resolveAuditSecret, DEV_AUDIT_SECRET_SENTINEL } from "./audit/chain.js";
 
@@ -54,6 +55,7 @@ export async function createServer() {
           "req.headers.authorization",
           "req.headers.cookie",
           "req.headers['x-api-key']",
+          "req.headers['x-service-key']",
           "req.headers['x-admin-api-key']",
           "req.headers['turnkey-api-private-key']",
           "req.headers['turnkey-api-public-key']",
@@ -131,6 +133,7 @@ export async function createServer() {
   await server.register(registerRecoveryRoutes, { prefix: "/v1" });
   await server.register(registerExtensionRoutes, { prefix: "/v1" });
   await server.register(registerIndexerRoutes, { prefix: "/v1" });
+  await server.register(registerPushRoutes, { prefix: "/v1" });
 
   return server;
 }
