@@ -19,7 +19,6 @@ import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
 import { registerTurnkeySessionRoutes } from "./routes/turnkeySessions.js";
 import { registerWalletLinkingRoutes } from "./routes/walletLinking.js";
-import { registerArchTransactionRoutes } from "./routes/archTransactions.js";
 import { registerArchAccountRoutes } from "./routes/archAccounts.js";
 import { registerSigningRequestRoutes } from "./routes/signingRequests.js";
 import { registerBtcTransactionRoutes } from "./routes/btcTransactions.js";
@@ -34,6 +33,15 @@ declare module "fastify" {
     config: ReturnType<typeof getEnv>;
   }
 }
+
+/**
+ * Exactly one proxy sits in front of the API in every supported deploy:
+ * the ALB on ECS (hub.arch.network CNAMEs straight to it, and only the
+ * ALB's security group can reach port 3005) or nginx in docker-compose.
+ * Trusting more than the nearest hop lets a client pick `request.ip`
+ * via X-Forwarded-For. Adding a CDN in front means bumping this.
+ */
+export const TRUST_PROXY_HOPS = 1;
 
 export async function createServer() {
   const config = getEnv(process.env);
@@ -60,10 +68,9 @@ export async function createServer() {
       // If client provides x-request-id, Fastify will use it; otherwise generate a short one.
       return req.headers["x-request-id"]?.toString() ?? crypto.randomUUID();
     },
-    // Behind ALB / CloudFront we receive X-Forwarded-For; opt in so
-    // `request.ip` reflects the real client. Required for per-IP rate
+    // `request.ip` must reflect the real client for per-IP rate
     // limiting and audit-log correctness.
-    trustProxy: true,
+    trustProxy: TRUST_PROXY_HOPS,
     // Hard cap on request body size. Largest legitimate payload is a
     // signed PSBT or Arch transaction (well under 256 KiB); the
     // default 1 MiB leaves room for JSON parse DoS.
@@ -118,7 +125,6 @@ export async function createServer() {
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });
   await server.register(registerTurnkeySessionRoutes, { prefix: "/v1" });
   await server.register(registerWalletLinkingRoutes, { prefix: "/v1" });
-  await server.register(registerArchTransactionRoutes, { prefix: "/v1" });
   await server.register(registerArchAccountRoutes, { prefix: "/v1" });
   await server.register(registerSigningRequestRoutes, { prefix: "/v1" });
   await server.register(registerBtcTransactionRoutes, { prefix: "/v1" });

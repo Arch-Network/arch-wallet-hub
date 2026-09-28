@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import type { WalletHubClient, ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import { Turnkey } from "@turnkey/sdk-browser";
-import type { ConnectedWallet } from "../../types";
+import { LEGACY_CUSTODIAL_UNSUPPORTED, type ConnectedWallet } from "../../types";
 import CopyButton from "../shared/CopyButton";
 import { formatArchId } from "../../utils/archFormat";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
@@ -234,23 +234,16 @@ export default function SendView({ client, wallet, network, externalUserId }: Pr
   );
 
   const sendArchTurnkey = useCallback(async () => {
+    if (wallet.isCustodial !== false) throw new Error(LEGACY_CUSTODIAL_UNSUPPORTED);
     const sr = await client.createSigningRequest({
       externalUserId,
       signer: { kind: "turnkey", resourceId: wallet.turnkeyResourceId! },
       action: { type: "arch.transfer", toAddress: recipient, lamports: amount },
     });
 
-    if (wallet.isCustodial === false) {
-      const payloadHex = (sr.payloadToSign as any)?.payloadHex;
-      if (!payloadHex) throw new Error("No payload available for passkey signing");
-      return await signWithPasskeyClient(sr.signingRequestId, payloadHex);
-    }
-
-    const result = await client.signWithTurnkey(sr.signingRequestId, {
-      externalUserId,
-    });
-    const res = result.result as any;
-    return res?.txid || res?.txidHex || result.signingRequestId;
+    const payloadHex = (sr.payloadToSign as any)?.payloadHex;
+    if (!payloadHex) throw new Error("No payload available for passkey signing");
+    return await signWithPasskeyClient(sr.signingRequestId, payloadHex);
   }, [client, externalUserId, wallet, recipient, amount, signWithPasskeyClient]);
 
   const sendArchExternal = useCallback(async () => {
@@ -297,6 +290,7 @@ export default function SendView({ client, wallet, network, externalUserId }: Pr
 
   const sendAplTurnkey = useCallback(async () => {
     if (!selectedToken) throw new Error("No token selected");
+    if (wallet.isCustodial !== false) throw new Error(LEGACY_CUSTODIAL_UNSUPPORTED);
     const sr = await client.createSigningRequest({
       externalUserId,
       signer: { kind: "turnkey", resourceId: wallet.turnkeyResourceId! },
@@ -309,15 +303,9 @@ export default function SendView({ client, wallet, network, externalUserId }: Pr
       },
     });
 
-    if (wallet.isCustodial === false) {
-      const payloadHex = (sr.payloadToSign as any)?.payloadHex;
-      if (!payloadHex) throw new Error("No payload available for passkey signing");
-      return await signWithPasskeyClient(sr.signingRequestId, payloadHex);
-    }
-
-    const result = await client.signWithTurnkey(sr.signingRequestId, { externalUserId });
-    const res = result.result as any;
-    return res?.txid || res?.txidHex || result.signingRequestId;
+    const payloadHex = (sr.payloadToSign as any)?.payloadHex;
+    if (!payloadHex) throw new Error("No payload available for passkey signing");
+    return await signWithPasskeyClient(sr.signingRequestId, payloadHex);
   }, [client, externalUserId, wallet, recipient, amount, selectedToken, signWithPasskeyClient]);
 
   const sendAplExternal = useCallback(async () => {
