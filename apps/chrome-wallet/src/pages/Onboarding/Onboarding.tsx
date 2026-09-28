@@ -13,9 +13,12 @@ import {
 import {
   DEFAULT_HUB_API_KEY,
   DEFAULT_HUB_BASE_URL,
+  type AppState,
   type ExternalWalletProvider,
   type WalletAccount,
 } from "../../state/types";
+import { readHubToken } from "../../utils/hub-session-store";
+import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import { PASSKEY_RP_ID } from "../../session/constants";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 import ArchLogoAnimated from "../../components/ArchLogoAnimated";
@@ -152,6 +155,18 @@ function PasswordFields({ password, confirm, onPassword, onConfirm }: PasswordFi
   );
 }
 
+async function sessionTokenForExistingUser(state: AppState): Promise<string | undefined> {
+  const externalUserId = await getExternalUserId();
+  for (const account of state.accounts) {
+    const token = await readHubToken(externalUserId, account.id);
+    if (token) return token;
+  }
+  const active = state.accounts.find((a) => a.id === state.activeAccountId);
+  if (!active) return undefined;
+  await mintHubSessionWithRecovery(active, state.network);
+  return (await readHubToken(externalUserId, active.id)) ?? undefined;
+}
+
 export default function Onboarding({ onComplete, addMode, secureLegacyState }: OnboardingProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -231,11 +246,17 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         "Missing Wallet Hub API key. Set WXT_HUB_API_KEY_DEV in apps/chrome-wallet/.env.local and rebuild, or add the key in Settings after onboarding.",
       );
     }
-    return new WalletHubClient({
+    const client = new WalletHubClient({
       baseUrl: state?.hubBaseUrl || DEFAULT_HUB_BASE_URL,
       ...(apiKey ? { apiKey } : {}),
     });
-  }, []);
+    // The Hub refuses to attach a new wallet to a user that already owns
+    // one unless the request carries that user's session.
+    if (addMode && state) {
+      client.setSessionToken(await sessionTokenForExistingUser(state).catch(() => undefined));
+    }
+    return client;
+  }, [addMode]);
 
   const networkForHub = useCallback(async () => {
     const state = await walletStore.getState().catch(() => null);
