@@ -549,7 +549,7 @@ function ArchBalanceCard({
             fontSize: 13,
             marginTop: 4,
             paddingTop: 4,
-            borderTop: "1px solid var(--border)",
+            borderTop: "1px solid var(--border-divider)",
             fontWeight: 600,
           }}
         >
@@ -624,7 +624,7 @@ function TokenBalanceCard({
       <div className="input-label">Pre-flight token balance (raw units)</div>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4 }}><span>Current</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{gate.snapshot.amount.toString()}</span></div>
       {requestedAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 2 }}><span>This transfer</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>- {requestedAmount.toString()}</span></div>}
-      {gate.state === "ok" && gate.postAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--border)", fontWeight: 600 }}><span>After</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{gate.postAmount.toString()}</span></div>}
+      {gate.state === "ok" && gate.postAmount !== null && <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 13, marginTop: 4, paddingTop: 4, borderTop: "1px solid var(--border-divider)", fontWeight: 600 }}><span>After</span><span className="mono" style={{ minWidth: 0, wordBreak: "break-all", textAlign: "right" }}>{gate.postAmount.toString()}</span></div>}
       {gate.state === "blocked" && <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>Insufficient token balance: requested {gate.requestedAmount.toString()}, available {gate.availableAmount.toString()}. Refusing to sign.</div>}
     </div>
   );
