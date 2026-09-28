@@ -61,7 +61,7 @@ const EnvSchema = z.object({
   SESSION_ENFORCED_ROUTES: z
     .string()
     .default(
-      "turnkey.sign-message,arch.transfer,arch.instructions.build,signing-requests.create,signing-requests.submit,btc.build,btc.estimate-fee"
+      "signing-requests.create,signing-requests.submit,btc.build,btc.estimate-fee"
     ),
 
   // Postgres

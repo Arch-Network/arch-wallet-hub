@@ -70,6 +70,7 @@ import { timingSafeEqual } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
+import { RECOVERY_ROUTE_RATE_LIMIT } from "../plugins/rateLimit.js";
 import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
 import {
   computeCandidateToken,
@@ -235,6 +236,10 @@ const VerifyResponse = Type.Object({
 });
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
+  server.addHook("onRoute", (routeOptions) => {
+    routeOptions.config = { ...(routeOptions.config ?? {}), ...RECOVERY_ROUTE_RATE_LIMIT };
+  });
+
   server.post(
     "/recovery/email/init",
     {

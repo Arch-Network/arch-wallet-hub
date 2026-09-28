@@ -99,35 +99,6 @@ type CreateApiKeyForUserParams = {
   expirationSeconds?: string;
 };
 
-type SignRawPayloadParams = {
-  signWith: string; // wallet account address, private key address, or privateKeyId
-  payload: string;
-  encoding: "PAYLOAD_ENCODING_TEXT_UTF8" | "PAYLOAD_ENCODING_HEXADECIMAL";
-  hashFunction: "HASH_FUNCTION_NO_OP" | "HASH_FUNCTION_SHA256";
-  organizationId?: string; // Optional: override for sub-organization signing
-};
-
-type SignRawPayloadResult = {
-  r: string;
-  s: string;
-  v: string;
-  activityId: string;
-};
-
-type SignBitcoinTransactionParams = {
-  signWith: string;
-  /**
-   * Unsigned Bitcoin transaction representation expected by Turnkey.
-   * In practice this is commonly a PSBT (base64) for segwit/taproot signing.
-   */
-  unsignedTransaction: string;
-};
-
-type SignBitcoinTransactionResult = {
-  signedTransaction: string;
-  activityId: string;
-};
-
 export type GetWalletAccountsParams = {
   walletId: string;
 };
@@ -141,10 +112,6 @@ export type WalletAccount = {
 
 function nowMs() {
   return Date.now().toString();
-}
-
-function looksLikeBase64(s: string) {
-  return /^[A-Za-z0-9+/=]+$/.test(s) && s.length % 4 === 0;
 }
 
 export class TurnkeyService {
@@ -541,78 +508,6 @@ export class TurnkeyService {
     return { credentialBundle, apiKeyId, activityId };
   }
 
-  async signRawPayload(
-    params: SignRawPayloadParams
-  ): Promise<SignRawPayloadResult> {
-    const targetOrgId = params.organizationId ?? this.organizationId;
-    const res = await this.client.signRawPayload({
-      type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
-      timestampMs: nowMs(),
-      organizationId: targetOrgId,
-      parameters: {
-        signWith: params.signWith,
-        payload: params.payload,
-        encoding: params.encoding,
-        hashFunction: params.hashFunction
-      }
-    });
-
-    const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, targetOrgId, res.activity);
-
-    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
-      throw new Error(`Turnky signRawPayload did not complete: ${activityId}`);
-    }
-
-    const sig = activity.result.signRawPayloadResult;
-    if (!sig) {
-      throw new Error("Turnkey signRawPayload did not return a signature");
-    }
-
-    return { ...sig, activityId };
-  }
-
-  async signBitcoinTransaction(
-    params: SignBitcoinTransactionParams
-  ): Promise<SignBitcoinTransactionResult> {
-    // Turnkey expects `unsignedTransaction` as hex for Bitcoin tx signing.
-    // For our flows we commonly pass PSBT base64; normalize it to hex and then
-    // re-encode the signed artifact back to base64 so downstream code can parse it.
-    const inputWasBase64 = looksLikeBase64(params.unsignedTransaction);
-    const unsignedHex = inputWasBase64
-      ? Buffer.from(params.unsignedTransaction, "base64").toString("hex")
-      : params.unsignedTransaction;
-
-    const res = await this.client.signTransaction({
-      type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
-      timestampMs: nowMs(),
-      organizationId: this.organizationId,
-      parameters: {
-        signWith: params.signWith,
-        unsignedTransaction: unsignedHex,
-        type: "TRANSACTION_TYPE_BITCOIN"
-      }
-    });
-
-    const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, undefined, res.activity);
-
-    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
-      throw new Error(`Turnkey signTransaction did not complete: ${activityId}`);
-    }
-
-    const signedTransaction = activity.result.signTransactionResult?.signedTransaction;
-    if (!signedTransaction) {
-      throw new Error("Turnkey signTransaction did not return signedTransaction");
-    }
-
-    const out = inputWasBase64
-      ? Buffer.from(signedTransaction, "hex").toString("base64")
-      : signedTransaction;
-
-    return { signedTransaction: out, activityId };
-  }
-
   async getWalletAccounts(params: GetWalletAccountsParams): Promise<{ accounts: WalletAccount[] }> {
     const res = await this.client.getWalletAccounts({
       organizationId: this.organizationId,
@@ -621,6 +516,13 @@ export class TurnkeyService {
     } as any);
 
     return { accounts: (res as any).accounts ?? [] };
+  }
+
+  async getWalletsForOrganization(params: {
+    organizationId: string;
+  }): Promise<{ wallets: { walletId: string }[] }> {
+    const res = await this.client.getWallets({ organizationId: params.organizationId } as any);
+    return { wallets: (res as any).wallets ?? [] };
   }
 
   async getWalletAccountsForOrganization(params: {
