@@ -132,7 +132,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/passkey-wallets/import",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.passkey-wallets.import"),
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.passkey-wallets.import"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary: "Register an existing passkey wallet metadata row for this Hub app",
         tags: ["turnkey"],
@@ -233,7 +236,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/passkey-wallets",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.passkey-wallets.create"),
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.passkey-wallets.create"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary: "Create a non-custodial embedded wallet (sub-org + passkey root user + wallet)",
         tags: ["turnkey"],
@@ -448,7 +454,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/email-wallets",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.email-wallets.create"),
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.email-wallets.create"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary:
           "Create a non-custodial email-only embedded wallet (sub-org + email root user + wallet)",
