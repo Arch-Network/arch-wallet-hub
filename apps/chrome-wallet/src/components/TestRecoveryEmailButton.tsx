@@ -149,9 +149,9 @@ function StatusRow({ status }: { status: Status }) {
         role="status"
         style={{
           ...common,
-          background: "var(--success-bg, rgba(34,197,94,0.1))",
-          color: "var(--success-text, #16a34a)",
-          border: "1px solid var(--success-border, rgba(34,197,94,0.3))",
+          background: "color-mix(in srgb, var(--color-positive) 10%, transparent)",
+          color: "var(--color-positive)",
+          border: "1px solid color-mix(in srgb, var(--color-positive) 30%, transparent)",
         }}
       >
         Sent to {status.emailMasked}
@@ -169,9 +169,9 @@ function StatusRow({ status }: { status: Status }) {
         role="status"
         style={{
           ...common,
-          background: "var(--warning-bg, rgba(234,179,8,0.1))",
-          color: "var(--warning-text, #ca8a04)",
-          border: "1px solid var(--warning-border, rgba(234,179,8,0.3))",
+          background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+          color: "var(--color-warning-text)",
+          border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
         }}
       >
         No wallet matched, or you hit the hourly recovery limit. If
@@ -185,9 +185,9 @@ function StatusRow({ status }: { status: Status }) {
       role="alert"
       style={{
         ...common,
-        background: "var(--error-bg, rgba(239,68,68,0.1))",
-        color: "var(--error-text, #dc2626)",
-        border: "1px solid var(--error-border, rgba(239,68,68,0.3))",
+        background: "color-mix(in srgb, var(--color-negative) 10%, transparent)",
+        color: "var(--color-negative-text)",
+        border: "1px solid color-mix(in srgb, var(--color-negative) 30%, transparent)",
       }}
     >
       Failed: {status.message}

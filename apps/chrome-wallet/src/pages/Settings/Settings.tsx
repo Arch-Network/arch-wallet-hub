@@ -720,12 +720,12 @@ export default function Settings() {
                   style={{ width: "100%", boxSizing: "border-box" }}
                 />
                 {state.network === "mainnet" && !isHttpsUrl(hubBaseUrl) && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--color-negative-text)" }}>
                     Mainnet requires HTTPS.
                   </div>
                 )}
                 {hubBaseUrl.trim() !== "" && !isAllowedHubBaseUrl(hubBaseUrl.trim()) && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--color-negative-text)" }}>
                     Host not in allowlist. Use hub.arch.network or a *.arch.network host.
                   </div>
                 )}
@@ -802,14 +802,14 @@ export default function Settings() {
           {!showReset ? (
             <button
               className="btn btn-secondary btn-full"
-              style={{ color: "var(--danger)" }}
+              style={{ color: "var(--color-negative-text)" }}
               onClick={() => setShowReset(true)}
             >
               Reset Wallet
             </button>
           ) : (
             <div className="card" style={{ borderColor: "var(--danger)" }}>
-              <p style={{ fontSize: 12, marginBottom: 8, color: "var(--danger)" }}>
+              <p style={{ fontSize: 12, marginBottom: 8, color: "var(--color-negative-text)" }}>
                 This erases the encrypted keystore and all local data from this extension.
                 Make sure your recovery email/passkey access is working before resetting.
               </p>

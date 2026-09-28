@@ -152,7 +152,7 @@ export default function TokenList() {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
           {searchQuery && (
-            <button className="token-search-clear" onClick={() => setSearchQuery("")}>
+            <button className="token-search-clear" onClick={() => setSearchQuery("")} aria-label="Clear search">
               ✕
             </button>
           )}
