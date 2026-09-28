@@ -156,7 +156,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 
       {confirmingMainnet && (
         <div className="network-menu" role="alertdialog">
-          <div className="network-menu-header" style={{ color: "var(--danger)" }}>
+          <div className="network-menu-header" style={{ color: "var(--color-negative-text)" }}>
             Switch to Mainnet?
           </div>
           <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-secondary)" }}>
@@ -231,7 +231,7 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
             </span>
           )}
 
-          <button className="header-lock-btn" onClick={onLock} title="Lock wallet">
+          <button className="header-lock-btn" onClick={onLock} title="Lock wallet" aria-label="Lock wallet">
             <LockIcon />
           </button>
         </div>
