@@ -59,6 +59,8 @@ export interface SignArchResult {
 
 export interface SignPsbtOptions {
   psbtHex: string;
+  /** Sign only these inputs. Turnkey's `signTransaction` can't be limited, so this forces the raw-sighash path. */
+  inputsToSign?: number[];
 }
 
 export interface SignPsbtResult {
@@ -187,7 +189,7 @@ export class SessionStampedSigner implements Signer {
     // tapKeySig-populated PSBT the existing finalize/broadcast
     // pipeline consumes unchanged.
     const parsed = bitcoin.Psbt.fromHex(opts.psbtHex);
-    if (psbtHasOpReturnOutput(parsed)) {
+    if (opts.inputsToSign || psbtHasOpReturnOutput(parsed)) {
       await signPsbtViaRawSighash(parsed, async (digestHex) => {
         const r = await this.signArchPayload({
           signingRequestId: "",
@@ -197,7 +199,7 @@ export class SessionStampedSigner implements Signer {
         // string -- exactly what tapKeySig wants for
         // SIGHASH_DEFAULT.
         return r.signature64Hex;
-      });
+      }, opts.inputsToSign);
       return { signedPsbtHex: parsed.toHex() };
     }
 

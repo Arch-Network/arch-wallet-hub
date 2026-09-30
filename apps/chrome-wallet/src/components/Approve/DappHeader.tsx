@@ -7,6 +7,8 @@
  * fresh origin trying to ride a familiar-looking icon.
  */
 
+import { useState } from "react";
+
 interface DappHeaderProps {
   origin: string;
   dappName?: string;
@@ -16,15 +18,19 @@ interface DappHeaderProps {
   risk?: { level: "info" | "warn" | "danger"; label: string };
 }
 
-function originHost(origin: string): string {
+/** The browser-verified origin, split so a non-https scheme stays visible. */
+function parseOrigin(origin: string): { scheme: string | null; host: string } {
   try {
-    return new URL(origin).host;
+    const url = new URL(origin);
+    return { scheme: url.protocol === "https:" ? null : `${url.protocol}//`, host: url.host };
   } catch {
-    return origin;
+    return { scheme: null, host: origin };
   }
 }
 
 export default function DappHeader({ origin, dappName, iconUrl, isReturning, risk }: DappHeaderProps) {
+  const [iconFailed, setIconFailed] = useState(false);
+  const { scheme, host } = parseOrigin(origin);
   const fallbackIcon = (() => {
     try {
       return `${new URL(origin).origin}/favicon.ico`;
@@ -33,26 +39,36 @@ export default function DappHeader({ origin, dappName, iconUrl, isReturning, ris
     }
   })();
   const icon = iconUrl || fallbackIcon;
+  const monogram = (host.replace(/^www\./i, "")[0] ?? "?").toUpperCase();
+  // The name comes from the page itself (its tab title), so it is shown
+  // only as a secondary claim under the verified host.
+  const selfName = dappName?.trim();
+  const showSelfName = !!selfName && selfName.toLowerCase() !== host.toLowerCase();
 
   return (
     <div className="approve-dapp-header">
       <div className="approve-dapp-row">
-        {icon ? (
+        {icon && !iconFailed ? (
           <img
             src={icon}
             alt=""
             className="approve-dapp-icon"
             referrerPolicy="no-referrer"
-            onError={(e) => {
-              (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
-            }}
+            onError={() => setIconFailed(true)}
           />
         ) : (
-          <div className="approve-dapp-icon-placeholder">?</div>
+          <div className="approve-dapp-icon-placeholder" aria-hidden="true">{monogram}</div>
         )}
         <div className="approve-dapp-meta">
-          <div className="approve-dapp-name" title={origin}>{dappName || originHost(origin)}</div>
-          <div className="approve-dapp-origin">{originHost(origin)}</div>
+          <div className="approve-dapp-host" title={origin}>
+            {scheme && <span className="approve-dapp-scheme">{scheme}</span>}
+            {host}
+          </div>
+          {showSelfName && (
+            <div className="approve-dapp-self-name" title={selfName}>
+              Site&apos;s own name: {selfName}
+            </div>
+          )}
         </div>
         <span className={`approve-dapp-badge ${isReturning ? "returning" : "new"}`}>
           {isReturning ? "Connected before" : "New site"}

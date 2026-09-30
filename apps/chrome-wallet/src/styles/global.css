@@ -4670,7 +4670,8 @@ button.address-chip-link:hover {
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  color: var(--text-muted);
+  font-size: 15px;
+  color: var(--text-secondary);
 }
 
 .approve-dapp-meta {
@@ -4678,17 +4679,22 @@ button.address-chip-link:hover {
   min-width: 0;
 }
 
-.approve-dapp-name {
+/* The verified host wraps instead of truncating: a lookalike domain's
+   distinguishing characters must never be hidden behind an ellipsis. */
+.approve-dapp-host {
+  font-size: 15px;
   font-weight: 600;
-  font-size: 14px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
-.approve-dapp-origin {
-  font-size: 11px;
-  color: var(--text-muted);
+.approve-dapp-scheme {
+  color: var(--color-negative-text);
+}
+
+.approve-dapp-self-name {
+  font-size: 12px;
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4737,6 +4743,93 @@ button.address-chip-link:hover {
 .approve-risk-danger {
   background: rgba(220, 38, 38, 0.12);
   color: var(--color-negative-text);
+}
+
+/* ─── Approve transfer summary ─────────────────────────────────────────── */
+
+.transfer-summary-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.transfer-amount {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.transfer-amount-invalid {
+  color: var(--color-negative-text);
+}
+
+.transfer-amount-symbol {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.transfer-amount-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  vertical-align: middle;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(230, 168, 23, 0.15);
+  color: var(--color-warning-text);
+}
+
+.transfer-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.transfer-row {
+  border-top: 1px solid var(--border-divider);
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.transfer-row-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.transfer-row-amount {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.transfer-address {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 6px;
+  row-gap: 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.transfer-address-group strong {
+  font-weight: 700;
+}
+
+.transfer-address-group span {
+  font-weight: 400;
+  color: var(--text-secondary);
 }
 
 /* ─── Phase 4.2 swap layout (legacy, kept for any consumers) ──────────── */
