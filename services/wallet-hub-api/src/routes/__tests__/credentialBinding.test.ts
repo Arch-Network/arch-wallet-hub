@@ -5,7 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * Regression guards for credential binding:
  *   - passkey import only accepts a (address, key) pair Turnkey holds for
- *     that sub-org, never the Hub's root org;
+ *     that sub-org, never the Hub's root org, and never attaches to an
+ *     existing user without that user's session;
  *   - session mint verifies only against the challenge's own resource key,
  *     and only once that key is Turnkey-verified.
  */
@@ -19,6 +20,7 @@ const USER_KEY = "02" + "aa".repeat(32);
 const ATTACKER_KEY = "02" + "bb".repeat(32);
 
 const mocks = vi.hoisted(() => ({
+  userHasCredentials: vi.fn(async () => false),
   getOrCreateUserByExternalId: vi.fn(async () => ({ id: "user-1" })),
   insertTurnkeyResource: vi.fn(async (_c: unknown, p: any) => ({ id: "new-resource", ...p })),
   getTurnkeyResourceByIdForApp: vi.fn(async (_c: unknown, _p: any): Promise<any> => null),
@@ -41,6 +43,7 @@ vi.mock("../../audit/audit.js", () => ({ auditEvent: async () => undefined }));
 vi.mock("../../turnkey/store.js", () => ({ getTurnkeyClient: () => mocks.turnkey }));
 vi.mock("../../db/apps.js", async (orig) => ({
   ...(await orig<typeof import("../../db/apps.js")>()),
+  userHasCredentials: mocks.userHasCredentials,
   getOrCreateUserByExternalId: mocks.getOrCreateUserByExternalId,
 }));
 vi.mock("../../db/queries.js", async (orig) => ({
@@ -101,6 +104,7 @@ function resource(overrides: Record<string, unknown> = {}) {
 describe("passkey wallet import", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.userHasCredentials.mockResolvedValue(false);
   });
 
   it("rejects an address/key pair Turnkey does not hold for the sub-org", async () => {
@@ -147,6 +151,36 @@ describe("passkey wallet import", () => {
       expect.anything(),
       expect.objectContaining({ walletId: "wallet-1", keyVerified: true, organizationId: SUB_ORG }),
     );
+    await app.close();
+  });
+
+  it("refuses to attach to a user who already has a credential, without that user's session", async () => {
+    mocks.userHasCredentials.mockResolvedValue(true);
+    const app = await buildServer();
+    const res = await app.inject({ method: "POST", url: "/v1/turnkey/passkey-wallets/import", payload: importPayload() });
+    expect(res.statusCode).toBe(401);
+    expect(mocks.turnkey.getWalletsForOrganization).not.toHaveBeenCalled();
+    expect(mocks.insertTurnkeyResource).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("refuses a session that belongs to a different user", async () => {
+    mocks.userHasCredentials.mockResolvedValue(true);
+    mocks.resolveSessionToken.mockResolvedValueOnce({
+      sessionId: "s",
+      appId: "app",
+      userId: "user-2",
+      externalUserId: "someone-else",
+    });
+    const app = await buildServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/turnkey/passkey-wallets/import",
+      headers: { authorization: "Bearer whs_v1_token" },
+      payload: importPayload(),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(mocks.insertTurnkeyResource).not.toHaveBeenCalled();
     await app.close();
   });
 
