@@ -10,6 +10,7 @@ import type { PendingRequest } from "../src/messaging/types";
 import type { OpenAsMode } from "../src/state/types";
 import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
 import { reEncodeTaprootAddress } from "../src/utils/addressNetwork";
+import { parseU64DecimalString } from "../src/utils/u64-amount";
 import {
   applyDiagnosticsRuntime,
   installGlobalErrorHandlers,
@@ -547,9 +548,10 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: "Not authorized" });
           return false;
         }
-        rejectAndCleanup(message.requestId, "User rejected the request").then(() =>
-          sendResponse({ ok: true }),
-        );
+        rejectAndCleanup(
+          message.requestId,
+          typeof message.reason === "string" ? message.reason : "User rejected the request",
+        ).then(() => sendResponse({ ok: true }));
         return true;
       }
 
@@ -693,6 +695,20 @@ export default defineBackground(() => {
                 "SIGN_ARCH_MESSAGE_HASH requires payload.messageHashHex = 64 lowercase hex chars (32-byte hash)",
             };
           }
+        }
+        if (msg.type === "SEND_TRANSFER" && parseU64DecimalString((msg as any).payload?.lamports) === null) {
+          return {
+            id: msg.id,
+            success: false,
+            error: "SEND_TRANSFER requires payload.lamports = decimal digit string between 0 and 2^64-1",
+          };
+        }
+        if (msg.type === "SEND_TOKEN_TRANSFER" && parseU64DecimalString((msg as any).payload?.amount) === null) {
+          return {
+            id: msg.id,
+            success: false,
+            error: "SEND_TOKEN_TRANSFER requires payload.amount = decimal digit string between 0 and 2^64-1",
+          };
         }
 
         // Per-origin permissions.

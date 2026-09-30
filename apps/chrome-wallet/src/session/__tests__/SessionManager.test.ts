@@ -348,3 +348,79 @@ describe("SessionManager > snapshot/key binding on rehydration", () => {
     await expect(mgr.ensureClient("a")).resolves.toBeNull();
   });
 });
+
+describe("SessionManager > lock in another realm", () => {
+  const SNAPSHOT_KEY = "arch-wallet:session-snapshot";
+  type Listener = (changes: Record<string, { oldValue?: unknown; newValue?: unknown }>, area: string) => void;
+  let store: Map<string, unknown>;
+  let listeners: Listener[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-18T12:00:00.000Z"));
+    mockGetPublicKey.mockReturnValue("0xpub");
+    mockInit.mockResolvedValue(undefined);
+    mockResetKeyPair.mockResolvedValue(undefined);
+    mockClear.mockResolvedValue(undefined);
+    vi.resetModules();
+
+    store = new Map<string, unknown>();
+    listeners = [];
+    (globalThis as { chrome?: unknown }).chrome = {
+      storage: {
+        session: {
+          get: async (key: string) => ({ [key]: store.get(key) }),
+          set: async (items: Record<string, unknown>) => {
+            for (const [k, v] of Object.entries(items)) {
+              const oldValue = store.get(k);
+              store.set(k, v);
+              listeners.forEach((l) => l({ [k]: { oldValue, newValue: v } }, "session"));
+            }
+          },
+          remove: async (key: string) => {
+            if (!store.has(key)) return;
+            const oldValue = store.get(key);
+            store.delete(key);
+            listeners.forEach((l) => l({ [key]: { oldValue } }, "session"));
+          },
+        },
+        onChanged: { addListener: (l: Listener) => listeners.push(l) },
+      },
+    };
+  });
+
+  afterEach(() => {
+    delete (globalThis as { chrome?: unknown }).chrome;
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("drops this realm's in-memory session when another realm closes it", async () => {
+    const { SessionManager } = await import("../SessionManager");
+    const popup = new SessionManager();
+    await popup.open({ account: makeAccount("a"), ttlSeconds: 600, bootstrap: okBootstrap() });
+    expect(popup.getClient("a")).toBeTruthy();
+
+    const serviceWorker = new SessionManager();
+    await serviceWorker.close();
+
+    expect(popup.getClient("a")).toBeNull();
+    expect(popup.status()).toMatchObject({ active: false, accountId: null });
+    await expect(popup.ensureClient("a")).resolves.toBeNull();
+  });
+
+  it("keeps its session when the removed snapshot was for a different key", async () => {
+    const { SessionManager } = await import("../SessionManager");
+    const popup = new SessionManager();
+    await popup.open({ account: makeAccount("a"), ttlSeconds: 600, bootstrap: okBootstrap() });
+
+    listeners.forEach((l) =>
+      l(
+        { [SNAPSHOT_KEY]: { oldValue: { accountId: "a", expiresAt: Date.now() + 1, publicKeyHex: "0xold" } } },
+        "session",
+      ),
+    );
+
+    expect(popup.getClient("a")).toBeTruthy();
+  });
+});
