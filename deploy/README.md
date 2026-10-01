@@ -124,7 +124,7 @@ aws ecs update-service --cluster wallet-hub --service wallet-hub-frontend --forc
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id WalletHub/AppSecrets \
-  --secret-string '{"TURNKEY_API_PUBLIC_KEY":"...","TURNKEY_API_PRIVATE_KEY":"...","TURNKEY_ORGANIZATION_ID":"...","PLATFORM_ADMIN_API_KEY":"...","INDEXER_API_KEY":"...","INTERNAL_API_KEY":"...","DB_PASSWORD":"..."}'
+  --secret-string '{"TURNKEY_API_PUBLIC_KEY":"...","TURNKEY_API_PRIVATE_KEY":"...","TURNKEY_ORGANIZATION_ID":"...","PLATFORM_ADMIN_API_KEY":"...","INDEXER_API_KEY":"...","INDEXER_SERVICE_KEY":"...","INTERNAL_API_KEY":"...","DB_PASSWORD":"..."}'
 ```
 
 After updating secrets, force a new API deployment to pick up the changes.

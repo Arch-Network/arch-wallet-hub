@@ -126,6 +126,11 @@ const EnvSchema = z.object({
   // Existing Arch indexer API (Phase 1 view-only reads)
   INDEXER_BASE_URL: z.string().url().optional(),
   INDEXER_API_KEY: z.string().optional(),
+  // Service-to-service auth for push entitlement checks and the Indexer
+  // dispatcher's target/prune calls. Deliberately separate from the public
+  // read-proxy API key.
+  INDEXER_INTERNAL_BASE_URL: z.string().url().optional(),
+  INDEXER_SERVICE_KEY: optionalString,
   // Timeout for upstream indexer calls (ms). The explorer API can be slow for accounts with
   // many transactions, so a generous default avoids spurious timeouts.
   INDEXER_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),

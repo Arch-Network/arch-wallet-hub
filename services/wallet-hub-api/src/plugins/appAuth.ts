@@ -37,6 +37,9 @@ function isPublicPath(url: string): boolean {
   if (url.startsWith("/v1/platform")) return true; // bootstrapped via admin key
   if (url.startsWith("/documentation")) return true; // swagger default
   if (url.startsWith("/v1/documentation")) return true;
+  // Machine-to-machine push routes authenticate with the dedicated
+  // Indexer service key in their own preHandler.
+  if (url.startsWith("/v1/internal/push/")) return true;
   // Static connector page loaded by the Chrome extension as a controlled
   // origin for external-wallet (Xverse/UniSat) injection.
   // Returns inert HTML only -- no DB access, no secrets.
