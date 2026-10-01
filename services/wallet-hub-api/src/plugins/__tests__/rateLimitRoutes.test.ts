@@ -119,6 +119,22 @@ describe("route-group rate limits, registered like production", () => {
     await app.close();
   });
 
+  it("rune metadata and output lookups draw from the indexer bucket", async () => {
+    const app = await buildServer("enforce");
+    const max = RATE_LIMITS.indexer.max;
+    const urls = [
+      "/v1/indexer/btc/tip",
+      "/v1/indexer/btc/runes/UNCOMMONGOODS",
+      `/v1/indexer/btc/output/${"a".repeat(64)}:0`,
+    ];
+    for (const [i, url] of urls.entries()) {
+      const res = await hit(app, "GET", url, { install: INSTALL_A });
+      expect(res.headers["x-ratelimit-limit"]).toBe(String(max));
+      expect(res.headers["x-ratelimit-remaining"]).toBe(String(max - 1 - i));
+    }
+    await app.close();
+  });
+
   it("indexer routes fall back to app + IP without a well-formed install id", async () => {
     const app = await buildServer("enforce");
     const max = RATE_LIMITS.indexer.max;
