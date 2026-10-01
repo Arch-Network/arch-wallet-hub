@@ -234,9 +234,9 @@ asset class and let each id resolve through the right resolver.
 ### BTC & major tokens → external API (CoinGecko in v1)
 
 Server-side CoinGecko `simple/price` for `bitcoin` and `arch-network`,
-keyed by `COINGECKO_API_KEY` (added to `config/env.ts`, injected from
-Secrets Manager `WalletHub/AppSecrets`, exactly like `INDEXER_API_KEY`
-is wired in `infra/cdk/lib/wallet-hub-stack.ts`). Using a server-side
+keyed by `COINGECKO_API_KEY` (added to `config/env.ts` as an optional
+secret; see [Deployment & secret wiring](#deployment--secret-wiring) for
+how it reaches production — **not** via CDK). Using a server-side
 keyed plan (vs. the clients' anonymous calls) raises the rate limit and
 gives us one place to swap providers. `change24hPct` comes from
 `include_24hr_change=true`.
@@ -322,8 +322,10 @@ CREATE TABLE token_prices (
 );
 ```
 
-**Freshness budgets** (tunable via env, mirroring the clients' current
-constants):
+**Freshness budgets** (tunable via env with in-code defaults, mirroring
+the clients' current constants; changing them in production means a new
+task-definition revision, see
+[Deployment & secret wiring](#deployment--secret-wiring)):
 
 - Fresh TTL: ~60s for BTC/ARCH (external), ~30–60s for AMM-derived.
   (Clients use 5 min today; the Hub can refresh faster because it's one
@@ -412,6 +414,40 @@ prices-only first; add server-side valuation once a second client
   - Background hot-id refresher; AMM-vs-external divergence guardrail.
   - Historical/OHLC if a charting need appears.
 
+### Deployment & secret wiring
+
+`cdk deploy` is **not** a safe path for this while
+[#123](https://github.com/Arch-Network/arch-wallet-hub/issues/123) is
+open: any change to the app secret's `GenerateSecretString` makes
+CloudFormation write a new secret version, which resets every value in
+`WalletHub/AppSecrets`. So:
+
+1. **Add `COINGECKO_API_KEY` to `WalletHub/AppSecrets` by hand**
+   (`aws secretsmanager put-secret-value` with the full existing JSON
+   plus the new key). Never add it to `secretStringTemplate` in
+   `infra/cdk/lib/wallet-hub-stack.ts`, and don't `cdk deploy` the
+   stack to deliver it.
+2. **Register a new ECS task-definition revision by hand** for the API
+   service. Copy the live revision and add one `secrets` entry,
+   `COINGECKO_API_KEY` →
+   `<WalletHub/AppSecrets ARN>:COINGECKO_API_KEY::`, then
+   `aws ecs update-service --task-definition <new revision>`. Do step 1
+   first; a task whose secret reference names a missing JSON key fails
+   to start.
+3. **Ship the code normally.** `deploy.yml` pushes the `:latest` image
+   and runs `update-service --force-new-deployment` against the
+   service's *current* task definition, so the hand-registered revision
+   (and its secret reference) carries over to every later deploy.
+4. **Boot must not depend on the key.** `COINGECKO_API_KEY` stays
+   optional in `config/env.ts`. When it's absent, the CoinGecko
+   resolver is skipped and BTC/ARCH fall through to the next source or
+   `price: null`, so the code can ship before steps 1 and 2.
+
+The same applies to any new plain env var this service adds (freshness
+budgets, etc.): in production it arrives in a task-definition revision,
+not through CDK. The `token_prices` migration is unaffected; it applies
+on boot like every other migration.
+
 **Observability** — reuse the `request.completed` structured log
 (`plugins/observability.ts`) and add price-specific events:
 
@@ -467,6 +503,9 @@ short section to `docs/architecture.md` once shipped.
 - **Auth:** existing `appAuth` app key + `x-arch-install-id` for
   rate-limiting; read-only public market data, so deliberately **out of
   `SESSION_ENFORCED_ROUTES`**.
+- **Deployment:** `COINGECKO_API_KEY` added by hand to
+  `WalletHub/AppSecrets` and delivered through a hand-registered ECS
+  task-definition revision, not `cdk deploy` (#123).
 - **Clients:** add `getPrices` to `wallet-hub-sdk`; delete CoinGecko
   fetchers in `apps/chrome-wallet` and `packages/arch-swap-engine`.
 - **Failure contract:** `null` = render "—"; `stale` = show muted/"as
