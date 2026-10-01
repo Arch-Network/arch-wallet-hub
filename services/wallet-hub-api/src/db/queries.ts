@@ -194,6 +194,59 @@ export async function listTurnkeyResourcesForUserForApp(
   return res.rows;
 }
 
+export type EmailWalletRow = TurnkeyResourceRow & { external_user_id: string | null };
+
+/**
+ * Find the earliest OTP-capable email wallet registered to `email` within
+ * `appId`, across every user of that app that shares the recovery email.
+ *
+ * SECURITY: the row belongs to whoever owns the email, not to the caller.
+ * Only POST /recovery/email/signin may call this, and it must never put
+ * any field of the row in a response: the wallet is revealed only by
+ * /recovery/email/verify after OTP_AUTH succeeds for this email.
+ *
+ * Both tables are pinned to `appId` so the lookup can never cross apps.
+ * Parent-org rows and rows without a root user are excluded because
+ * INIT_OTP_AUTH cannot target them.
+ *
+ * SECURITY (wallet squatting): `recovery_email` is per user, not per
+ * wallet, so a user holding any other credential (another resource or a
+ * linked wallet) could point it at a victim's email while keeping a
+ * session for that user. Only wallets that are their owner's sole
+ * credential qualify: nobody can then mint a session for that user
+ * without signing with this wallet, which needs the OTP to its root email.
+ */
+export async function findEmailWalletByRecoveryEmail(
+  client: PoolClient,
+  params: { appId: string; email: string; rootOrganizationId: string }
+): Promise<EmailWalletRow | null> {
+  const normalised = params.email.trim().toLowerCase();
+  if (!normalised) return null;
+  const res = await client.query<EmailWalletRow>(
+    `
+      SELECT r.*, u.external_user_id
+      FROM turnkey_resources r
+      JOIN users u ON u.id = r.user_id AND u.app_id = r.app_id
+      WHERE r.app_id = $1
+        AND u.app_id = $1
+        AND lower(u.recovery_email) = $2
+        AND r.auth_method = 'email'
+        AND r.organization_id <> $3
+        AND r.turnkey_root_user_id IS NOT NULL
+        AND r.default_address IS NOT NULL
+        AND r.default_public_key_hex IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM turnkey_resources o WHERE o.user_id = r.user_id AND o.id <> r.id
+        )
+        AND NOT EXISTS (SELECT 1 FROM linked_wallets l WHERE l.user_id = r.user_id)
+      ORDER BY r.created_at ASC
+      LIMIT 1
+    `,
+    [params.appId, normalised, params.rootOrganizationId]
+  );
+  return res.rows[0] ?? null;
+}
+
 export type InsertAuditLogParams = {
   appId: string;
   requestId: string | null;
