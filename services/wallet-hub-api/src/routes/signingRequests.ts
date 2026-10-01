@@ -517,6 +517,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/signing-requests",
     {
+      config: { rateLimitGroup: "send" },
       preHandler: server.enforceSessionForRoute("signing-requests.create"),
       schema: {
         summary: "Create a signing request (payload-to-sign + display metadata)",
@@ -1094,6 +1095,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/signing-requests/:id/submit",
     {
+      config: { rateLimitGroup: "send" },
       preHandler: server.enforceSessionForRoute("signing-requests.submit"),
       schema: {
         summary: "Submit signature for a signing request (external signer)",
