@@ -12,6 +12,7 @@ import { ConnectedSiteRow } from "../../components/ConnectedSiteRow";
 import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
 import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "../../state/types";
 import { APP_VERSION } from "../../utils/version";
+import { isAnsEnabledForNetwork, openAnsManager } from "../../utils/name-service";
 import DiagnosticsLogView from "../../components/DiagnosticsLogView";
 import { isSentryAvailableForOptIn } from "../../utils/log";
 import {
@@ -267,7 +268,7 @@ export default function Settings() {
             <div className="input-label" style={{ marginBottom: 4 }}>Auto-lock</div>
             <select
               className="input"
-              value={state.autoLockMinutes ?? 15}
+              value={state.autoLockMinutes ?? 60}
               onChange={(e) => setAutoLockMinutes(Number(e.target.value))}
               style={{ width: "100%", boxSizing: "border-box" }}
             >
@@ -349,7 +350,10 @@ export default function Settings() {
                   thinking about recovery. The button is its own
                   component because the status-row state machine is
                   big enough to warrant separation. */}
-              <TestRecoveryEmailButton email={activeAccount.recoveryEmail} />
+              <TestRecoveryEmailButton
+                email={activeAccount.recoveryEmail}
+                resourceId={activeAccount.turnkeyResourceId}
+              />
             </>
           )}
         </div>
@@ -429,7 +433,7 @@ export default function Settings() {
                     }}
                   />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflowWrap: "anywhere" }}>
                       {acct.label}
                       <span
                         style={{
@@ -590,6 +594,56 @@ export default function Settings() {
         )}
       </div>
 
+      {isAnsEnabledForNetwork(state.network) && (
+        <div className="section">
+          <div className="section-title">Arch Name Service</div>
+          <button
+            type="button"
+            className="card ans-manager-card"
+            onClick={() => void openAnsManager("names")}
+          >
+            <span className="ans-manager-icon" aria-hidden="true">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18" />
+                <path d="M12 3a14 14 0 0 1 0 18" />
+                <path d="M12 3a14 14 0 0 0 0 18" />
+              </svg>
+            </span>
+            <span className="ans-manager-copy">
+              <span className="ans-manager-title">Manage .arch names</span>
+              <span className="ans-manager-description">
+                Register, manage, and trade names on testnet
+              </span>
+            </span>
+            <span className="ans-manager-open" aria-hidden="true">
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M7 17 17 7" />
+                <path d="M7 7h10v10" />
+              </svg>
+            </span>
+          </button>
+        </div>
+      )}
+
       <div className="section">
         <div className="section-title">
           Connected Sites ({siteEntries.length})
@@ -666,12 +720,12 @@ export default function Settings() {
                   style={{ width: "100%", boxSizing: "border-box" }}
                 />
                 {state.network === "mainnet" && !isHttpsUrl(hubBaseUrl) && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--color-negative-text)" }}>
                     Mainnet requires HTTPS.
                   </div>
                 )}
                 {hubBaseUrl.trim() !== "" && !isAllowedHubBaseUrl(hubBaseUrl.trim()) && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--color-negative-text)" }}>
                     Host not in allowlist. Use hub.arch.network or a *.arch.network host.
                   </div>
                 )}
@@ -748,14 +802,14 @@ export default function Settings() {
           {!showReset ? (
             <button
               className="btn btn-secondary btn-full"
-              style={{ color: "var(--danger)" }}
+              style={{ color: "var(--color-negative-text)" }}
               onClick={() => setShowReset(true)}
             >
               Reset Wallet
             </button>
           ) : (
             <div className="card" style={{ borderColor: "var(--danger)" }}>
-              <p style={{ fontSize: 12, marginBottom: 8, color: "var(--danger)" }}>
+              <p style={{ fontSize: 12, marginBottom: 8, color: "var(--color-negative-text)" }}>
                 This erases the encrypted keystore and all local data from this extension.
                 Make sure your recovery email/passkey access is working before resetting.
               </p>

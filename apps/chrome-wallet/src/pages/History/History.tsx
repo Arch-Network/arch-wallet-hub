@@ -1,3 +1,4 @@
+import EmptyStateArt from "../../components/EmptyStateArt";
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
@@ -101,7 +102,7 @@ export default function History() {
   const [banner, setBanner] = useState<FetchBanner>({ kind: "none" });
 
   const isTestnet = state.network === "testnet4";
-  const archExplorer = isTestnet ? "https://explorer.arch.network/testnet/tx/" : "https://explorer.arch.network/mainnet/tx/";
+  const archExplorer = isTestnet ? "https://explorer.arch.network/testnet/tx/" : "https://explorer.arch.network/tx/";
   const btcExplorer = isTestnet ? "https://mempool.space/testnet4/tx/" : "https://mempool.space/tx/";
 
   const fetchTransactions = useCallback(async () => {
@@ -526,6 +527,7 @@ export default function History() {
             background: "rgba(255,176,32,0.10)",
             border: "1px solid rgba(255,176,32,0.30)",
             fontSize: 12,
+            overflowWrap: "anywhere",
           }}
         >
           {banner.kind === "rate-limit" ? (
@@ -559,7 +561,7 @@ export default function History() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-state-icon">📭</div>
+          <EmptyStateArt kind="activity" />
           <div>
             {banner.kind === "none" ? "No transactions yet" : "Nothing to show"}
           </div>
@@ -589,4 +591,3 @@ export default function History() {
     </>
   );
 }
-

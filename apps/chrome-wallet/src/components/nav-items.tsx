@@ -78,11 +78,12 @@ export interface NavItem {
  * The popup (and narrow side panel) shows a bottom tab bar fixed to a
  * 400px-wide column. Send and Receive are *actions*, not destinations,
  * and live as hero buttons on the dashboard -- so we keep the bottom
- * bar to four true destinations and let the tap targets stay wide.
+ * bar to five destinations, including the gallery even when it is empty.
  */
 export const POPUP_NAV_ITEMS: NavItem[] = [
   { path: "/dashboard", label: "Home", Icon: IconHome },
   { path: "/swap", label: "Swap", Icon: IconSwap },
+  { path: "/collectibles", label: "Collectibles", Icon: IconCollectibles },
   { path: "/history", label: "Activity", Icon: IconHistory },
   { path: "/settings", label: "Settings", Icon: IconSettings },
 ];

@@ -4,6 +4,7 @@ import { invalidateClientCache } from "../utils/sdk";
 import { keystore, type MigrationStatus } from "../crypto/keystore";
 import type { AppState, WalletAccount, NetworkId, RecipientAsset, Contact } from "../state/types";
 import { DEFAULT_STATE } from "../state/types";
+import { OPEN_AS_KEY } from "../state/open-as-preference";
 
 export interface WalletStateBundle {
   state: AppState;
@@ -29,7 +30,7 @@ export function useWallet() {
   useEffect(() => {
     refresh();
     const listener = (changes: Record<string, chrome.storage.StorageChange>) => {
-      if ("arch_wallet_keystore" in changes || "arch_wallet_state" in changes) {
+      if ("arch_wallet_keystore" in changes || "arch_wallet_state" in changes || OPEN_AS_KEY in changes) {
         refresh();
       }
     };

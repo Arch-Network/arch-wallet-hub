@@ -18,13 +18,15 @@ interface BackBarProps {
   onBack: () => void;
   /** Button label. Defaults to "Back". */
   label?: string;
+  /** Optional centered page title for drill-down/list headers. */
+  title?: string;
   /** Disable while a flow is mid-flight (e.g. signing). */
   disabled?: boolean;
 }
 
-export default function BackBar({ onBack, label = "Back", disabled }: BackBarProps) {
+export default function BackBar({ onBack, label = "Back", title, disabled }: BackBarProps) {
   return (
-    <div className="back-bar">
+    <div className={`back-bar${title ? " has-title" : ""}`}>
       <button
         type="button"
         className="back-link"
@@ -44,6 +46,7 @@ export default function BackBar({ onBack, label = "Back", disabled }: BackBarPro
         </svg>
         {label}
       </button>
+      {title && <div className="back-bar-title">{title}</div>}
     </div>
   );
 }

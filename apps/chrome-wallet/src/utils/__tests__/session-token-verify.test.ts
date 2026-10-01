@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { schnorr } from "@noble/curves/secp256k1";
+import { schnorr, secp256k1 } from "@noble/curves/secp256k1";
 import { bytesToHex } from "@noble/curves/abstract/utils";
 import { verifyChallengeSignature } from "../../../../../services/wallet-hub-api/src/auth/sessionToken";
 
@@ -108,6 +108,44 @@ describe("verifyChallengeSignature", () => {
         payloadHex: `0x${payloadHex}`,
         signatureHex: `0x${signatureHex}`,
         defaultPublicKeyHex: `0x${publicKeyHex}`,
+      }),
+    ).toBe(true);
+  });
+
+  it("accepts Turnkey-style compressed (66-hex) default public keys", () => {
+    // Production turnkey_resources.default_public_key_hex is the
+    // compressed secp256k1 form Turnkey returns from walletAccounts.
+    // Session mint used to reject these with length !== 64, which
+    // made every real Turnkey user hit InvalidSignature on
+    // POST /auth/session.
+    const { privateKeyHex, publicKeyHex } = makeKeyPair();
+    const payloadHex = "f".repeat(64);
+    const signatureHex = signPayload(payloadHex, privateKeyHex);
+    for (const prefix of ["02", "03"] as const) {
+      expect(
+        verifyChallengeSignature({
+          payloadHex,
+          signatureHex,
+          defaultPublicKeyHex: `${prefix}${publicKeyHex}`,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("accepts uncompressed (130-hex) default public keys", () => {
+    const privateKey = schnorr.utils.randomPrivateKey();
+    const uncompressed = bytesToHex(secp256k1.getPublicKey(privateKey, false));
+    const xOnly = uncompressed.slice(2, 66);
+    const payloadHex = "a1".repeat(32);
+    const signatureHex = bytesToHex(
+      schnorr.sign(Uint8Array.from(Buffer.from(payloadHex, "hex")), privateKey),
+    );
+    expect(xOnly).toHaveLength(64);
+    expect(
+      verifyChallengeSignature({
+        payloadHex,
+        signatureHex,
+        defaultPublicKeyHex: uncompressed,
       }),
     ).toBe(true);
   });

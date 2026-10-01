@@ -200,21 +200,14 @@ function encodeSupplementalTickArraysInfo(count: number): Uint8Array {
 /**
  * Build a CLAMM `swap_v2` instruction.
  *
- * Differences from the V1 `swap` builder below:
- * 1. Adds `token_mint_a` / `token_mint_b` to the account list (slots 4–5)
- *    so the program can read transfer-fee config from token-2022 mints.
- * 2. Adds `token_program_a` / `token_program_b` (slots 0–1) — currently both
- *    are the same Token program, but V2 is forward-compatible with
- *    Token-2022.
- * 3. Marks `oracle` writable.
- * 4. Appends a borsh-encoded `Option<RemainingAccountsInfo>` to the
- *    instruction data, declaring how many supplemental tick arrays follow
- *    as remaining accounts.
- * 5. Accepts up to 3 supplemental tick array accounts. The program's
- *    `SparseSwapTickSequenceBuilder` matches them to the expected
- *    start-tick-indexes by PDA / on-chain `start_tick_index`, so caller
- *    order doesn't matter — but the count in the encoded info MUST match
- *    `supplementalTickArrays.length`.
+ * Account order matches `programs/whirlpool/.../v2/swap.rs` `SwapV2`:
+ * 1. `token_program_a` / `token_program_b` (slots 0–1)
+ * 2. `token_authority`, `whirlpool`, mints, owner ATAs, vaults
+ * 3. tick arrays 0–2 + oracle
+ * 4. `whirlpool_program` — the CLAMM program id itself (`address = crate::ID`),
+ *    required for event self-CPI. Must sit before remaining accounts or
+ *    supplemental tick arrays shift into this slot and fail ConstraintAddress.
+ * 5. Supplemental tick arrays as remaining accounts (count encoded in ix data).
  */
 export async function buildSwapV2Instruction(
   programId: Uint8Array,
@@ -273,6 +266,8 @@ export async function buildSwapV2Instruction(
       acct(params.tickArray1, false, true),
       acct(params.tickArray2, false, true),
       acct(params.oracle, false, true),
+      // Named account pinned to program id (events self-CPI). Not a remaining account.
+      acct(programId, false, false),
       ...supplemental.map((ta) => acct(ta, false, true)),
     ],
     data,

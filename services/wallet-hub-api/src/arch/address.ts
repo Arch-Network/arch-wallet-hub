@@ -1,5 +1,7 @@
 import { address as btcAddress } from "bitcoinjs-lib";
 import bs58 from "bs58";
+import { schnorr, secp256k1 } from "@noble/curves/secp256k1";
+import { sha256 } from "@noble/hashes/sha256";
 
 export type ResolveArchAccountResult =
   | { kind: "arch"; archAccountAddress: string; archAccountAddressHex: string }
@@ -66,6 +68,82 @@ export function archAccountFromInternalKey(publicKeyHex: string): {
   return {
     internalXOnlyHex: xOnlyHex,
     archAccountAddress: bs58.encode(buf),
+  };
+}
+
+function taggedHash(tag: string, data: Uint8Array): Uint8Array {
+  const tagHash = sha256(Buffer.from(tag, "utf8"));
+  return sha256(Buffer.concat([tagHash, tagHash, data]));
+}
+
+/**
+ * Apply the BIP-341 TapTweak (no script tree) to an internal x-only key and
+ * return the tweaked output key (the x-only key that appears in a BIP-86
+ * taproot address's witness program): Q = lift_x(P) + tagged_hash("TapTweak", P) * G.
+ */
+export function bip341TweakedOutputKeyHex(internalXOnlyHex: string): string {
+  const internal = Buffer.from(internalXOnlyHex, "hex");
+  if (internal.length !== 32) throw new Error("Internal key must be 32 bytes (x-only)");
+  const tweak = taggedHash("TapTweak", internal);
+  const P = schnorr.utils.lift_x(BigInt(`0x${internal.toString("hex")}`));
+  const Q = P.add(secp256k1.ProjectivePoint.BASE.multiply(BigInt(`0x${Buffer.from(tweak).toString("hex")}`)));
+  return Q.toAffine().x.toString(16).padStart(64, "0");
+}
+
+export type ArchAccountFromWalletKeyResult =
+  | { ok: true; internalXOnlyHex: string; archAccountAddress: string }
+  | { ok: false; reason: string };
+
+/**
+ * Derive the CANONICAL Arch account identity from a wallet-supplied public key
+ * (compressed 33-byte or x-only 32-byte hex), verifying it actually corresponds
+ * to the given BIP-86 taproot address: the BIP-341 tweak of the internal key
+ * must equal the address's witness program (output key).
+ *
+ * This is the ONLY safe way to register an Arch identity for an external
+ * wallet: decoding the taproot address yields the TWEAKED output key, which is
+ * NOT the account key the Arch node verifies signatures against.
+ */
+export function archAccountFromWalletPublicKey(params: {
+  publicKeyHex: string;
+  taprootAddress: string;
+}): ArchAccountFromWalletKeyResult {
+  let internal;
+  try {
+    internal = archAccountFromInternalKey(params.publicKeyHex);
+  } catch (e: any) {
+    return { ok: false, reason: e?.message ?? "Invalid public key" };
+  }
+
+  let outputKeyHex: string;
+  try {
+    const decoded = btcAddress.fromBech32(params.taprootAddress);
+    if (decoded.version !== 1 || decoded.data.length !== 32) {
+      return { ok: false, reason: "Address is not a taproot (p2tr) bech32m address" };
+    }
+    outputKeyHex = Buffer.from(decoded.data).toString("hex");
+  } catch {
+    return { ok: false, reason: "Address is not a valid bech32m address" };
+  }
+
+  let tweakedHex: string;
+  try {
+    tweakedHex = bip341TweakedOutputKeyHex(internal.internalXOnlyHex);
+  } catch (e: any) {
+    return { ok: false, reason: e?.message ?? "Public key is not a valid x-only point" };
+  }
+
+  if (tweakedHex !== outputKeyHex) {
+    return {
+      ok: false,
+      reason: "Public key does not correspond to the taproot address (BIP-341 tweak mismatch)"
+    };
+  }
+
+  return {
+    ok: true,
+    internalXOnlyHex: internal.internalXOnlyHex,
+    archAccountAddress: internal.archAccountAddress
   };
 }
 

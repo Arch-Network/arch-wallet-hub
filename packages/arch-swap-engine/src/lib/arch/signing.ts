@@ -1,4 +1,4 @@
-import { SanitizedMessageUtil, SignatureUtil } from "@saturnbtcio/arch-sdk";
+import { SanitizedMessageUtil, SignatureUtil } from "@arch-network/arch-sdk";
 
 import type { RuntimeMessage, RuntimeTransaction } from "@/lib/arch/types";
 import { decodeRawWalletSignature, getWalletWitnessSignatureItem } from "@/lib/arch/signature";

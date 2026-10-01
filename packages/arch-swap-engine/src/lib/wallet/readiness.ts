@@ -20,7 +20,7 @@
  * of a passive probe.
  */
 
-import { PubkeyUtil } from "@saturnbtcio/arch-sdk";
+import { PubkeyUtil } from "@arch-network/arch-sdk";
 
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,

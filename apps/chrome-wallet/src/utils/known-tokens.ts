@@ -26,7 +26,13 @@
  */
 
 import bs58 from "bs58";
-import { TESTNET_CONFIG, MAINNET_CONFIG, type NetworkConfig, type TokenInfo } from "@arch/swap-engine";
+import {
+  TESTNET_CONFIG,
+  MAINNET_CONFIG,
+  type NetworkConfig,
+  type TokenInfo,
+  type TokenSymbol,
+} from "@arch/swap-engine";
 
 import type { NetworkId } from "../state/types";
 
@@ -35,6 +41,11 @@ export interface KnownTokenMeta {
   name: string;
   /** Short ticker, e.g. "BTC". */
   symbol: string;
+  /** The engine's canonical symbol for this mint, before any display
+   *  override. This is the asset the mint actually represents (aBTC's
+   *  engine symbol is "BTC"), so it — not `symbol` — is what pricing
+   *  and pool routing key off. */
+  engineSymbol: TokenSymbol;
   /** Decimals — authoritative; overrides any indexer-supplied value. */
   decimals: number;
   /** Asset path relative to the extension's public dir, e.g. "/btc.png".
@@ -72,15 +83,25 @@ function hexToBytes(hex: string): Uint8Array {
  * quote/routing purposes.
  */
 const DISPLAY_OVERRIDES: Record<string, { symbol: string; name: string }> = {
-  // Testnet wrapped BTC
-  "726179cf49b6dc407c1438cec98815d92277b625b09de81818f5f3a57989f1f1": {
+  // Testnet wrapped BTC (live Autara / CLAMM aBTC)
+  "1d46e0dd87393236e4e01252439f46dcbaec7c2255d1fd734e61771a00e8f4e9": {
     symbol: "aBTC",
     name: "Arch Bitcoin",
   },
+  // Testnet Arch USD (live Autara / CLAMM aUSD)
+  "55c6cee38a31732e2dad821ab1c38f902a7c51efaefb3641d51f3485c4617a45": {
+    symbol: "aUSD",
+    name: "Arch USD",
+  },
   // Mainnet wrapped BTC
-  "66db8bdfee04bb957ca1e4fdf6a7ff9b55d4ec9f6521d783acdce93bec66755f": {
+  "225b03d6f9e05fd834cd18906b019fb46372544b0eeb9f6f8b615472467d46b0": {
     symbol: "aBTC",
     name: "Arch Bitcoin",
+  },
+  // Mainnet Arch USD
+  "aec8ca1598d74bc27721536f1a88b5648740bc6a856546a0a47817ff7fe7437c": {
+    symbol: "aUSD",
+    name: "Arch USD",
   },
 };
 
@@ -112,6 +133,7 @@ function buildRegistry(
     const meta: KnownTokenMeta = {
       name: display.name,
       symbol: display.symbol,
+      engineSymbol: token.symbol,
       decimals: token.decimals,
       icon: token.icon,
       mintHex,

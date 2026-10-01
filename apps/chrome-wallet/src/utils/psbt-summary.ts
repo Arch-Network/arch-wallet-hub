@@ -53,14 +53,7 @@ function safeAddressFromScript(script: Uint8Array, network: bitcoin.Network): st
   }
 }
 
-function detectNetworkFromAddress(addr: string): "mainnet" | "testnet" {
-  if (addr.startsWith("tb1") || addr.startsWith("bcrt1") || addr.startsWith("2") || addr.startsWith("m") || addr.startsWith("n")) {
-    return "testnet";
-  }
-  return "mainnet";
-}
-
-function parsePsbt(payload: string): bitcoin.Psbt {
+export function parsePsbt(payload: string): bitcoin.Psbt {
   ensureEccLib();
   const trimmed = payload.trim();
   // Heuristic: PSBTs start with the magic bytes 0x70736274ff which
@@ -72,12 +65,18 @@ function parsePsbt(payload: string): bitcoin.Psbt {
   return bitcoin.Psbt.fromBase64(trimmed);
 }
 
-export function summarizePsbt(payload: string, myAddresses: string[]): PsbtSummary {
+/**
+ * `networkName` is the wallet's selected network; `myAddresses` must be
+ * encoded for it, since ownership is matched by rendered address.
+ */
+export function summarizePsbt(
+  payload: string,
+  myAddresses: string[],
+  networkName: "mainnet" | "testnet",
+): PsbtSummary {
   const psbt = parsePsbt(payload);
 
   const myAddrSet = new Set(myAddresses.filter(Boolean));
-  const someAddress = myAddresses.find(Boolean) ?? "";
-  const networkName = someAddress ? detectNetworkFromAddress(someAddress) : "mainnet";
   const network = networkName === "testnet" ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
 
   const inputs: PsbtSummaryInput[] = [];
@@ -155,6 +154,27 @@ export function formatSats(value: number): string {
   const btc = value / 1e8;
   if (Math.abs(btc) >= 0.001) return `${btc.toFixed(8).replace(/0+$/, "").replace(/\.$/, "")} BTC`;
   return `${value.toLocaleString()} sats`;
+}
+
+/**
+ * Return an amount suitable for a per-origin BTC quota only when this
+ * PSBT's wallet outflow is exact and readily explainable to the user.
+ *
+ * Collaborative PSBTs, missing prevouts, and non-standard outputs can make
+ * it impossible to distinguish an actual payment from another party's input
+ * or a wallet-owned return output. Those flows still require the normal
+ * approval, but must not be silently subject to a numeric spending limit.
+ */
+export function deterministicPsbtSpendSats(summary: PsbtSummary): number | null {
+  if (
+    !summary.exactFee ||
+    summary.inputs.length === 0 ||
+    summary.inputs.some((input) => !input.isMine) ||
+    summary.outputs.some((output) => output.address === null)
+  ) {
+    return null;
+  }
+  return Math.max(0, -summary.netUserSats);
 }
 
 /**

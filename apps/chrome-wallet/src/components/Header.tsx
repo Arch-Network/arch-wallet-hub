@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { truncateAddress } from "../utils/format";
-import { reEncodeTaprootAddress } from "../utils/addressNetwork";
+import { hasConfirmedMainnet, markMainnetConfirmed } from "../utils/mainnet-confirm";
+import { openAnsManager, resolvePrimaryName } from "../utils/name-service";
 import { useWideMode } from "../hooks/useWideMode";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
@@ -63,8 +64,6 @@ interface NetworkSwitcherProps {
   onChange: (n: NetworkId) => void | Promise<void>;
 }
 
-const MAINNET_CONFIRMED_KEY = "arch_wallet_mainnet_confirmed";
-
 function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [confirmingMainnet, setConfirmingMainnet] = useState(false);
@@ -97,13 +96,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
     if (next === network) return;
     if (next === "mainnet") {
       // Phase 2.4: confirm the first mainnet switch on this install.
-      let confirmed = false;
-      try {
-        const res = await chrome.storage.local.get(MAINNET_CONFIRMED_KEY);
-        confirmed = !!res?.[MAINNET_CONFIRMED_KEY];
-      } catch {
-        confirmed = false;
-      }
+      const confirmed = await hasConfirmedMainnet();
       if (!confirmed) {
         setConfirmingMainnet(true);
         return;
@@ -114,11 +107,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 
   const confirmMainnet = async () => {
     setConfirmingMainnet(false);
-    try {
-      await chrome.storage.local.set({ [MAINNET_CONFIRMED_KEY]: true });
-    } catch {
-      /* ignore */
-    }
+    await markMainnetConfirmed();
     await onChange("mainnet");
   };
 
@@ -167,7 +156,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 
       {confirmingMainnet && (
         <div className="network-menu" role="alertdialog">
-          <div className="network-menu-header" style={{ color: "var(--danger)" }}>
+          <div className="network-menu-header" style={{ color: "var(--color-negative-text)" }}>
             Switch to Mainnet?
           </div>
           <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-secondary)" }}>
@@ -188,13 +177,23 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 }
 
 export default function Header({ account, network, networkStatus, onLock, onNetworkChange }: HeaderProps) {
-  const displayAddress = useMemo(
-    () => account ? reEncodeTaprootAddress(account.btcAddress, network) : "",
-    [account, network]
-  );
+  const displayAddress = account?.archAddress ?? "";
+  const [primaryName, setPrimaryName] = useState<string | null>(null);
   const wide = useWideMode(720);
   const veryWide = useWideMode(1000);
   const addrChars = veryWide ? 16 : wide ? 10 : 5;
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrimaryName(null);
+    if (!account?.archAddress) return;
+    void resolvePrimaryName(account.archAddress, { network }).then((name) => {
+      if (!cancelled) setPrimaryName(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.archAddress, network]);
 
   return (
     <header className="app-header">
@@ -214,6 +213,17 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
             </span>
           )}
 
+          {account && primaryName && (
+            <button
+              type="button"
+              className="address-chip address-chip-link"
+              title={`View ${primaryName} on ANS`}
+              onClick={() => void openAnsManager({ view: primaryName })}
+            >
+              {primaryName}
+            </button>
+          )}
+
           {account && displayAddress && (
             <span className="address-chip" title={displayAddress}>
               {truncateAddress(displayAddress, addrChars)}
@@ -221,7 +231,7 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
             </span>
           )}
 
-          <button className="header-lock-btn" onClick={onLock} title="Lock wallet">
+          <button className="header-lock-btn" onClick={onLock} title="Lock wallet" aria-label="Lock wallet">
             <LockIcon />
           </button>
         </div>

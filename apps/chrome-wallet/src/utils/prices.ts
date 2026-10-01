@@ -6,7 +6,9 @@
  *
  * Provider chain:
  *   1. CoinGecko simple price for BTC and ARCH.
- *   2. Indexer token metadata for APL tokens (when it ships
+ *   2. Peg-derived prices for known APL mints (see `token-usd`):
+ *      wrapped BTC at the BTC rate, dollar-pegged mints at $1.
+ *   3. Indexer token metadata for everything else (when it ships
  *      `usd_price`); falls back to 0 with a flag.
  *
  * Results are cached in chrome.storage.local for 5 minutes to keep
@@ -15,6 +17,8 @@
  */
 
 import { getIndexer } from "./indexer";
+import { engineSymbolForMint, tokenUsdValue, tracksBtcPrice, usdPerUnitForSymbol } from "./token-usd";
+import type { NetworkId } from "../state/types";
 
 export interface PriceEntry {
   usd: number;
@@ -26,6 +30,9 @@ export interface PortfolioInput {
   btcSats: number;
   archLamports: string | number;
   tokens: { mint: string; rawAmount: string | number; decimals: number }[];
+  /** Needed to resolve mints against the known-token registry, which
+   *  is per-network. */
+  network: NetworkId;
 }
 
 export interface PortfolioValuation {
@@ -108,10 +115,12 @@ export async function getBtcArchPrices(): Promise<{ btc: PriceEntry | null; arch
 }
 
 /**
- * Compute the fiat valuation of a wallet snapshot. Tokens without a
- * price are returned with `usd: 0, unpriced: true` so the Dashboard
- * can render a "+N unpriced tokens" footnote rather than silently
- * dropping them.
+ * Compute the fiat valuation of a wallet snapshot. APL tokens are
+ * priced off the asset their mint is pegged to (see `token-usd`), so
+ * a wrapped-BTC balance counts toward the total at the BTC rate.
+ * Tokens we can't price are returned with `usd: 0, unpriced: true` so
+ * the Dashboard can render a "+N unpriced tokens" footnote rather
+ * than silently dropping them.
  */
 export async function valuatePortfolio(input: PortfolioInput): Promise<PortfolioValuation> {
   const { btc, arch } = await getBtcArchPrices();
@@ -125,16 +134,29 @@ export async function valuatePortfolio(input: PortfolioInput): Promise<Portfolio
 
   const tokenBreakdown: PortfolioValuation["tokenBreakdown"] = {};
   let tokenUsd = 0;
+  // BTC-pegged tokens move with BTC, so they carry its 24h change into
+  // the weighted average; dollar-pegged ones contribute 0.
+  let btcPeggedTokenUsd = 0;
 
   for (const t of input.tokens) {
     const raw = String(t.rawAmount);
-    // APL prices not wired yet; track as unpriced.
-    tokenBreakdown[t.mint] = { usd: 0, rawAmount: raw, decimals: t.decimals, unpriced: true };
+    const symbol = engineSymbolForMint(t.mint, input.network);
+    const usd = symbol
+      ? tokenUsdValue(t.rawAmount, t.decimals, usdPerUnitForSymbol(symbol, btc?.usd ?? null))
+      : null;
+    if (usd == null) {
+      tokenBreakdown[t.mint] = { usd: 0, rawAmount: raw, decimals: t.decimals, unpriced: true };
+      continue;
+    }
+    tokenBreakdown[t.mint] = { usd, rawAmount: raw, decimals: t.decimals, unpriced: false };
+    tokenUsd += usd;
+    if (symbol && tracksBtcPrice(symbol)) btcPeggedTokenUsd += usd;
   }
 
   const change24Numerator =
-    (btc?.change24hPct ?? 0) * btcUsd + (arch?.change24hPct ?? 0) * archUsd;
-  const change24Denominator = btcUsd + archUsd;
+    (btc?.change24hPct ?? 0) * (btcUsd + btcPeggedTokenUsd) +
+    (arch?.change24hPct ?? 0) * archUsd;
+  const change24Denominator = btcUsd + archUsd + tokenUsd;
   const change24hPct =
     change24Denominator > 0 ? change24Numerator / change24Denominator : null;
 

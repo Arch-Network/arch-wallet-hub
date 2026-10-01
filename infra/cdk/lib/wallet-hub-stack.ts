@@ -211,6 +211,10 @@ export class WalletHubStack extends cdk.Stack {
         ARCH_RPC_NODE_URL_MAINNET: "https://rpc.mainnet.arch.network",
         INDEXER_BASE_URL: "https://explorer.arch.network/api/v1/testnet",
         ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: "false",
+        // Global 300/min per app key + IP, plus per-route overrides. The
+        // store is in-memory per task, so limits scale with desiredCount.
+        // Set to "false" to disable.
+        RATE_LIMIT_ENABLED: "true",
         // SECURITY: never default to `*`. Refuse to deploy without an
         // explicit allow-list. The `@fastify/cors` plugin also
         // enforces this server-side.
