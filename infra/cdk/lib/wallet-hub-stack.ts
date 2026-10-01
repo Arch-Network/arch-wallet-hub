@@ -6,14 +6,9 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { Construct } from "constructs";
 
 export interface WalletHubStackProps extends cdk.StackProps {
-  /** ACM cert ARN for the public ALB hostname (required in prod). */
-  certificateArn?: string;
-  /** Operator CIDR allowed to reach the ALB directly on ports 80/443. */
-  operatorIngressCidrs?: string[];
   /** Allowed CORS origins (comma-separated). Required in prod. */
   corsAllowOrigins?: string;
 }
@@ -32,15 +27,18 @@ export class WalletHubStack extends cdk.Stack {
     // so the stack creates cleanly on first deploy.
     //
     // `generateStringKey: "DB_PASSWORD"` makes Secrets Manager mint the
-    // RDS master password as part of this single bundle (on FIRST create
-    // only). The live DB master password is already stored here under
-    // `DB_PASSWORD` and is reused verbatim by the RDS instance below
-    // (see `Credentials.fromPassword`), so deploying does NOT reset it.
-    // `AUDIT_HMAC_SECRET` is part of the schema because the API requires
-    // it in production (audit-log tamper-evidence); the live secret
-    // already carries a real value for it. Changing this template on an
-    // EXISTING secret is metadata-only — Secrets Manager never
-    // regenerates an already-created secret's value.
+    // RDS master password as part of this single bundle. The live DB
+    // master password is stored here under `DB_PASSWORD` and is reused
+    // verbatim by the RDS instance below (see `Credentials.fromPassword`).
+    //
+    // DO NOT EDIT `generateSecretString` (#123). Any change to it —
+    // adding a key to the template, changing `generateStringKey` or a
+    // generator option — makes CloudFormation write a NEW secret version
+    // from the template, replacing every populated value (Turnkey keys,
+    // DB_PASSWORD, AUDIT_HMAC_SECRET, …) with CHANGE_ME. It must stay
+    // byte-identical to the deployed template. Add new keys
+    // (AUDIT_HMAC_SECRET, INDEXER_SERVICE_KEY, …) to the live secret by
+    // hand and reference them with `ecs.Secret.fromSecretsManager` only.
     const appSecrets = new secretsmanager.Secret(this, "AppSecrets", {
       secretName: "WalletHub/AppSecrets",
       description: "Wallet Hub application secrets",
@@ -52,7 +50,6 @@ export class WalletHubStack extends cdk.Stack {
           PLATFORM_ADMIN_API_KEY: "CHANGE_ME",
           INDEXER_API_KEY: "",
           INTERNAL_API_KEY: "CHANGE_ME",
-          AUDIT_HMAC_SECRET: "CHANGE_ME",
         }),
         generateStringKey: "DB_PASSWORD",
         excludePunctuation: true,
@@ -88,9 +85,11 @@ export class WalletHubStack extends cdk.Stack {
 
     const db = new rds.DatabaseInstance(this, "Postgres", {
       engine: rds.DatabaseInstanceEngine.postgres({
-        // Pinned to the live instance version (auto-minor-upgraded
-        // from 16.6). Pinning prevents CFN from attempting a downgrade.
-        version: rds.PostgresEngineVersion.VER_16_13,
+        // Matches the deployed template. The instance auto-minor-upgrades,
+        // so the running version is newer; CloudFormation only acts on
+        // template changes, so leaving this untouched is a no-op. Bump it
+        // only to the exact running version (`aws rds describe-db-instances`).
+        version: rds.PostgresEngineVersion.VER_16_6,
       }),
       instanceType: ec2.InstanceType.of(
         ec2.InstanceClass.T3,
@@ -138,67 +137,31 @@ export class WalletHubStack extends cdk.Stack {
       clusterName: "wallet-hub",
     });
 
-    // ─── ALB security group ────────────────────────────────
-    //
-    // Public ingress only to 443. HTTP/80 is added below as a 301
-    // redirect target. If `operatorIngressCidrs` is provided we add
-    // those, otherwise we allow any-IP on 80/443 (typical for a
-    // public web app behind ACM).
-    const albSg = new ec2.SecurityGroup(this, "AlbSg", {
-      vpc,
-      description: "Wallet Hub ALB",
-      allowAllOutbound: true,
-    });
-    const ingressCidrs = props.operatorIngressCidrs?.length
-      ? props.operatorIngressCidrs
-      : ["0.0.0.0/0"];
-    for (const cidr of ingressCidrs) {
-      albSg.addIngressRule(ec2.Peer.ipv4(cidr), ec2.Port.tcp(443), "HTTPS in");
-      albSg.addIngressRule(ec2.Peer.ipv4(cidr), ec2.Port.tcp(80), "HTTP in (redirected to HTTPS)");
-    }
-
     // ─── ALB ───────────────────────────────────────────────
+    //
+    // The ALB, API and frontend services use the security groups CDK
+    // creates for them. They are the deployed groups; supplying explicit
+    // `ec2.SecurityGroup`s would replace all three (#123).
     const alb = new elbv2.ApplicationLoadBalancer(this, "Alb", {
       vpc,
       internetFacing: true,
       loadBalancerName: "wallet-hub-alb",
-      securityGroup: albSg,
     });
 
-    // HTTPS listener (only added when an ACM cert ARN is provided).
-    // Without a cert we still create the stack but log a warning and
-    // serve HTTP only -- intended for dev / first-deploy. In prod
-    // `certificateArn` must be set.
-    const certArn = props.certificateArn ?? this.node.tryGetContext("certificateArn");
-    let listener: elbv2.ApplicationListener;
-    if (certArn) {
-      const cert = acm.Certificate.fromCertificateArn(this, "AlbCert", certArn);
-      listener = alb.addListener("HttpsListener", {
-        port: 443,
-        protocol: elbv2.ApplicationProtocol.HTTPS,
-        certificates: [cert],
-        sslPolicy: elbv2.SslPolicy.RECOMMENDED_TLS,
-      });
-      // 80 -> 443 redirect.
-      alb.addListener("HttpRedirectListener", {
-        port: 80,
-        protocol: elbv2.ApplicationProtocol.HTTP,
-        defaultAction: elbv2.ListenerAction.redirect({
-          protocol: "HTTPS",
-          port: "443",
-          permanent: true,
-        }),
-      });
-    } else {
-      cdk.Annotations.of(this).addWarning(
-        "WalletHubStack: no certificateArn provided; ALB will serve plain HTTP. " +
-          "Set the `certificateArn` stack prop or `cdk -c certificateArn=...` for production."
+    // The stack manages only the port-80 listener. Production's HTTPS
+    // listener on 443 (ACM cert; `/v1/*` -> ApiTg, default -> FrontendTg)
+    // was created by hand and is NOT in this stack (#123). Creating a 443
+    // listener here would conflict with it, so refuse rather than ignore
+    // a `certificateArn` until that listener is imported.
+    if (this.node.tryGetContext("certificateArn")) {
+      throw new Error(
+        "WalletHubStack: the 443 listener is hand-managed (see #123). Import it into the stack before managing HTTPS here."
       );
-      listener = alb.addListener("HttpListener", {
-        port: 80,
-        protocol: elbv2.ApplicationProtocol.HTTP,
-      });
     }
+    const listener = alb.addListener("HttpListener", {
+      port: 80,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+    });
 
     // ─── API Service ───────────────────────────────────────
     const apiTaskDef = new ecs.FargateTaskDefinition(this, "ApiTaskDef", {
@@ -307,9 +270,7 @@ export class WalletHubStack extends cdk.Stack {
         // container. It is not read anywhere in services/wallet-hub-api/src;
         // the API authenticates inbound X-Api-Key against DB-backed per-app
         // keys (plugins/appAuth.ts), not its own env value. The live task
-        // def (:16) also omits it, so dropping it here reconciles code with
-        // live. The frontend container below DOES keep INTERNAL_API_KEY: its
-        // nginx proxy forwards it as X-Api-Key to call the API as an app.
+        // defs (revisions 12 and 17) also omit it.
       },
       portMappings: [{ containerPort: 3005, protocol: ecs.Protocol.TCP }],
       healthCheck: {
@@ -324,31 +285,25 @@ export class WalletHubStack extends cdk.Stack {
       },
     });
 
-    const apiServiceSg = new ec2.SecurityGroup(this, "ApiServiceSg", {
-      vpc,
-      description: "Wallet Hub API service",
-      allowAllOutbound: true,
-    });
-
     const apiService = new ecs.FargateService(this, "ApiService", {
       cluster,
       taskDefinition: apiTaskDef,
       desiredCount: 1,
       serviceName: "wallet-hub-api",
       // INTERIM: public subnets + public IP to match the live default
-      // VPC (no NAT for image/secret pulls). The task is still only
-      // reachable via the ALB SG; inbound is locked down below. Phase 3
-      // moves this to private subnets — see RUNBOOK-phase3-hardening.md.
+      // VPC (no NAT for image/secret pulls). Inbound is limited to the
+      // ALB, which CDK wires when the target group joins the listener.
+      // Private subnets are a follow-up — see RUNBOOK-phase3-hardening.md.
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      securityGroups: [apiServiceSg],
     });
 
-    // Only the ALB may reach the API on its port.
-    apiServiceSg.addIngressRule(albSg, ec2.Port.tcp(3005), "ALB to API");
-
     // Allow API -> RDS
-    dbSecurityGroup.addIngressRule(apiServiceSg, ec2.Port.tcp(5432), "API to Postgres");
+    apiService.connections.allowTo(
+      dbSecurityGroup,
+      ec2.Port.tcp(5432),
+      "API to Postgres"
+    );
 
     // ─── Frontend Service ──────────────────────────────────
     const frontendTaskDef = new ecs.FargateTaskDefinition(
@@ -366,23 +321,20 @@ export class WalletHubStack extends cdk.Stack {
         streamPrefix: "wallet-hub-frontend",
         logRetention: logs.RetentionDays.TWO_WEEKS,
       }),
-      // nginx in the upstream image runs as `nginx` (uid 101).
-      user: "101",
-      environment: {},
-      // SECURITY: ship the platform-app key for the frontend's
-      // server-side proxy from Secrets Manager, not a literal env
-      // value. This was previously a plain `placeholder` env entry.
-      secrets: {
-        INTERNAL_API_KEY: ecs.Secret.fromSecretsManager(
-          appSecrets,
-          "INTERNAL_API_KEY"
-        ),
+      // Matches the image in ECR (March 2026), which predates the
+      // non-root nginx on 8080 + `/healthz` in deploy/Dockerfile.frontend.
+      // Switch to user 101, port 8080, `/healthz` and an INTERNAL_API_KEY
+      // secret only after rebuilding and pushing that image, together with
+      // FrontendTg below (a port change replaces it) and the hand-made 443
+      // listener that forwards to it (#123).
+      environment: {
+        INTERNAL_API_KEY: "placeholder",
       },
-      portMappings: [{ containerPort: 8080, protocol: ecs.Protocol.TCP }],
+      portMappings: [{ containerPort: 80, protocol: ecs.Protocol.TCP }],
       healthCheck: {
         command: [
           "CMD-SHELL",
-          "curl -fsS http://localhost:8080/healthz || exit 1",
+          "curl -f http://localhost/ || exit 1",
         ],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
@@ -391,26 +343,17 @@ export class WalletHubStack extends cdk.Stack {
       },
     });
 
-    const frontendServiceSg = new ec2.SecurityGroup(this, "FrontendServiceSg", {
-      vpc,
-      description: "Wallet Hub frontend service",
-      allowAllOutbound: true,
-    });
-
     const frontendService = new ecs.FargateService(this, "FrontendService", {
       cluster,
       taskDefinition: frontendTaskDef,
       desiredCount: 1,
       serviceName: "wallet-hub-frontend",
       // INTERIM: public subnets + public IP to match the live default
-      // VPC (no NAT). Reachable only via the ALB SG. Phase 3 moves this
-      // to private subnets — see RUNBOOK-phase3-hardening.md.
+      // VPC (no NAT). Reachable only from the ALB. Private subnets are a
+      // follow-up — see RUNBOOK-phase3-hardening.md.
       assignPublicIp: true,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
-      securityGroups: [frontendServiceSg],
     });
-
-    frontendServiceSg.addIngressRule(albSg, ec2.Port.tcp(8080), "ALB to frontend");
 
     // ─── ALB Target Groups & Routing ───────────────────────
     const apiTargetGroup = new elbv2.ApplicationTargetGroup(this, "ApiTg", {
@@ -435,11 +378,11 @@ export class WalletHubStack extends cdk.Stack {
       "FrontendTg",
       {
         vpc,
-        port: 8080,
+        port: 80,
         protocol: elbv2.ApplicationProtocol.HTTP,
         targetType: elbv2.TargetType.IP,
         healthCheck: {
-          path: "/healthz",
+          path: "/",
           interval: cdk.Duration.seconds(30),
           healthyThresholdCount: 2,
           unhealthyThresholdCount: 3,
@@ -450,7 +393,7 @@ export class WalletHubStack extends cdk.Stack {
     frontendTargetGroup.addTarget(
       frontendService.loadBalancerTarget({
         containerName: "frontend",
-        containerPort: 8080,
+        containerPort: 80,
       })
     );
 
@@ -467,23 +410,21 @@ export class WalletHubStack extends cdk.Stack {
     });
 
     // ─── Outputs ───────────────────────────────────────────
-    const scheme = certArn ? "https" : "http";
     new cdk.CfnOutput(this, "AlbDns", {
       value: alb.loadBalancerDnsName,
       description: "ALB DNS name — use this as the app URL",
     });
     new cdk.CfnOutput(this, "ApiUrl", {
-      value: `${scheme}://${alb.loadBalancerDnsName}/v1`,
+      value: `http://${alb.loadBalancerDnsName}/v1`,
       description: "API base URL for SDK / Postman",
     });
     new cdk.CfnOutput(this, "FrontendUrl", {
-      value: `${scheme}://${alb.loadBalancerDnsName}`,
+      value: `http://${alb.loadBalancerDnsName}`,
       description: "Demo dapp URL for testers",
     });
-    new cdk.CfnOutput(this, "AppSecretsArn", {
+    new cdk.CfnOutput(this, "SecretArn", {
       value: appSecrets.secretArn,
-      description:
-        "Secrets Manager ARN — app secrets incl. DB_PASSWORD (RDS master)",
+      description: "Secrets Manager ARN — populate secrets here",
     });
     new cdk.CfnOutput(this, "EcsClusterName", {
       value: cluster.clusterName,
