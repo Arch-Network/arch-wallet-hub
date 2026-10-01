@@ -7,17 +7,20 @@ import { insertSigningRequest, getSigningRequestForApp, markSigningRequestSubmit
 import { auditEvent } from "../audit/audit.js";
 import { computeDisplayHash } from "../signingRequests/displayHash.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
-import { createArchRpcClient, submitArchTransaction, buildAndSignArchRuntimeTx, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
+import { createArchRpcClient, submitArchTransaction, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
 import { Buffer } from "node:buffer";
 import bs58 from "bs58";
 import { secp256k1, schnorr } from "@noble/curves/secp256k1";
-import { resolveArchAccountAddress, archAccountFromInternalKey } from "../arch/address.js";
+import { resolveArchAccountAddress, archAccountFromInternalKey, archAccountFromWalletPublicKey } from "../arch/address.js";
 import { address as btcAddress } from "bitcoinjs-lib";
-import { indexerForRequest, archRpcUrlForRequest } from "../indexer/forRequest.js";
+import { indexerForRequest, archRpcUrlForRequest, requestNetwork } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
+
+const U64_DECIMAL_PATTERN = "^[0-9]{1,20}$";
+const U64_MAX = (1n << 64n) - 1n;
 
 const CreateSigningRequestBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
@@ -31,20 +34,22 @@ const CreateSigningRequestBody = Type.Object({
     }),
     Type.Object({
       kind: Type.Literal("turnkey"),
-      resourceId: Type.String({ minLength: 1 })
+      // UUID-constrained: maps to `turnkey_resources.id` (Postgres uuid), so
+      // a malformed id 400s at validation instead of 22P02-500 at the DB.
+      resourceId: Type.String({ format: "uuid" })
     })
   ]),
   action: Type.Union([
     Type.Object({
       type: Type.Literal("arch.transfer"),
       toAddress: Type.String({ minLength: 1 }),
-      lamports: Type.String({ minLength: 1 })
+      lamports: Type.String({ pattern: U64_DECIMAL_PATTERN })
     }),
     Type.Object({
       type: Type.Literal("arch.token_transfer"),
       mintAddress: Type.String({ minLength: 1 }),
       toAddress: Type.String({ minLength: 1 }),
-      amount: Type.String({ minLength: 1 }),
+      amount: Type.String({ pattern: U64_DECIMAL_PATTERN }),
       sourceTokenAccount: Type.Optional(Type.String({ minLength: 1 })),
       decimals: Type.Optional(Type.Integer({ minimum: 0, maximum: 18 }))
     }),
@@ -128,10 +133,22 @@ const GetSigningRequestResponse = Type.Object({
   readiness: SigningRequestReadiness
 });
 
-function parseLamports(lamportsStr: string): bigint {
-  const v = BigInt(lamportsStr);
-  if (v < 0n) throw new Error("Lamports must be non-negative");
+/**
+ * Plain base-10 u64 only. `BigInt()` alone also accepts hex/binary/octal
+ * prefixes and whitespace, and `setBigUint64` silently wraps negatives
+ * and values >= 2^64 modulo 2^64.
+ */
+export function parseU64Decimal(value: string, label: string): bigint {
+  if (!new RegExp(U64_DECIMAL_PATTERN).test(value)) {
+    throw new Error(`${label} must be a base-10 unsigned integer string`);
+  }
+  const v = BigInt(value);
+  if (v > U64_MAX) throw new Error(`${label} exceeds u64 max`);
   return v;
+}
+
+function parseLamports(lamportsStr: string): bigint {
+  return parseU64Decimal(lamportsStr, "Lamports");
 }
 
 function isTaprootAddress(s: string) {
@@ -316,7 +333,8 @@ function buildCreateAssociatedTokenAccountInstruction(
   payerPubkey: Pubkey,
   associatedTokenAccount: Pubkey,
   ownerPubkey: Pubkey,
-  mintPubkey: Pubkey
+  mintPubkey: Pubkey,
+  idempotent: boolean
 ): Instruction {
   return {
     program_id: APL_ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -328,7 +346,9 @@ function buildCreateAssociatedTokenAccountInstruction(
       { pubkey: PubkeyUtil.systemProgram(), is_signer: false, is_writable: false } as AccountMeta,
       { pubkey: APL_TOKEN_PROGRAM_ID, is_signer: false, is_writable: false } as AccountMeta,
     ],
-    data: new Uint8Array(0),
+    // Instruction 1 (CreateIdempotent) requires Arch validators > 0.8.
+    // Mainnet stays on instruction 0 until that upgrade lands.
+    data: idempotent ? new Uint8Array([1]) : new Uint8Array(0),
   };
 }
 
@@ -497,6 +517,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/signing-requests",
     {
+      config: { rateLimitGroup: "send" },
       preHandler: server.enforceSessionForRoute("signing-requests.create"),
       schema: {
         summary: "Create a signing request (payload-to-sign + display metadata)",
@@ -511,6 +532,17 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       const db = getDbPool();
       const body = request.body as any;
+      const rawAmount =
+        body.action.type === "arch.transfer" ? body.action.lamports
+        : body.action.type === "arch.token_transfer" ? body.action.amount
+        : null;
+      if (rawAmount !== null) {
+        try {
+          parseU64Decimal(rawAmount, "amount");
+        } catch (err: any) {
+          return reply.badRequest(err.message);
+        }
+      }
       const user = await withDbTransaction(db, (client) =>
         getOrCreateUserByExternalId(client, { appId, externalUserId: body.externalUserId })
       );
@@ -524,14 +556,39 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       let turnkeyResourceId: string | null = null;
       if (body.signer.kind === "external") {
         signerTaprootAddress = body.signer.taprootAddress as string;
-        // Always derive Arch account from the taproot address (tweaked output key)
-        // to stay consistent with the dashboard, airdrop, and indexer endpoints.
-        const resolved = resolveArchAccountAddress(signerTaprootAddress);
-        if (resolved.kind !== "taproot") {
-          return reply.badRequest("External signer must provide a Taproot (p2tr) address");
+        // Canonical Arch identity is the UNTWEAKED internal x-only key from the
+        // wallet's public key (verified against the address via the BIP-341
+        // tweak check). Decoding the taproot address yields the TWEAKED output
+        // key — the WRONG Arch account — so that path is only a legacy
+        // fallback for clients that do not send publicKeyHex.
+        const suppliedPublicKeyHex =
+          typeof body.signer.publicKeyHex === "string" && body.signer.publicKeyHex.length >= 64
+            ? String(body.signer.publicKeyHex).toLowerCase()
+            : null;
+        const canonical = suppliedPublicKeyHex
+          ? archAccountFromWalletPublicKey({
+              publicKeyHex: suppliedPublicKeyHex,
+              taprootAddress: signerTaprootAddress
+            })
+          : null;
+        if (canonical?.ok) {
+          signerArchAccountAddress = canonical.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = canonical.internalXOnlyHex;
+        } else {
+          if (canonical && !canonical.ok) {
+            return reply.badRequest(`Invalid signer publicKeyHex: ${canonical.reason}`);
+          }
+          const resolved = resolveArchAccountAddress(signerTaprootAddress);
+          if (resolved.kind !== "taproot") {
+            return reply.badRequest("External signer must provide a Taproot (p2tr) address");
+          }
+          signerArchAccountAddress = resolved.archAccountAddress;
+          signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
+          server.log.warn(
+            { signerTaprootAddress },
+            "External signer without publicKeyHex: using legacy (tweaked) Arch identity derivation"
+          );
         }
-        signerArchAccountAddress = resolved.archAccountAddress;
-        signerInternalXOnlyPubkeyHex = resolved.xOnlyPubkeyHex;
       } else {
         turnkeyResourceId = body.signer.resourceId as string;
         const resource = await withDbTransaction(db, (client) =>
@@ -826,7 +883,8 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
         const mintPubkey = parsePubkey(body.action.mintAddress);
         const toPubkey = parsePubkey(body.action.toAddress);
-        const amount = BigInt(body.action.amount);
+        const amount = parseU64Decimal(body.action.amount, "amount");
+        const useIdempotentAtaCreate = requestNetwork(request) !== "mainnet";
 
         let sourceAta = body.action.sourceTokenAccount
           ? parsePubkey(body.action.sourceTokenAccount)
@@ -834,43 +892,48 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         let destAta = getAplAssociatedTokenAddress(mintPubkey, toPubkey);
         let createDestAta = true;
 
-        try {
-          const indexer = indexerForRequest(request, reply);
-          if (!indexer) throw new Error("Indexer not configured");
-          const [senderTokens, recipientTokens] = await Promise.all([
-            indexer.getAccountTokens(signerArchAccountAddress),
-            indexer.getAccountTokens(body.action.toAddress)
-          ]);
-          const findTokenAccount = (tokensResponse: any): string | null => {
-            const tokens = Array.isArray(tokensResponse?.tokens) ? tokensResponse.tokens : [];
-            const mintInput = body.action.mintAddress;
-            const mintHex = Buffer.from(mintPubkey).toString("hex");
-            const match = tokens.find((t: any) =>
-              t?.mint_address === mintInput ||
-              t?.mint_address_hex === mintHex ||
-              t?.mint === mintInput
-            );
-            return typeof match?.token_account_address === "string" ? match.token_account_address : null;
-          };
+        // Idempotent ATA create (validators > 0.8) is testnet-only until
+        // mainnet is upgraded. Mainnet still probes the indexer and skips
+        // the create ix when the dest ATA already exists.
+        if (!useIdempotentAtaCreate) {
+          try {
+            const indexer = indexerForRequest(request, reply);
+            if (!indexer) throw new Error("Indexer not configured");
+            const [senderTokens, recipientTokens] = await Promise.all([
+              indexer.getAccountTokens(signerArchAccountAddress),
+              indexer.getAccountTokens(body.action.toAddress)
+            ]);
+            const findTokenAccount = (tokensResponse: any): string | null => {
+              const tokens = Array.isArray(tokensResponse?.tokens) ? tokensResponse.tokens : [];
+              const mintInput = body.action.mintAddress;
+              const mintHex = Buffer.from(mintPubkey).toString("hex");
+              const match = tokens.find((t: any) =>
+                t?.mint_address === mintInput ||
+                t?.mint_address_hex === mintHex ||
+                t?.mint === mintInput
+              );
+              return typeof match?.token_account_address === "string" ? match.token_account_address : null;
+            };
 
-          const indexedSourceAta = findTokenAccount(senderTokens);
-          const indexedDestAta = findTokenAccount(recipientTokens);
-          if (indexedSourceAta) sourceAta = parsePubkey(indexedSourceAta);
-          if (indexedDestAta) {
-            destAta = parsePubkey(indexedDestAta);
-            createDestAta = false;
+            const indexedSourceAta = findTokenAccount(senderTokens);
+            const indexedDestAta = findTokenAccount(recipientTokens);
+            if (indexedSourceAta) sourceAta = parsePubkey(indexedSourceAta);
+            if (indexedDestAta) {
+              destAta = parsePubkey(indexedDestAta);
+              createDestAta = false;
+            }
+          } catch (err: any) {
+            server.log.warn(
+              { err: String(err?.message ?? err), mint: body.action.mintAddress },
+              "Failed to resolve indexed token accounts; falling back to associated token derivation"
+            );
           }
-        } catch (err: any) {
-          server.log.warn(
-            { err: String(err?.message ?? err), mint: body.action.mintAddress },
-            "Failed to resolve indexed token accounts; falling back to associated token derivation"
-          );
         }
 
         actionType = "arch.token_transfer";
         instructions = [
           ...(createDestAta
-            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
+            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey, useIdempotentAtaCreate)]
             : []),
           buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, amount)
         ];
@@ -889,6 +952,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           sourceAta: bs58.encode(Buffer.from(sourceAta)),
           destAta: bs58.encode(Buffer.from(destAta)),
           createDestAta,
+          createDestAtaIdempotent: createDestAta && useIdempotentAtaCreate,
         };
 
       } else if (body.action.type === "arch.anchor") {
@@ -1031,6 +1095,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
   server.post(
     "/signing-requests/:id/submit",
     {
+      config: { rateLimitGroup: "send" },
       preHandler: server.enforceSessionForRoute("signing-requests.submit"),
       schema: {
         summary: "Submit signature for a signing request (external signer)",
@@ -1136,9 +1201,15 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const toPubkey = parsePubkey(toAddr);
         instructions = [
           ...(display?.createDestAta
-            ? [buildCreateAssociatedTokenAccountInstruction(payerPubkey, destAta, toPubkey, mintPubkey)]
+            ? [buildCreateAssociatedTokenAccountInstruction(
+                payerPubkey,
+                destAta,
+                toPubkey,
+                mintPubkey,
+                Boolean(display?.createDestAtaIdempotent)
+              )]
             : []),
-          buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, BigInt(amountStr))
+          buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, parseU64Decimal(amountStr, "amount"))
         ];
       } else if (row.action_type === "arch.anchor") {
         const txid = String(display?.utxo?.txid ?? "");
@@ -1535,128 +1606,6 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       // Still processing / not found yet: return submitted so clients can poll.
       return { signingRequestId: row.id, status: "submitted", result: submitResult };
-    }
-  );
-
-  // Sign and submit a signing request using Turnkey (server-side signing)
-  // This endpoint signs with Turnkey and then internally forwards to the submit endpoint
-  server.post(
-    "/signing-requests/:id/sign-with-turnkey",
-    {
-      // Hard requirement post-013: a session bearer matching this
-      // user must be present. Closes audit findings X1 / M7 / C1
-      // for the highest-leverage route. Body still accepts
-      // `externalUserId` for back-compat but we cross-check it
-      // against the session principal and reject any mismatch.
-      preHandler: server.requireSession,
-      schema: {
-        summary: "Sign a signing request using Turnkey (server-side)",
-        tags: ["signing-requests"],
-        params: Type.Object({ id: Type.String() }),
-        body: Type.Object({
-          externalUserId: Type.String({ minLength: 1 })
-        }),
-        response: { 200: SubmitSignatureResponse }
-      }
-    },
-    async (request, reply) => {
-      const appId = request.app?.appId;
-      if (!appId) return reply.unauthorized("Missing app context");
-      const session = request.session;
-      if (!session) return reply.unauthorized("Missing session context");
-      const db = getDbPool();
-      const { id } = request.params as any;
-      const body = request.body as any;
-
-      const externalUserId: string = body.externalUserId;
-      if (externalUserId !== session.externalUserId) {
-        // Cross-tenant attempt: caller's session is for user X but
-        // they passed user Y in the body. Refuse rather than
-        // silently using one or the other.
-        return reply.forbidden("Body externalUserId does not match session principal");
-      }
-      // We already know the user from the session; no need to upsert.
-      const user = { id: session.userId };
-
-      const row = await withDbTransaction(db, (client) => getSigningRequestForApp(client, { id, appId }));
-      if (!row) return reply.notFound("Unknown signingRequestId");
-      if (row.user_id !== user.id) return reply.forbidden("Signing request does not belong to user");
-      if (row.status !== "pending") return reply.conflict(`Signing request status is ${row.status}`);
-      if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return reply.gone("Signing request expired");
-
-      // Get the Turnkey resource ID from the signing request
-      const turnkeyResourceId = (row as any).turnkey_resource_id;
-      if (!turnkeyResourceId) {
-        return reply.badRequest("Signing request was not created with a Turnkey signer");
-      }
-
-      const resource = await withDbTransaction(db, (client) =>
-        getTurnkeyResourceByIdForApp(client, { id: turnkeyResourceId, appId })
-      );
-      if (!resource) return reply.notFound("Turnkey resource not found");
-      if (resource.user_id !== user.id) return reply.forbidden("Turnkey resource does not belong to user");
-      if (!resource.default_address) return reply.badRequest("Turnkey resource has no default address");
-
-      // Check if this is a passkey wallet (sub-organization) - server can't sign for these
-      const rootOrgId = server.config.TURNKEY_ORGANIZATION_ID;
-      if (resource.organization_id !== rootOrgId) {
-        return reply.code(400).send({
-          statusCode: 400,
-          error: "PasskeyWalletNotSupported",
-          message: "This wallet is a passkey wallet in a sub-organization. Server-side signing is not supported - the user's passkey must sign on the client side. Use an external wallet or a regular Turnkey wallet for server-side signing."
-        });
-      }
-
-      const payloadToSign: any = row.payload_to_sign ?? {};
-      const payloadHex = String(payloadToSign?.payloadHex ?? "");
-      if (!payloadHex || payloadHex.length !== 64) {
-        return reply.badRequest("Signing request missing taproot sighash payloadHex");
-      }
-
-      // Sign using Turnkey
-      let signature64Hex: string;
-      let turnkeyActivityId: string | null = null;
-      try {
-        const turnkey = getTurnkeyClient();
-        const signed = await turnkey.signRawPayload({
-          signWith: resource.default_address,
-          payload: payloadHex,
-          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-          hashFunction: "HASH_FUNCTION_NO_OP",
-          organizationId: resource.organization_id // Use sub-org ID for passkey wallets
-        });
-        signature64Hex = `${signed.r}${signed.s}`;
-        turnkeyActivityId = signed.activityId ?? null;
-        request.log.info(
-          { activityId: signed.activityId, resourceId: turnkeyResourceId, signingRequestId: row.id, organizationId: resource.organization_id },
-          "turnkey.sign_signing_request.completed"
-        );
-      } catch (e: any) {
-        request.log.error(
-          { err: e, resourceId: turnkeyResourceId, signingRequestId: row.id, organizationId: resource.organization_id, defaultAddress: resource.default_address },
-          "turnkey.sign_signing_request.failed"
-        );
-        return reply.internalServerError(`Turnkey signing failed: ${e?.message ?? "Unknown error"}`);
-      }
-
-      // Now forward to the submit endpoint by injecting the request
-      const submitResponse = await server.inject({
-        method: "POST",
-        url: `/v1/signing-requests/${id}/submit`,
-        headers: {
-          "x-api-key": request.headers["x-api-key"] as string,
-          "content-type": "application/json"
-        },
-        payload: {
-          externalUserId,
-          signature64Hex,
-          turnkeyActivityId
-        }
-      });
-
-      // Forward the response
-      reply.code(submitResponse.statusCode);
-      return submitResponse.json();
     }
   );
 };

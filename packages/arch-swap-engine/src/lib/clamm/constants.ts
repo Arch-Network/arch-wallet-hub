@@ -23,9 +23,10 @@ export const POSITION_ACCOUNT_SIZE = 216;
 
 export const TICK_SIZE = 113;
 
-export const SYSTEM_PROGRAM_ID = new Uint8Array(32);
-
-export { TOKEN_PROGRAM_ID } from "@/lib/arch/program-ids";
+export {
+  SYSTEM_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+} from "@/lib/arch/program-ids";
 
 export const RENT_SYSVAR_ID = new Uint8Array([
   6, 167, 213, 23, 25, 44, 86, 142, 224, 138, 132, 95, 115, 210, 151, 136,

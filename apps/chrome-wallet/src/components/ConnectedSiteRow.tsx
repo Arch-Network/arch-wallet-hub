@@ -111,6 +111,11 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
   );
   const [capError, setCapError] = useState<string | null>(null);
   const [capSaved, setCapSaved] = useState(false);
+  const [btcCapDraft, setBtcCapDraft] = useState(() =>
+    site.permissions?.btcSpendingLimitSatsPerDay?.toString() ?? "",
+  );
+  const [btcCapError, setBtcCapError] = useState<string | null>(null);
+  const [btcCapSaved, setBtcCapSaved] = useState(false);
 
   const handleTogglePermission = async (
     key: keyof SitePermissions,
@@ -134,6 +139,20 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
     });
     setCapSaved(true);
     setTimeout(() => setCapSaved(false), 1500);
+  };
+
+  const handleSaveBtcCap = async () => {
+    const trimmed = btcCapDraft.trim();
+    if (trimmed && (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(Number(trimmed)))) {
+      setBtcCapError("Enter a whole satoshi amount, or leave blank for no cap.");
+      return;
+    }
+    setBtcCapError(null);
+    await walletStore.setSitePermissions(origin, {
+      btcSpendingLimitSatsPerDay: trimmed ? Number(trimmed) : undefined,
+    });
+    setBtcCapSaved(true);
+    setTimeout(() => setBtcCapSaved(false), 1500);
   };
 
   return (
@@ -160,11 +179,20 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
               fontWeight: 500,
               color: "var(--accent)",
               textDecoration: "none",
+              overflowWrap: "anywhere",
             }}
           >
             {site.name || origin} {"\u2197"}
           </a>
-          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{origin}</div>
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--text-muted)",
+              overflowWrap: "anywhere",
+            }}
+          >
+            {origin}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
           <button
@@ -190,7 +218,7 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
           style={{
             marginTop: 10,
             padding: 10,
-            background: "var(--bg-elevated, rgba(0,0,0,0.18))",
+            background: "var(--surface-card)",
             borderRadius: 8,
             border: "1px solid var(--border-primary)",
           }}
@@ -283,10 +311,59 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
                 style={{
                   marginTop: 4,
                   fontSize: 11,
-                  color: "var(--text-danger, #ff5252)",
+                  color: "var(--color-negative-text)",
                 }}
               >
                 {capError}
+              </div>
+            )}
+          </div>
+          <div
+            style={{
+              marginTop: 12,
+              paddingTop: 10,
+              borderTop: "1px solid var(--border-primary)",
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 500 }}>
+              Daily Bitcoin spend cap
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 6 }}>
+              Applied only when a PSBT has an exact, standard, single-wallet outflow.
+              Ambiguous PSBTs still require confirmation, but are not capped.
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input
+                type="text"
+                inputMode="numeric"
+                className="input"
+                value={btcCapDraft}
+                onChange={(e) => {
+                  setBtcCapDraft(e.target.value);
+                  setBtcCapError(null);
+                  setBtcCapSaved(false);
+                }}
+                placeholder="No cap"
+                style={{ flex: 1, fontSize: 12 }}
+              />
+              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>sats</span>
+              <button
+                type="button"
+                className={`btn btn-sm ${btcCapSaved ? "btn-primary" : "btn-secondary"}`}
+                onClick={handleSaveBtcCap}
+              >
+                {btcCapSaved ? "Saved" : "Save"}
+              </button>
+            </div>
+            {btcCapError && (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 11,
+                  color: "var(--color-negative-text)",
+                }}
+              >
+                {btcCapError}
               </div>
             )}
           </div>

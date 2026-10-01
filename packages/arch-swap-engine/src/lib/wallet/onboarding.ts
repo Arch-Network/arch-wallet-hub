@@ -1,4 +1,4 @@
-import { PubkeyUtil } from "@saturnbtcio/arch-sdk";
+import { PubkeyUtil } from "@arch-network/arch-sdk";
 
 import {
   pollFeePayerEligibility,
@@ -6,6 +6,7 @@ import {
 } from "@/lib/arch/account-eligibility";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
+  SYSTEM_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
 } from "@/lib/arch/program-ids";
 import { signRuntimeTransactionWithSigner } from "@/lib/arch/signing";
@@ -31,12 +32,11 @@ import {
 import {
   getToken,
   getTokenSymbols,
+  resolveNetworkId,
   type NetworkConfig,
 } from "@/lib/network/config";
 
 import { walletLogger } from "./diagnostics";
-
-const SYSTEM_PROGRAM_ID = new Uint8Array(32);
 
 const CONFIRMATION_POLL_INTERVAL_MS = 2_000;
 const CONFIRMATION_MAX_ATTEMPTS = 15;
@@ -249,7 +249,10 @@ async function createAssociatedTokenAccountsIfNeeded(
       { pubkey: SYSTEM_PROGRAM_ID, is_signer: false, is_writable: false },
       { pubkey: TOKEN_PROGRAM_ID, is_signer: false, is_writable: false },
     ],
-    data: new Uint8Array([]),
+    data:
+      resolveNetworkId(config) === "testnet"
+        ? new Uint8Array([1])
+        : new Uint8Array(0),
   }));
 
   // Defensive normalize — keeps the wire shape consistent with the

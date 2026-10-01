@@ -32,6 +32,19 @@ const EnvSchema = z.object({
     .default("false")
     .transform((v) => v === "true"),
 
+  // Master switch for the global + per-route rate limiter (see
+  // plugins/rateLimit.ts). Defaults to true so existing behavior is
+  // preserved.
+  //   true  -> enforce: over-limit requests get a 429.
+  //   log   -> every limit is counted exactly as when enforcing, but a
+  //            request that would get a 429 is logged and allowed through.
+  //   false -> the limiter is not registered at all.
+  // Fully reversible with no code change.
+  RATE_LIMIT_ENABLED: z
+    .enum(["true", "log", "false"])
+    .default("true")
+    .transform((v) => (v === "true" ? "enforce" : v === "log" ? "log" : "off")),
+
   // Phase 2b of the session-auth rollout (docs/security/session-auth-rollout.md).
   // Comma-separated list of route keys (see plugins/sessionAuth.ts) on which
   // to ENFORCE a per-user session token + bind the body/query externalUserId
@@ -49,7 +62,7 @@ const EnvSchema = z.object({
   SESSION_ENFORCED_ROUTES: z
     .string()
     .default(
-      "turnkey.sign-message,arch.transfer,arch.instructions.build,signing-requests.create,signing-requests.submit,btc.build,btc.estimate-fee"
+      "signing-requests.create,signing-requests.submit,btc.build,btc.estimate-fee"
     ),
 
   // Postgres

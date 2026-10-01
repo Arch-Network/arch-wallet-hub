@@ -36,10 +36,11 @@ import {
 
 import { useWallet } from "../../hooks/useWallet";
 import { useArchOnboarding } from "../../hooks/useArchOnboarding";
-import { isExternalAccount, isWatchAccount } from "../../state/types";
+import { isWatchAccount } from "../../state/types";
 import { getIndexer } from "../../utils/indexer";
 import { formatSwapAmount } from "../../utils/format";
 import { applyDisplayOverridesByMintHex, lookupKnownToken } from "../../utils/known-tokens";
+import { usdPerUnitForSymbol } from "../../utils/token-usd";
 import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
@@ -69,12 +70,6 @@ type TokenBalances = Partial<Record<TokenSymbol, number>>;
 type Direction = "sell" | "buy";
 
 type PickerState = { direction: Direction } | null;
-
-function priceForSymbol(symbol: TokenSymbol, btcPrice: number): number {
-  if (symbol === "BTC") return btcPrice;
-  if (symbol === "USDC") return 1;
-  return 0;
-}
 
 function pickTokens(
   symbols: TokenSymbol[],
@@ -320,7 +315,15 @@ export default function Swap() {
     return () => {
       cancelled = true;
     };
-  }, [activeAccount, state.network, availableSymbols, config, balanceRefreshKey]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    state.network,
+    availableSymbols,
+    config,
+    balanceRefreshKey,
+  ]);
 
   // ── quote ─────────────────────────────────────────────────────────
   const sellAmount = useMemo(() => {
@@ -361,8 +364,8 @@ export default function Swap() {
 
   const showUsdSell = state.network === "mainnet" && btcUsdPrice > 0;
   const showUsdBuy = showUsdSell;
-  const sellUsdValue = sellAmount * priceForSymbol(pair.sell, btcUsdPrice);
-  const buyUsdValue = buyAmount * priceForSymbol(pair.buy, btcUsdPrice);
+  const sellUsdValue = sellAmount * (usdPerUnitForSymbol(pair.sell, btcUsdPrice) ?? 0);
+  const buyUsdValue = buyAmount * (usdPerUnitForSymbol(pair.buy, btcUsdPrice) ?? 0);
 
   // ── validation ────────────────────────────────────────────────────
   const sellBalance = balances[pair.sell] ?? 0;
@@ -370,7 +373,6 @@ export default function Swap() {
   const validation: SwapValidation = useMemo(() => {
     if (!activeAccount) return { kind: "no-account" };
     if (isWatchAccount(activeAccount)) return { kind: "watch-only" };
-    if (isExternalAccount(activeAccount)) return { kind: "external-unsupported" };
     // Block swap submission until the on-chain account + ATAs exist.
     // The OnboardingPanel above gives the user the path to fix this; the
     // submit button label points them at it so the page is self-documenting.
@@ -519,7 +521,7 @@ export default function Swap() {
 
     try {
       await ensureSwapSigningSession(activeAccount);
-      const signer = swapTransactionSignerForAccount(activeAccount);
+      const signer = swapTransactionSignerForAccount(activeAccount, state.network);
       const txHash = await signAndSendTransaction(quote.runtimeTx, signer, {
         label: SWAP_LABEL,
         // PropAMM/CLAMM transactions arrive with the program's
@@ -571,7 +573,7 @@ export default function Swap() {
 
   const explorerBase =
     state.network === "mainnet"
-      ? "https://explorer.arch.network/mainnet/tx/"
+      ? "https://explorer.arch.network/tx/"
       : "https://explorer.arch.network/testnet/tx/";
 
   if (!sellToken || !buyToken) {
@@ -632,6 +634,7 @@ export default function Swap() {
           phase={onboarding.phase}
           error={onboarding.error}
           isInitializing={onboarding.isInitializing}
+          network={state.network}
           onInitialize={handleInitialize}
         />
 

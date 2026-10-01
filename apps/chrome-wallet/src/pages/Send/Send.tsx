@@ -42,12 +42,32 @@ import {
   loadSendForm,
   saveSendForm,
 } from "../../state/send-form-session";
-import { isExternalAccount, isWatchAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
+import { buildSessionSigner } from "../../utils/hub-session";
+import { hubIntentFee, verifyHubSigningRequest } from "../../utils/hub-signing-request-verify";
+import { feeChargedTo } from "../../utils/arch-fee";
+import { parseU64DecimalString } from "../../utils/u64-amount";
+import { buildSendHubAction } from "../../utils/send-hub-action";
+import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
+import {
+  EmailSessionNeededError,
+  ensureSigningSessionForAccount,
+} from "../../session/ensure-signing-session";
+import SessionBootstrapper from "../../session/SessionBootstrapper";
+import {
+  btcInputToUsd,
+  rawTokenAmountToInput,
+  usdInputToBtc,
+} from "../../utils/send-amounts";
+import { isArchName, isAnsEnabledForNetwork, resolveName, type NameResolution } from "../../utils/name-service";
 
 type AssetType = "btc" | "arch" | "apl";
+type RecipientResolution =
+  | { status: "idle" | "resolving" | "invalid"; result: null }
+  | { status: "resolved"; result: NameResolution };
 
 interface TokenHolding {
   mint: string;
@@ -148,6 +168,11 @@ export default function Send({ networkStatus }: SendProps) {
   const [asset, setAsset] = useState<AssetType | null>(null);
   const [selectedToken, setSelectedToken] = useState<TokenHolding | null>(null);
   const [recipient, setRecipient] = useState("");
+  const [recipientResolution, setRecipientResolution] = useState<RecipientResolution>({
+    status: "idle",
+    result: null,
+  });
+  const [reviewRecipient, setReviewRecipient] = useState<string | null>(null);
   const [showQrScanner, setShowQrScanner] = useState(false);
   const [amount, setAmount] = useState("");
   const presetMint = searchParams.get("mint");
@@ -160,6 +185,9 @@ export default function Send({ networkStatus }: SendProps) {
   const [signStatus, setSignStatus] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [txResult, setTxResult] = useState<{ txid: string; rawTxid: string } | null>(null);
+  const [otpAccount, setOtpAccount] = useState<WalletAccount | null>(null);
+  const [btcAmountMode, setBtcAmountMode] = useState<"btc" | "usd">("btc");
+  const [btcUsdAmount, setBtcUsdAmount] = useState("");
 
   const [btcConfirmed, setBtcConfirmed] = useState<number>(0);
   const [btcPending, setBtcPending] = useState<number>(0);
@@ -175,6 +203,32 @@ export default function Send({ networkStatus }: SendProps) {
   const [preparing, setPreparing] = useState(false);
   const [feeTiers, setFeeTiers] = useState<FeeTier[]>(() => buildFeeTiers(null));
   const [feeTierId, setFeeTierId] = useState<FeeTierId>(DEFAULT_FEE_TIER_ID);
+
+  useEffect(() => {
+    setReviewRecipient(null);
+    if (asset === "btc" || !recipient.trim()) {
+      setRecipientResolution({ status: "idle", result: null });
+      return;
+    }
+
+    let cancelled = false;
+    setRecipientResolution({ status: "resolving", result: null });
+    const timeout = setTimeout(() => {
+      void resolveName(recipient, { network: state.network }).then((result) => {
+        if (cancelled) return;
+        setRecipientResolution(
+          result
+            ? { status: "resolved", result }
+            : { status: "invalid", result: null },
+        );
+      });
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [asset, recipient, state.network]);
 
   useEffect(() => {
     if (!activeAccount) return;
@@ -261,7 +315,13 @@ export default function Send({ networkStatus }: SendProps) {
     };
     loadBalances();
     return () => clearTimeout(timeout);
-  }, [activeAccount, state.network]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.btcAddress,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    state.network,
+  ]);
 
   // ── Form-state persistence (chrome.storage.session) ───────────
   //
@@ -299,7 +359,7 @@ export default function Send({ networkStatus }: SendProps) {
         setStep(2);
       }
     })();
-  }, [activeAccount, presetAsset, state.network]);
+  }, [activeAccount?.id, presetAsset, state.network]);
 
   // Phase 2 of the restore: tokensHeld loads async; once it does,
   // resolve the persisted APL mint to its TokenHolding so the form
@@ -336,7 +396,7 @@ export default function Send({ networkStatus }: SendProps) {
       accountId: activeAccount.id,
       network: state.network,
     });
-  }, [step, asset, selectedToken, recipient, amount, activeAccount, state.network]);
+  }, [step, asset, selectedToken?.mint, recipient, amount, activeAccount?.id, state.network]);
 
   // Drop the parked form once a transaction broadcasts. We don't
   // want a successful send to leave its inputs lingering and
@@ -583,6 +643,10 @@ export default function Send({ networkStatus }: SendProps) {
     if (asset === "btc") {
       return handleBtcSign();
     }
+    if (!reviewRecipient) {
+      setError("Recipient is no longer resolved. Return and review the address again.");
+      return;
+    }
 
     setLoading(true);
     setError("");
@@ -598,24 +662,35 @@ export default function Send({ networkStatus }: SendProps) {
         if (aplRawAmount > availableRaw) throw new Error("Insufficient token balance");
       }
 
+      // Money/signing routes require a per-user Wallet Hub session.
+      // Direct sends previously relied on the unlock-time best-effort
+      // mint, so this path could reach Review successfully and then
+      // fail with a missing-session 401. Prepare the signing session
+      // and await the Hub token immediately before the enforced calls.
+      await ensureSigningSessionForAccount(activeAccount);
+      const client = await getClient();
+      const externalUserId = await getExternalUserId();
+      client.setSessionSigner(
+        buildSessionSigner(activeAccount, externalUserId, state.network),
+      );
+      await mintHubSessionWithRecovery(activeAccount, state.network, {
+        onRecovery: () => setSignStatus("Refreshing signing session…"),
+      });
+      setSignStatus("Preparing signing request…");
+
       const submitViaHub = async (): Promise<string> => {
-        const client = await getClient();
-        const externalUserId = await getExternalUserId();
-        const action =
+        const { action, intent } = buildSendHubAction(
           asset === "apl" && selectedToken
             ? {
-                type: "arch.token_transfer" as const,
+                asset: "apl",
                 mintAddress: selectedToken.mint,
-                toAddress: recipient,
+                toAddress: reviewRecipient,
                 amount: aplRawAmount!.toString(),
                 sourceTokenAccount: selectedToken.tokenAccount,
                 decimals: selectedToken.decimals,
               }
-            : {
-                type: "arch.transfer" as const,
-                toAddress: recipient,
-                lamports: archLamports,
-              };
+            : { asset: "arch", toAddress: reviewRecipient, lamports: archLamports },
+        );
 
         const sr = await client.createSigningRequest({
           externalUserId,
@@ -628,9 +703,15 @@ export default function Send({ networkStatus }: SendProps) {
             : { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
           action,
         });
+        const verified = verifyHubSigningRequest({
+          intent,
+          account: activeAccount,
+          payloadToSign: sr.payloadToSign,
+          display: sr.display,
+        });
 
         if (isExternalAccount(activeAccount)) {
-          const psbtBase64 = (sr.payloadToSign as any)?.psbtBase64;
+          const psbtBase64 = verified.psbtBase64;
           if (!psbtBase64) throw new Error("No PSBT available for external wallet signing");
           return await signWithExternalWallet(sr.signingRequestId, psbtBase64);
         }
@@ -639,9 +720,7 @@ export default function Send({ networkStatus }: SendProps) {
         // The session-stamped signer takes care of whichever bootstrap
         // (WebAuthn or OTP) opened the IndexedDB session; the Hub
         // never sees the signing key.
-        const payloadHex = (sr.payloadToSign as any)?.payloadHex;
-        if (!payloadHex) throw new Error("No payload available for signing");
-        return await signWithPasskey(sr.signingRequestId, payloadHex);
+        return await signWithPasskey(sr.signingRequestId, verified.payloadHex);
       };
 
       let txid: string;
@@ -681,10 +760,14 @@ export default function Send({ networkStatus }: SendProps) {
       setTxResult({ txid: displayTxid, rawTxid: txid });
       if (asset === "apl" || asset === "arch") {
         void addRecentRecipient({
-          address: recipient.trim(),
+          address: reviewRecipient,
           asset,
           network: state.network,
           mint: asset === "apl" ? selectedToken?.mint : undefined,
+          label:
+            recipientResolution.result?.source === "arch-name"
+              ? recipientResolution.result.name
+              : undefined,
         });
       }
 
@@ -704,6 +787,11 @@ export default function Send({ networkStatus }: SendProps) {
 
       setStep(4);
     } catch (err: any) {
+      if (err instanceof EmailSessionNeededError) {
+        setError("");
+        setOtpAccount(err.account);
+        return;
+      }
       setError(formatWalletHubError(err, "Transaction failed"));
       void notifyTxFailed({
         title: asset === "apl" ? "Token transfer failed" : "ARCH transfer failed",
@@ -713,17 +801,26 @@ export default function Send({ networkStatus }: SendProps) {
       setLoading(false);
       setSignStatus(null);
     }
-  }, [activeAccount, asset, selectedToken, recipient, amount, signWithPasskey, signWithExternalWallet, handleBtcSign, addRecentRecipient, state.network]);
+  }, [activeAccount, asset, selectedToken, reviewRecipient, amount, signWithPasskey, signWithExternalWallet, handleBtcSign, addRecentRecipient, state.network, recipientResolution.result]);
+
+  const handleOtpReady = useCallback(() => {
+    setOtpAccount(null);
+    void handleSubmit();
+  }, [handleSubmit]);
 
   const resetFlow = useCallback(() => {
     setStep(1);
     setAsset(null);
     setSelectedToken(null);
     setRecipient("");
+    setReviewRecipient(null);
+    setRecipientResolution({ status: "idle", result: null });
     setAmount("");
     setError("");
     setTxResult(null);
     setBtcPrepare(null);
+    setBtcAmountMode("btc");
+    setBtcUsdAmount("");
     // The form has been intentionally reset -- drop any parked
     // checkpoint so reopening the popup lands on the asset-picker
     // instead of restoring stale fields.
@@ -733,10 +830,22 @@ export default function Send({ networkStatus }: SendProps) {
   const isTestnet = state.network === "testnet4";
   const archExplorerBase = isTestnet
     ? "https://explorer.arch.network/testnet/tx/"
-    : "https://explorer.arch.network/mainnet/tx/";
+    : "https://explorer.arch.network/tx/";
   const btcExplorerBase = isTestnet
     ? "https://mempool.space/testnet4/tx/"
     : "https://mempool.space/tx/";
+
+  if (otpAccount) {
+    return (
+      <div className="send-form-shell">
+        <SessionBootstrapper
+          account={otpAccount}
+          onReady={handleOtpReady}
+          onCancel={() => setOtpAccount(null)}
+        />
+      </div>
+    );
+  }
 
   // Watch-only accounts cannot sign or broadcast. Refuse at the
   // page level so the user never gets a partially-filled form they
@@ -867,7 +976,18 @@ export default function Send({ networkStatus }: SendProps) {
       setError("");
       if (asset === "btc") {
         handlePrepareBtc();
-      } else if (asset === "apl" && selectedToken) {
+        return;
+      }
+      if (recipientResolution.status !== "resolved") {
+        setError(
+          isArchName(recipient) && !isAnsEnabledForNetwork(state.network)
+            ? "Arch Name Service is not available on mainnet yet."
+            : "Enter a valid Arch address or a resolvable .arch name.",
+        );
+        return;
+      }
+      setReviewRecipient(recipientResolution.result.address);
+      if (asset === "apl" && selectedToken) {
         try {
           const rawAmount = parseTokenDisplayAmountToRaw(amount, selectedToken.decimals);
           const availableRaw = parseRawTokenAmount(selectedToken.rawAmount);
@@ -908,17 +1028,65 @@ export default function Send({ networkStatus }: SendProps) {
           ? `${selectedToken.uiAmount} ${selectedToken.symbol || ""}`.trim()
           : "—";
     const showMax = (asset === "btc" && btcLoaded && btcSpendableSats > 0)
-      || (asset === "arch" && archBalance && Number(archBalance) > 0);
+      || (asset === "arch" && archBalance && Number(archBalance) > 0)
+      || (
+        asset === "apl"
+        && selectedToken !== null
+        && parseRawTokenAmount(selectedToken.rawAmount) > 0n
+      );
     const handleMax = () => {
       if (asset === "btc") {
-        setAmount((btcSpendableSats / 1e8).toFixed(8));
+        const maxBtc = (btcSpendableSats / 1e8).toFixed(8);
+        setAmount(maxBtc);
+        if (btcAmountMode === "usd") {
+          setBtcUsdAmount(btcInputToUsd(maxBtc, btcUsd));
+        }
       } else if (asset === "arch" && archBalance) {
-        setAmount((Number(archBalance) / 1e9).toFixed(4));
+        // The signer set (and so the fee) doesn't depend on the recipient.
+        const archAddress = activeAccount?.archAddress;
+        const fee = feeChargedTo(
+          hubIntentFee({ type: "arch.transfer", toAddress: archAddress ?? "", lamports: "0" }, archAddress),
+          archAddress,
+        );
+        const balance = parseU64DecimalString(archBalance);
+        if (fee !== null && balance !== null) {
+          setAmount(rawTokenAmountToInput(String(balance > fee ? balance - fee : 0n), 9));
+        }
+      } else if (asset === "apl" && selectedToken) {
+        setAmount(
+          rawTokenAmountToInput(selectedToken.rawAmount, selectedToken.decimals),
+        );
       }
     };
     const btcUsdLine = asset === "btc" && Number(amount) > 0
       ? btcUsdSubtitle(Math.round(Number(amount) * 1e8), btcUsd)
       : null;
+    const amountInputValue =
+      asset === "btc" && btcAmountMode === "usd" ? btcUsdAmount : amount;
+    const handleAmountChange = (value: string) => {
+      if (asset === "btc" && btcAmountMode === "usd") {
+        setBtcUsdAmount(value);
+        setAmount(usdInputToBtc(value, btcUsd));
+        return;
+      }
+      setAmount(value);
+    };
+    const toggleBtcAmountMode = () => {
+      if (btcAmountMode === "btc") {
+        setBtcUsdAmount(btcInputToUsd(amount, btcUsd));
+        setBtcAmountMode("usd");
+      } else {
+        setBtcAmountMode("btc");
+      }
+    };
+    const btcAmountHint =
+      asset !== "btc" || Number(amount) <= 0
+        ? null
+        : btcAmountMode === "usd"
+          ? `≈ ${amount} BTC`
+          : btcUsdLine
+            ? `≈ ${btcUsdLine}`
+            : null;
 
     // Recent recipients for the current asset / network / mint context.
     // The store keeps them MRU-sorted; we cap to 6 here to keep the chip
@@ -1001,6 +1169,22 @@ export default function Send({ networkStatus }: SendProps) {
               This address looks like {detectBtcNetwork(recipient.trim()) === "mainnet" ? "Mainnet" : "Testnet"} but you are on {state.network === "mainnet" ? "Mainnet" : "Testnet"}. Sending will fail or burn funds.
             </div>
           )}
+          {asset !== "btc" && recipientResolution.status === "resolving" && (
+            <div className="form-field-hint">Resolving recipient…</div>
+          )}
+          {asset !== "btc" && recipientResolution.status === "resolved" && (
+            <div className="form-field-hint mono">
+              {recipientResolution.result.source === "arch-name" ? "Resolved: " : "Address: "}
+              {recipientResolution.result.address}
+            </div>
+          )}
+          {asset !== "btc" && recipientResolution.status === "invalid" && (
+            <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+              {isArchName(recipient) && !isAnsEnabledForNetwork(state.network)
+                ? "Arch Name Service is not available on mainnet yet."
+                : "Unresolved name or invalid Arch address."}
+            </div>
+          )}
           {recentMatches.length > 0 && (
             <div className="recent-recipients" role="list" aria-label="Recent recipients">
               {recentMatches.map((r) => {
@@ -1052,24 +1236,53 @@ export default function Send({ networkStatus }: SendProps) {
               Available <strong>{availableValue}</strong>
             </span>
           </div>
-          <div className="form-field-input">
+          <div className="form-field-input form-field-input--amount">
             <input
               type="number"
-              step={asset === "btc" ? "0.00000001" : asset === "arch" ? "0.0001" : tokenInputStep(selectedToken?.decimals ?? 0)}
+              step={
+                asset === "btc" && btcAmountMode === "usd"
+                  ? "0.01"
+                  : asset === "btc"
+                    ? "0.00000001"
+                    : asset === "arch"
+                      ? "0.0001"
+                      : tokenInputStep(selectedToken?.decimals ?? 0)
+              }
               placeholder="0.00"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
+              value={amountInputValue}
+              onChange={(e) => handleAmountChange(e.target.value)}
               inputMode="decimal"
             />
-            <span className="form-field-suffix">{meta.unit}</span>
+            <span className="form-field-suffix">
+              {asset === "btc" && btcAmountMode === "usd" ? "USD" : meta.unit}
+            </span>
+            {asset === "btc" && btcUsd !== null && (
+              <button
+                type="button"
+                className="form-field-action"
+                onClick={toggleBtcAmountMode}
+                aria-label={
+                  btcAmountMode === "btc"
+                    ? "Enter amount in US dollars"
+                    : "Enter amount in bitcoin"
+                }
+                title={
+                  btcAmountMode === "btc"
+                    ? "Enter amount in US dollars"
+                    : "Enter amount in bitcoin"
+                }
+              >
+                {btcAmountMode === "btc" ? "$ USD" : "₿ BTC"}
+              </button>
+            )}
             {showMax && (
               <button type="button" className="form-field-action" onClick={handleMax}>
                 MAX
               </button>
             )}
           </div>
-          {btcUsdLine && (
-            <div className="form-field-hint">{"\u2248"} {btcUsdLine}</div>
+          {btcAmountHint && (
+            <div className="form-field-hint">{btcAmountHint}</div>
           )}
         </div>
 
@@ -1084,7 +1297,12 @@ export default function Send({ networkStatus }: SendProps) {
 
         <button
           className="btn btn-primary btn-full"
-          disabled={!recipient || !amount || preparing}
+          disabled={
+            !recipient ||
+            !amount ||
+            preparing ||
+            (asset !== "btc" && recipientResolution.status !== "resolved")
+          }
           onClick={handleReview}
         >
           {preparing ? "Preparing…" : "Review"}
@@ -1149,7 +1367,12 @@ export default function Send({ networkStatus }: SendProps) {
           <div className="review-row">
             <div className="review-row-label">To</div>
             <div className="review-row-value">
-              <span className="review-row-mono">{recipient}</span>
+              <span className="review-row-mono">
+                {asset === "btc" ? recipient : reviewRecipient}
+              </span>
+              {asset !== "btc" && recipientResolution.result?.source === "arch-name" && (
+                <span className="review-row-sub">{recipientResolution.result.name}</span>
+              )}
             </div>
           </div>
           <div className="review-row">

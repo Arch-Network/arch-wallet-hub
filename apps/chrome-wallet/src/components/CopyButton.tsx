@@ -11,7 +11,7 @@ function CopyIcon() {
 
 function CheckIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5cb85c" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-positive)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="20 6 9 17 4 12" />
     </svg>
   );
@@ -37,13 +37,19 @@ export default function CopyButton({ text, className = "", label }: CopyButtonPr
   }, [text]);
 
   return (
-    <button
-      className={`copy-btn${className ? ` ${className}` : ""}`}
-      onClick={handleCopy}
-      title={copied ? "Copied" : "Copy"}
-    >
-      {copied ? <CheckIcon /> : <CopyIcon />}
-      {label && <span className="copy-btn-label">{copied ? "Copied" : label}</span>}
-    </button>
+    <>
+      <button
+        className={`copy-btn${className ? ` ${className}` : ""}`}
+        onClick={handleCopy}
+        title={copied ? "Copied" : "Copy"}
+        aria-label={label ? undefined : "Copy"}
+      >
+        {copied ? <CheckIcon /> : <CopyIcon />}
+        {label && <span className="copy-btn-label">{copied ? "Copied" : label}</span>}
+      </button>
+      <span className="sr-only" role="status" aria-live="polite">
+        {copied ? "Copied" : ""}
+      </span>
+    </>
   );
 }

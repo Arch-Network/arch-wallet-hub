@@ -47,15 +47,15 @@ export default function ArchLogoAnimated({ size = 56 }: { size?: number }) {
       aria-hidden="true"
     >
       <defs>
-        {/* Polished-metal base: cream highlight at top, falls into a
-            warm gold mid-tone, settles back to cream at the bottom.
-            Vertical gradient so the brightest band sits where light
-            would naturally catch the top of the chevrons. */}
+        {/* Brand-orange base: a warm top highlight falling into the
+            primary orange and back, so the mark keeps a little depth
+            against the new flat system. Vertical gradient so the
+            brightest band catches the top of the chevrons. */}
         <linearGradient id={metallicId} x1="0.5" y1="0" x2="0.5" y2="1">
-          <stop offset="0%" stopColor="#FFF6DC" />
-          <stop offset="38%" stopColor="#F3EFD7" />
-          <stop offset="62%" stopColor="#D8B077" />
-          <stop offset="100%" stopColor="#F0E6C5" />
+          <stop offset="0%" stopColor="#F8884A" />
+          <stop offset="38%" stopColor="#F2640F" />
+          <stop offset="62%" stopColor="#E8590C" />
+          <stop offset="100%" stopColor="#F2640F" />
         </linearGradient>
 
         {/* Bright specular streak painted into the flare rect. The

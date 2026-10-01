@@ -11,7 +11,7 @@
  *     const challenge = new TextDecoder().decode(hashBytes);
  *     const rawSig = await signer(challenge);
  *
- * In current `@saturnbtcio/arch-sdk`, `SanitizedMessageUtil.hash` already
+ * In current `@arch-network/arch-sdk`, `SanitizedMessageUtil.hash` already
  * returns the UTF-8 encoding of a lowercase 64-char hex string (see
  * `sanitized-message.ts` → `return new TextEncoder().encode(hex.encode(finalHash))`).
  * `TextDecoder().decode` on that is therefore lossless: `challenge` IS the

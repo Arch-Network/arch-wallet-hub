@@ -6,6 +6,7 @@ import {
   USE_DIRECT_INDEXER
 } from "./explorer-config";
 import { ArchHubIndexerClient } from "./hub-indexer";
+import { isHubRateLimitError } from "./hub-rate-limit";
 
 export type IndexerNetwork = "mainnet" | "testnet";
 
@@ -620,6 +621,7 @@ export function isIndexerNotFoundError(err: unknown): boolean {
  * leaked key) instead of silently rendering an empty list.
  */
 export function isIndexerRateLimitError(err: unknown): boolean {
+  if (isHubRateLimitError(err)) return true;
   const message = err instanceof Error ? err.message : String(err ?? "");
   return (
     message.includes("429") ||

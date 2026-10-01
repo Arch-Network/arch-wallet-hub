@@ -4,9 +4,16 @@ import {
   type AccountTransactionsResponse,
   type BtcAddressSummary,
   isIndexerAuthError,
-  isIndexerNotFoundError
+  isIndexerNotFoundError,
+  isIndexerRateLimitError
 } from "./indexer";
 
+/**
+ * A null `account` / `summary` / `recentTransactions` is only a genuinely
+ * empty result when the matching `…TimedOut` is false and `…Error` is null
+ * ("not found" counts as empty, not as an error). Otherwise the data is
+ * unknown and must not be rendered as zero.
+ */
 export interface WalletOverview {
   inputAddress: string;
   archAccountAddress: string;
@@ -14,18 +21,20 @@ export interface WalletOverview {
   arch: {
     account: AccountSummary | null;
     accountTimedOut: boolean;
+    accountError: unknown;
     recentTransactions: AccountTransactionsResponse | null;
     recentTransactionsTimedOut: boolean;
+    recentTransactionsError: unknown;
   };
   btc: {
     summary: BtcAddressSummary | null;
     summaryTimedOut: boolean;
+    summaryError: unknown;
   };
 }
 
 const FAST_TIMEOUT_MS = 5_000;
 const FULL_TTL_MS = 30_000;
-const PARTIAL_TTL_MS = 10_000;
 const NOT_FOUND_TTL_MS = 2 * 60_000;
 
 interface CacheEntry {
@@ -117,6 +126,7 @@ export async function fetchWalletOverview(
       // v2 returns the chip labels + decoded summaries we need to render
       // a richer activity feed on the dashboard. Falls back to v1 on error.
       client.getAccountTransactionsV2(params.archAccountAddress, 10).catch((err) => {
+        if (isIndexerRateLimitError(err)) throw err;
         console.warn("[walletOverview] v2 transactions failed, falling back to v1:", err?.message);
         return client.getAccountTransactions(params.archAccountAddress, 10);
       }),
@@ -128,6 +138,10 @@ export async function fetchWalletOverview(
   }
 
   const displayArchAddress = archAccountData?.address ?? params.archAccountAddress;
+  const failure = (error: unknown) => (error && !isIndexerNotFoundError(error) ? error : null);
+  const accountError = failure(archAccount.error);
+  const recentTransactionsError = archAccountNotFound ? null : failure(archTxs.error);
+  const summaryError = failure(btcSummary.error);
 
   const data: WalletOverview = {
     inputAddress: params.inputAddress,
@@ -136,19 +150,26 @@ export async function fetchWalletOverview(
     arch: {
       account: archAccountData,
       accountTimedOut: archAccount.timedOut,
+      accountError,
       recentTransactions: archTxs.timedOut ? null : archTxs.value,
-      recentTransactionsTimedOut: archTxs.timedOut
+      recentTransactionsTimedOut: archTxs.timedOut,
+      recentTransactionsError
     },
     btc: {
       summary: btcSummary.timedOut ? null : btcSummary.value,
-      summaryTimedOut: btcSummary.timedOut
+      summaryTimedOut: btcSummary.timedOut,
+      summaryError
     }
   };
 
+  // Only cache what the indexer actually answered: a cached failure would
+  // keep rendering as an empty wallet until the TTL ran out.
   const anyTimedOut = archAccount.timedOut || archTxs.timedOut || btcSummary.timedOut;
+  if (anyTimedOut || accountError || recentTransactionsError || summaryError) return data;
+
   overviewCache.set(key, {
     ts: Date.now(),
-    ttl: archAccountNotFound ? NOT_FOUND_TTL_MS : anyTimedOut ? PARTIAL_TTL_MS : FULL_TTL_MS,
+    ttl: archAccountNotFound ? NOT_FOUND_TTL_MS : FULL_TTL_MS,
     data
   });
   if (overviewCache.size > 200) {
