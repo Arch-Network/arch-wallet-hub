@@ -155,7 +155,10 @@ export default function History() {
           tokenAccounts.map((acct) =>
             indexer
               .getAccountTransactionsV2(acct, 50)
-              .catch(() => indexer.getAccountTransactions(acct, 50))
+              .catch((err) => {
+                if (isIndexerRateLimitError(err)) throw err;
+                return indexer.getAccountTransactions(acct, 50);
+              })
           )
         );
         for (const r of tokenTxResults) {
@@ -179,6 +182,7 @@ export default function History() {
         const archRes = await indexer
           .getAccountTransactionsV2(archAddr, 20, archPage)
           .catch((err) => {
+            if (isIndexerRateLimitError(err)) throw err;
             console.warn("[History] v2 transactions failed, falling back to v1:", err?.message);
             return indexer.getAccountTransactions(archAddr, 20, archPage);
           });
@@ -491,7 +495,16 @@ export default function History() {
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, archPage, archExplorer, btcExplorer, state.network]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    activeAccount?.btcAddress,
+    archPage,
+    archExplorer,
+    btcExplorer,
+    state.network,
+  ]);
 
   useEffect(() => {
     fetchTransactions();

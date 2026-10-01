@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { walletStore } from "../state/wallet-store";
 import { invalidateClientCache } from "../utils/sdk";
-import { keystore, type MigrationStatus } from "../crypto/keystore";
+import { keystore, SESSION_KEY_KEY, type MigrationStatus } from "../crypto/keystore";
 import type { AppState, WalletAccount, NetworkId, RecipientAsset, Contact } from "../state/types";
 import { DEFAULT_STATE } from "../state/types";
 import { OPEN_AS_KEY } from "../state/open-as-preference";
@@ -10,6 +10,20 @@ export interface WalletStateBundle {
   state: AppState;
   migration: MigrationStatus;
   loading: boolean;
+}
+
+// getState() decrypts a fresh copy on every call, and pages key fetch
+// effects on `state` / `activeAccount`, so unchanged content must keep
+// the previous object identity or every refresh refetches.
+function reuseUnchanged(prev: AppState, next: AppState): AppState {
+  if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+  return {
+    ...next,
+    accounts: next.accounts.map((account) => {
+      const old = prev.accounts.find((a) => a.id === account.id);
+      return old && JSON.stringify(old) === JSON.stringify(account) ? old : account;
+    }),
+  };
 }
 
 export function useWallet() {
@@ -22,7 +36,7 @@ export function useWallet() {
       walletStore.getState(),
       keystore.getMigrationStatus(),
     ]);
-    setState(s);
+    setState((prev) => reuseUnchanged(prev, s));
     setMigration(m);
     setLoading(false);
   }, []);
@@ -37,8 +51,11 @@ export function useWallet() {
     chrome.storage.local.onChanged.addListener(listener);
     let sessionListener: ((c: Record<string, chrome.storage.StorageChange>) => void) | null = null;
     try {
-      sessionListener = () => {
-        refresh();
+      // The keystore KEK is the only session-storage key wallet state
+      // reads (lock/unlock); send-form checkpoints, Hub tokens, Turnkey
+      // snapshots and pending requests also live there.
+      sessionListener = (changes) => {
+        if (SESSION_KEY_KEY in changes) refresh();
       };
       chrome.storage.session?.onChanged.addListener(sessionListener);
     } catch {

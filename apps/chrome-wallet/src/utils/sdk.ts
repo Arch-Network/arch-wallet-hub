@@ -6,6 +6,7 @@ import type { NetworkId } from "../state/types";
 import { DEFAULT_HUB_API_KEY, DEFAULT_HUB_BASE_URL } from "../state/types";
 import { invalidateIndexerCache } from "./indexer";
 import { readHubToken } from "./hub-session-store";
+import { hubCooldownRemainingMs, hubRateLimitedFetch, isHubRateLimitError } from "./hub-rate-limit";
 
 let cachedClient: WalletHubClient | null = null;
 let cachedBaseUrl: string | null = null;
@@ -52,6 +53,7 @@ export async function getClient(): Promise<WalletHubClient> {
     baseUrl,
     network,
     ...(apiKey ? { apiKey } : {}),
+    fetchImpl: hubRateLimitedFetch,
   });
   cachedBaseUrl = baseUrl;
   cachedApiKey = apiKey;
@@ -178,6 +180,13 @@ export async function resetHubConfigToDefaults(): Promise<void> {
 
 export function formatWalletHubError(err: unknown, fallback = "Wallet Hub request failed"): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
+
+  if (isHubRateLimitError(err)) {
+    const seconds = Math.ceil(hubCooldownRemainingMs() / 1000);
+    return seconds > 0
+      ? `Wallet Hub is busy. Try again in ${seconds}s.`
+      : "Wallet Hub is busy. Try again in a minute.";
+  }
 
   if (isWalletHubSessionError(err)) {
     return "Your Wallet Hub session expired or is missing. Re-unlock your wallet (for a linked external wallet, reconnect the source wallet) and try again.";

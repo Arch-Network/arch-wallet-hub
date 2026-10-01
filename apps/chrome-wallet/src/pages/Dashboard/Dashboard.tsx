@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { useWideMode } from "../../hooks/useWideMode";
+import { useRetryCountdown } from "../../hooks/useRetryCountdown";
 import {
   getIndexer,
   isIndexerAuthError,
   isIndexerNotFoundError,
+  isIndexerRateLimitError,
   type BtcAddressRuneBalance,
   type BtcInscriptionSummary,
   type IndexerClient
@@ -14,6 +16,7 @@ import {
 import { formatRuneAmount, labelForRune } from "../../utils/runes-format";
 import { InscriptionThumb } from "../../components/InscriptionThumb";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
+import { hubCooldownEndsAt } from "../../utils/hub-rate-limit";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd, formatUsd } from "../../utils/format";
@@ -45,6 +48,10 @@ interface TokenBalance {
 type RecentTx = ActivityRowTx;
 
 const DASHBOARD_FETCH_DEDUPE_MS = 30_000;
+/** Retry delay for a rate limit that started no Hub cooldown (an upstream throttle). */
+const RATE_LIMIT_RETRY_FALLBACK_MS = 30_000;
+/** Retry delay for a rate limit that left no Hub cooldown to wait out (e.g. an upstream throttle). */
+const RATE_LIMIT_RETRY_FALLBACK_MS = 30_000;
 
 function SkeletonBalance() {
   return (
@@ -197,6 +204,7 @@ export default function Dashboard() {
   const [tokensLoaded, setTokensLoaded] = useState(false);
   const [txsLoaded, setTxsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busyRetryAt, setBusyRetryAt] = useState<number | null>(null);
   const [airdropLoading, setAirdropLoading] = useState(false);
   const inFlightFetchKeyRef = useRef<string | null>(null);
   const lastFetchRef = useRef<{ key: string; at: number } | null>(null);
@@ -259,8 +267,19 @@ export default function Dashboard() {
       }
     }
 
+    if (lastFetchRef.current && lastFetchRef.current.key !== fetchKey) {
+      // Last known balances belong to the previous account or network.
+      setBtcBalance(null);
+      setBtcPending(0);
+      setBtcProtected(0);
+      setArchLamports(null);
+      setTokens(null);
+      setOverviewLoaded(false);
+      setTokensLoaded(false);
+    }
     inFlightFetchKeyRef.current = fetchKey;
     setError(null);
+    let rateLimited = false;
     try {
       const indexer = await getIndexer();
       const btcAddrForNetwork = reEncodeTaprootAddress(inputAddr, state.network);
@@ -278,9 +297,12 @@ export default function Dashboard() {
     // (the source-of-truth signal for AMM swaps). Same response is
     // re-used by the token display flow below to avoid a duplicate
     // network call.
+    let tokensFailed = false;
     const rawTokensPromise = indexer.getAccountTokens(archAddr || inputAddr).catch((e: any) => {
       if (!isIndexerAuthError(e) && !isIndexerNotFoundError(e)) {
         console.warn("[Dashboard] getAccountTokens failed:", e?.message);
+        tokensFailed = true;
+        if (isIndexerRateLimitError(e)) rateLimited = true;
       }
       return null;
     });
@@ -292,6 +314,17 @@ export default function Dashboard() {
       noCache: opts?.noCache
     }).then(async (overview) => {
       const btcSummary = overview?.btc?.summary;
+      // A failed or timed-out read is an unknown balance, not zero: keep
+      // whatever was last shown (null renders a skeleton).
+      const btcUnknown = !btcSummary && (overview.btc.summaryTimedOut || !!overview.btc.summaryError);
+      const archUnknown =
+        !overview.arch.account && (overview.arch.accountTimedOut || !!overview.arch.accountError);
+      if (
+        [overview.btc.summaryError, overview.arch.accountError, overview.arch.recentTransactionsError]
+          .some((err) => err && isIndexerRateLimitError(err))
+      ) {
+        rateLimited = true;
+      }
       let confirmedSats = 0;
       let pendingSats = 0;
       // `protected_value` is only present when the indexer has
@@ -323,10 +356,12 @@ export default function Dashboard() {
 
       const lamports = overview?.arch?.account?.lamports_balance ?? 0;
       const archAddr = activeAccount.archAddress ?? overview?.archAccountAddress ?? "";
-      setBtcBalance(confirmedSats);
-      setBtcPending(pendingSats);
-      setBtcProtected(protectedSats);
-      setArchLamports(lamports);
+      if (!btcUnknown) {
+        setBtcBalance(confirmedSats);
+        setBtcPending(pendingSats);
+        setBtcProtected(protectedSats);
+      }
+      if (!archUnknown) setArchLamports(lamports);
       setArchAddress(archAddr);
       setOverviewLoaded(true);
 

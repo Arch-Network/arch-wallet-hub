@@ -71,7 +71,7 @@ export default function TokenList() {
         setLoading(false);
       }
     })();
-  }, [activeAccount, state.network]);
+  }, [activeAccount?.id, activeAccount?.archAddress, activeAccount?.btcAddress, state.network]);
 
   const filtered = useMemo(() => {
     if (!searchQuery.trim()) return tokens;
