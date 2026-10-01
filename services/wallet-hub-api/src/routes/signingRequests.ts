@@ -8,7 +8,7 @@ import { auditEvent } from "../audit/audit.js";
 import { computeDisplayHash } from "../signingRequests/displayHash.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
 import { createArchRpcClient, submitArchTransaction, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
-import { buildSwapAction, rebuildSwapInstructions, buildAddLiquidityAction, rebuildAddLiquidityInstructions, MAX_FEE_RATE_SAT_VB } from "../arch/ammInstructions.js";
+import { buildSwapAction, rebuildSwapInstructions, buildAddLiquidityAction, rebuildAddLiquidityInstructions, MAX_FEE_RATE_SAT_VB, MIN_DEPOSIT_CONFIRMATIONS } from "../arch/ammInstructions.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
@@ -103,7 +103,7 @@ const CreateSigningRequestBody = Type.Object({
       baseVout: Type.Integer({ minimum: 0, maximum: U32_MAX }),
       quoteTxid: Type.String({ minLength: 64, maxLength: 64 }),
       quoteVout: Type.Integer({ minimum: 0, maximum: U32_MAX }),
-      minConfirmations: Type.Integer({ minimum: 0, maximum: U32_MAX })
+      minConfirmations: Type.Integer({ minimum: MIN_DEPOSIT_CONFIRMATIONS, maximum: U32_MAX })
     })
   ])
 });

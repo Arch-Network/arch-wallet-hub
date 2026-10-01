@@ -5,13 +5,14 @@
  * and verify the Hub's defense-in-depth clamps:
  *   - swap no longer carries caller-supplied reserve inputs or input amounts,
  *   - the fee rate is clamped to the protocol ceiling,
- *   - add_liquidity confirmations are floored to the protocol minimum.
+ *   - add_liquidity confirmations below the protocol minimum are rejected.
  */
 import { describe, it, expect } from "vitest";
 import type { Pubkey } from "@arch-network/arch-sdk";
 import bs58 from "bs58";
 import {
   buildSwapAction,
+  buildAddLiquidityAction,
   buildAmmSwapInstruction,
   buildAmmAddLiquidityInstruction,
   MAX_FEE_RATE_SAT_VB,
@@ -110,22 +111,43 @@ describe("buildAmmSwapInstruction", () => {
 });
 
 describe("buildAmmAddLiquidityInstruction", () => {
-  it("floors caller confirmations (including 0) to the protocol minimum", () => {
-    const ix = buildAmmAddLiquidityInstruction({
-      programId: pk(1),
-      pool: pk(2),
-      position: pk(3),
-      lp: pk(4),
-      systemProgram: pk(0),
-      baseTxid: new Uint8Array(32).fill(1),
-      baseVout: 0,
-      quoteTxid: new Uint8Array(32).fill(2),
-      quoteVout: 1,
-      minConfirmations: 0,
-    });
+  it.each([0, MIN_DEPOSIT_CONFIRMATIONS - 1])("rejects confirmations below the protocol minimum (%i)", (minConfirmations) => {
+    expect(() =>
+      buildAmmAddLiquidityInstruction({
+        programId: pk(1),
+        pool: pk(2),
+        position: pk(3),
+        lp: pk(4),
+        systemProgram: pk(0),
+        baseTxid: new Uint8Array(32).fill(1),
+        baseVout: 0,
+        quoteTxid: new Uint8Array(32).fill(2),
+        quoteVout: 1,
+        minConfirmations,
+      }),
+    ).toThrow(/at least 6/);
+  });
+
+  it.each([MIN_DEPOSIT_CONFIRMATIONS, 0xffffffff])("encodes the displayed confirmations unchanged (%i)", (minConfirmations) => {
+    const b58 = (n: number) => bs58.encode(new Uint8Array(32).fill(n));
+    const { instructions, display } = buildAddLiquidityAction(
+      {
+        type: "pool.add_liquidity",
+        programId: b58(1),
+        poolAddress: b58(2),
+        positionAddress: b58(3),
+        baseTxid: "01".repeat(32),
+        baseVout: 0,
+        quoteTxid: "02".repeat(32),
+        quoteVout: 1,
+        minConfirmations,
+      },
+      pk(4),
+    );
     // disc(8)+baseTxid(32)+baseVout(4)+quoteTxid(32)+quoteVout(4)+minConf(4)
     const minConfOffset = 8 + 32 + 4 + 32 + 4;
-    expect(u32le(ix.data, minConfOffset)).toBe(MIN_DEPOSIT_CONFIRMATIONS);
+    expect(u32le(instructions[0].data, minConfOffset) >>> 0).toBe(minConfirmations);
+    expect(display.minConfirmations).toBe(minConfirmations);
   });
 
   it("preserves a caller value above the minimum", () => {

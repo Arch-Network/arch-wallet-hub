@@ -157,10 +157,13 @@ export function buildAmmAddLiquidityInstruction(p: AddLiquidityInstructionParams
   if (p.baseTxid.length !== 32 || p.quoteTxid.length !== 32) {
     throw new Error("txids must be 32 bytes");
   }
-  // Floor confirmations to the protocol minimum (the program enforces this too).
-  const minConfirmations = Math.max(p.minConfirmations, MIN_DEPOSIT_CONFIRMATIONS);
+  // Rejected rather than raised, so the encoded value always equals the
+  // displayed one (the program enforces the minimum too).
+  if (p.minConfirmations < MIN_DEPOSIT_CONFIRMATIONS) {
+    throw new Error(`minConfirmations must be at least ${MIN_DEPOSIT_CONFIRMATIONS}`);
+  }
   const w = new BorshWriter().raw(discriminator("add_liquidity"));
-  w.raw(p.baseTxid).u32(p.baseVout).raw(p.quoteTxid).u32(p.quoteVout).u32(minConfirmations);
+  w.raw(p.baseTxid).u32(p.baseVout).raw(p.quoteTxid).u32(p.quoteVout).u32(p.minConfirmations);
   return {
     program_id: p.programId,
     accounts: [

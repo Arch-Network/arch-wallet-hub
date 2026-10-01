@@ -136,6 +136,7 @@ describe("POST /signing-requests amount validation", () => {
     ["swap at the boundaries", { ...swap, amountIn: U64_MAX, minOut: "0", nonce: U64_MAX, feeRateSatVb: "1000" }],
     ["swap with zero amounts", { ...swap, amountIn: "0", minOut: "0", nonce: "0", feeRateSatVb: "0" }],
     ["add_liquidity at u32 max", { ...addLiquidity, baseVout: 2 ** 32 - 1, quoteVout: 2 ** 32 - 1, minConfirmations: 2 ** 32 - 1 }],
+    ["add_liquidity at the confirmation minimum", { ...addLiquidity, minConfirmations: 6 }],
   ])("accepts %s", async (_name, action) => {
     getOrCreateUserByExternalId.mockClear();
     expect(await postAction(action)).toBe(500);
@@ -159,6 +160,10 @@ describe("POST /signing-requests amount validation", () => {
   it.each(BAD_U32)("400s swap.rune_native runeId.tx %j", async (tx) => {
     expect(await postAction({ ...swap, runeId: { ...swap.runeId, tx } })).toBe(400);
   });
+  it.each([0, 5])("400s pool.add_liquidity minConfirmations %i below the protocol minimum", async (minConfirmations) => {
+    expect(await postAction({ ...addLiquidity, minConfirmations })).toBe(400);
+  });
+
   describe.each(["baseVout", "quoteVout", "minConfirmations"])("pool.add_liquidity %s", (field) => {
     it.each(BAD_U32)("400s %j", async (value) => {
       expect(await postAction({ ...addLiquidity, [field]: value })).toBe(400);
