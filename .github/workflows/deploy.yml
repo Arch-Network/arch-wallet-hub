@@ -18,6 +18,13 @@ permissions:
   id-token: write
   contents: read
 
+# Each run pins a specific SHA, so overlapping runs must not finish out
+# of order and leave an older image in service. Queue; never cancel a
+# deploy mid-flight.
+concurrency:
+  group: deploy-ecs-fargate
+  cancel-in-progress: false
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
