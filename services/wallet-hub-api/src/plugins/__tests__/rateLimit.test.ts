@@ -44,19 +44,19 @@ describe("rate-limit keys", () => {
     expect(keyForRequest(req({}, "10.0.0.1"))).not.toBe(keyForRequest(req({}, "10.0.0.2")));
   });
 
-  it("keys by app + install id when a well-formed one is sent", () => {
+  it("keys by app + install id when a UUID is sent, normalized to lowercase", () => {
     const install = "4f1c2d3e-aaaa-4bbb-8ccc-0123456789ab";
     expect(installKeyForRequest(req({ "x-arch-install-id": install }))).toBe(`app:k1:install:${install}`);
-    // The extension's non-UUID fallback id is accepted too.
-    expect(installKeyForRequest(req({ "x-arch-install-id": "1727750000000-k3j4h5g6f7" }))).toBe(
-      "app:k1:install:1727750000000-k3j4h5g6f7",
+    expect(installKeyForRequest(req({ "x-arch-install-id": ` ${install.toUpperCase()} ` }))).toBe(
+      `app:k1:install:${install}`,
     );
   });
 
   it.each([
+    ["non-UUID fallback id", "1727750000000-k3j4h5g6f7"],
     ["too short", "abc123"],
-    ["too long", "a".repeat(65)],
-    ["bad charset", "has spaces in it ok"],
+    ["UUID plus suffix", "4f1c2d3e-aaaa-4bbb-8ccc-0123456789ab0"],
+    ["bad charset", "4f1c2d3e-aaaa-4bbb-8ccc-0123456789xz"],
     ["delimiter", "abcdefgh:ip:1.2.3.4"],
   ])("treats a malformed install id (%s) as absent", (_why, value) => {
     expect(installKeyForRequest(req({ "x-arch-install-id": value }))).toBe("app:k1:ip:10.0.0.1");
@@ -65,7 +65,7 @@ describe("rate-limit keys", () => {
   it("falls back to app + IP without an install id, and ignores the id without an app key", () => {
     expect(installKeyForRequest(req({}))).toBe("app:k1:ip:10.0.0.1");
     expect(
-      installKeyForRequest({ ip: "10.0.0.1", headers: { "x-arch-install-id": "abcdefgh12345678" } } as any),
+      installKeyForRequest({ ip: "10.0.0.1", headers: { "x-arch-install-id": "4f1c2d3e-aaaa-4bbb-8ccc-0123456789ab" } } as any),
     ).toBe("ip:10.0.0.1");
   });
 

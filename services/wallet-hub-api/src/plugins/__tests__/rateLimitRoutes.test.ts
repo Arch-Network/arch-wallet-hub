@@ -1,5 +1,6 @@
 import sensible from "@fastify/sensible";
 import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { TRUST_PROXY_HOPS } from "../../server.js";
 import { RATE_LIMITS, registerRateLimit } from "../rateLimit.js";
@@ -132,11 +133,11 @@ describe("route-group rate limits, registered like production", () => {
     const ceiling = RATE_LIMITS.indexer.ipCeiling!;
     const statuses: number[] = [];
     for (let i = 0; i < ceiling; i++) {
-      const install = `rotating-install-${String(i).padStart(6, "0")}`;
+      const install = randomUUID();
       statuses.push((await hit(app, "GET", "/v1/indexer/btc/tip", { install })).statusCode);
     }
     expect(statuses).not.toContain(429);
-    const over = await hit(app, "GET", "/v1/indexer/btc/tip", { install: "rotating-install-final" });
+    const over = await hit(app, "GET", "/v1/indexer/btc/tip", { install: randomUUID() });
     expect(over.statusCode).toBe(429);
     expect(over.headers["x-ratelimit-limit"]).toBe(String(ceiling));
     expect(over.headers["retry-after"]).toBeDefined();
@@ -229,7 +230,7 @@ describe("log-only mode", () => {
     expect(loop.warnings).toHaveLength(ceiling + 10 - installMax);
 
     const rotating = Array.from({ length: ceiling + 2 }, (_, i) => () =>
-      [null, "GET", "/v1/indexer/btc/tip", { install: `rotating-install-${i}` }] as unknown as Parameters<typeof hit>,
+      [null, "GET", "/v1/indexer/btc/tip", { install: randomUUID() }] as unknown as Parameters<typeof hit>,
     );
     const rot = await replay("log", rotating);
     expect(rot.seen.map((r) => r.status)).not.toContain(429);

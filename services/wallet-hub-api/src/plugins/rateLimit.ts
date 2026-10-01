@@ -36,12 +36,15 @@ export function keyForRequest(req: FastifyRequest): string {
   return `ip:${req.ip}`;
 }
 
-const INSTALL_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+// The extension persists a `crypto.randomUUID()` per install.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** The client's `x-arch-install-id`, or null when absent or malformed. */
+/** The client's `x-arch-install-id` (lowercased), or null when absent or not a UUID. */
 export function installIdFor(req: FastifyRequest): string | null {
   const raw = req.headers["x-arch-install-id"];
-  return typeof raw === "string" && INSTALL_ID_RE.test(raw) ? raw : null;
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim().toLowerCase();
+  return UUID_RE.test(trimmed) ? trimmed : null;
 }
 
 /** App key + install id when the request carries both, else `keyForRequest`. */
