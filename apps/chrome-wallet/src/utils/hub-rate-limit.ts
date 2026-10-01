@@ -1,16 +1,11 @@
 /**
  * Client-side handling of Wallet Hub 429s.
  *
- * One cooldown per route group, the first path segment after `/v1`
- * (`indexer`, `auth`, `recovery`, `signing-requests`, ...), not one for
- * the whole Hub: the Hub limits indexer reads per install, session mint
- * and recovery per IP, and everything else per app key + IP, each in its
- * own bucket. A throttled indexer must not block a session mint or a
- * signing request, and an IP-wide auth limit must not freeze balances.
- * Groups that share the Hub's default bucket each pay at most one 429
- * before failing fast too.
+ * One cooldown per Hub rate-limit bucket, not one for the whole Hub: a
+ * looping indexer read must not block a BTC broadcast, a session mint or
+ * a signing request, and an IP-wide auth limit must not freeze balances.
  *
- * While a group's cooldown runs, its calls fail fast locally with
+ * While a bucket's cooldown runs, its calls fail fast locally with
  * `HubRateLimitError` instead of reaching the network. Consecutive 429s
  * back off exponentially with jitter, never sooner than the Hub asked
  * unless that exceeds the one-minute cap. State is per extension context
@@ -41,10 +36,42 @@ interface Cooldown {
   consecutive429s: number;
 }
 
+/** Keyed by `hubCooldownKey`. */
 const cooldowns = new Map<string, Cooldown>();
 
-export function hubRouteGroup(url: string): string {
-  return /\/v1\/([^/?#]+)/.exec(url)?.[1] ?? "";
+export type HubRouteGroup = "global" | "auth" | "recovery" | "indexer" | "send";
+
+// Mirrors the route groups behind `RATE_LIMITS` in the Hub's
+// services/wallet-hub-api/src/plugins/rateLimit.ts; keep the two in sync.
+// First match wins.
+const ROUTE_GROUPS: ReadonlyArray<[HubRouteGroup, string, RegExp]> = [
+  ["send", "GET", /^\/v1\/indexer\/btc\/address\/[^/]+\/utxo$/],
+  ["send", "GET", /^\/v1\/indexer\/btc\/fee-estimates$/],
+  ["send", "POST", /^\/v1\/indexer\/btc\/tx$/],
+  ["send", "POST", /^\/v1\/signing-requests$/],
+  ["send", "POST", /^\/v1\/signing-requests\/[^/]+\/submit$/],
+  ["indexer", "*", /^\/v1\/indexer\//],
+  ["auth", "*", /^\/v1\/auth\/session(\/|$)/],
+  ["recovery", "*", /^\/v1\/recovery\//],
+];
+
+function hubPath(url: string): string {
+  const pathname = new URL(url, "http://hub.invalid").pathname;
+  const v1 = pathname.indexOf("/v1/");
+  return v1 >= 0 ? pathname.slice(v1) : pathname;
+}
+
+export function hubRouteGroup(method: string, url: string): HubRouteGroup {
+  const path = hubPath(url);
+  const m = method.toUpperCase();
+  const hit = ROUTE_GROUPS.find(([, gm, re]) => (gm === "*" || gm === m) && re.test(path));
+  return hit?.[0] ?? "global";
+}
+
+/** The Hub keys auth and recovery per route + IP, the other groups per group. */
+function hubCooldownKey(method: string, url: string): string {
+  const group = hubRouteGroup(method, url);
+  return group === "auth" || group === "recovery" ? `${group}:${hubPath(url)}` : group;
 }
 
 /**
@@ -73,8 +100,17 @@ export function cooldownMs(
   return Math.min(MAX_COOLDOWN_MS, wait);
 }
 
-export function hubCooldownRemainingMs(group: string, now = Date.now()): number {
-  return Math.max(0, (cooldowns.get(group)?.until ?? 0) - now);
+function remainingMs(key: string, now: number): number {
+  return Math.max(0, (cooldowns.get(key)?.until ?? 0) - now);
+}
+
+/** Longest cooldown left on any of `group`'s buckets. */
+export function hubCooldownRemainingMs(group: HubRouteGroup, now = Date.now()): number {
+  let longest = 0;
+  for (const key of cooldowns.keys()) {
+    if (key === group || key.startsWith(`${group}:`)) longest = Math.max(longest, remainingMs(key, now));
+  }
+  return longest;
 }
 
 /**
@@ -82,19 +118,19 @@ export function hubCooldownRemainingMs(group: string, now = Date.now()): number 
  * were already in flight when the cooldown started neither extend it
  * nor count as another consecutive 429.
  */
-function noteRateLimited(group: string, headers: Headers): HubRateLimitError {
+function noteRateLimited(key: string, headers: Headers): HubRateLimitError {
   const now = Date.now();
-  const cooldown = cooldowns.get(group) ?? { until: 0, consecutive429s: 0 };
+  const cooldown = cooldowns.get(key) ?? { until: 0, consecutive429s: 0 };
   if (now >= cooldown.until) {
     cooldown.consecutive429s += 1;
     cooldown.until = now + cooldownMs(cooldown.consecutive429s, parseRetryAfterMs(headers));
-    cooldowns.set(group, cooldown);
+    cooldowns.set(key, cooldown);
   }
   return new HubRateLimitError(cooldown.until - now);
 }
 
 /**
- * `fetchImpl` gated by the request's route-group cooldown: throws
+ * `fetchImpl` gated by the request's bucket cooldown: throws
  * `HubRateLimitError` without a network call while it runs, and on a 429.
  */
 export async function fetchWithHubRateLimit(
@@ -103,12 +139,13 @@ export async function fetchWithHubRateLimit(
   init?: RequestInit,
 ): Promise<Response> {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  const group = hubRouteGroup(url);
-  const remaining = hubCooldownRemainingMs(group);
+  const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+  const key = hubCooldownKey(method, url);
+  const remaining = remainingMs(key, Date.now());
   if (remaining > 0) throw new HubRateLimitError(remaining);
   const res = await fetchImpl(input, init);
-  if (res.status === 429) throw noteRateLimited(group, res.headers);
-  if (res.ok && hubCooldownRemainingMs(group) === 0) cooldowns.delete(group);
+  if (res.status === 429) throw noteRateLimited(key, res.headers);
+  if (res.ok && remainingMs(key, Date.now()) === 0) cooldowns.delete(key);
   return res;
 }
 

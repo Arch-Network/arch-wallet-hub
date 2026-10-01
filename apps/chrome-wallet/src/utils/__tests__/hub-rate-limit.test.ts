@@ -199,11 +199,51 @@ describe("Hub 429 through the indexer client", () => {
   });
 });
 
-describe("route groups", () => {
-  it("keys cooldowns on the first path segment after /v1", () => {
-    expect(rl.hubRouteGroup(`${HUB}/v1/indexer/arch/accounts/a/tokens`)).toBe("indexer");
-    expect(rl.hubRouteGroup(`${HUB}/v1/auth/session/challenge`)).toBe("auth");
-    expect(rl.hubRouteGroup(`${HUB}/v1/signing-requests?x=1`)).toBe("signing-requests");
+describe("route groups (mirror the Hub's RATE_LIMITS)", () => {
+  it("puts BTC broadcast, UTXOs, fee estimates and signing-request create/submit in send", () => {
+    expect(rl.hubRouteGroup("POST", `${HUB}/v1/indexer/btc/tx`)).toBe("send");
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/indexer/btc/address/tb1pabc/utxo`)).toBe("send");
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/indexer/btc/fee-estimates`)).toBe("send");
+    expect(rl.hubRouteGroup("POST", `${HUB}/v1/signing-requests`)).toBe("send");
+    expect(rl.hubRouteGroup("POST", `${HUB}/v1/signing-requests/abc-123/submit`)).toBe("send");
+  });
+
+  it("puts the other indexer routes in indexer, and session routes in auth and recovery", () => {
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/indexer/arch/accounts/a/tokens`)).toBe("indexer");
+    expect(rl.hubRouteGroup("POST", `${HUB}/v1/indexer/arch/rpc`)).toBe("indexer");
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/indexer/btc/address/tb1pabc/txs`)).toBe("indexer");
+    expect(rl.hubRouteGroup("POST", `${HUB}/v1/auth/session/challenge`)).toBe("auth");
+    expect(rl.hubRouteGroup("POST", `${HUB}/v1/recovery/email/start`)).toBe("recovery");
+  });
+
+  it("puts unknown routes, and other signing-request routes, in global", () => {
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/turnkey/config`)).toBe("global");
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/signing-requests/abc-123`)).toBe("global");
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/portfolio?x=1`)).toBe("global");
+    expect(rl.hubRouteGroup("GET", `${HUB}/v2/whatever`)).toBe("global");
+  });
+
+  it("an indexer-read cooldown does not block send routes", async () => {
+    const { f } = scriptedFetch([tooMany]);
+    await rejection(indexerClient(f).getAccountTokens("addr"));
+    expect(rl.hubCooldownRemainingMs("indexer")).toBeGreaterThan(0);
+
+    const send = scriptedFetch([() => ok({}), () => ok({})]);
+    await rl.fetchWithHubRateLimit(send.f, `${HUB}/v1/indexer/btc/tx`, { method: "POST" });
+    await rl.fetchWithHubRateLimit(send.f, `${HUB}/v1/signing-requests`, { method: "POST" });
+    expect(send.calls).toHaveLength(2);
+  });
+
+  it("a send cooldown does not block indexer reads", async () => {
+    const send = scriptedFetch([tooMany]);
+    await rejection(rl.fetchWithHubRateLimit(send.f, `${HUB}/v1/indexer/btc/fee-estimates`));
+    expect(rl.hubCooldownRemainingMs("send")).toBeGreaterThan(0);
+    await rejection(rl.fetchWithHubRateLimit(send.f, `${HUB}/v1/signing-requests/x/submit`, { method: "POST" }));
+    expect(send.calls).toHaveLength(1);
+
+    const { f, calls } = scriptedFetch([() => ok({ tokens: [] })]);
+    await expect(indexerClient(f).getAccountTokens("addr")).resolves.toEqual({ tokens: [] });
+    expect(calls).toHaveLength(1);
   });
 
   it("an indexer cooldown does not block session mint", async () => {
