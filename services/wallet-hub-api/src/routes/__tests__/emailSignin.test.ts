@@ -366,4 +366,23 @@ describe("findEmailWalletByRecoveryEmail SQL", () => {
     expect(sql).toMatch(/u\.app_id = r\.app_id/);
     expect(sql).toMatch(/r\.organization_id <> \$3/);
   });
+
+  it("only matches a wallet that is its owner's sole credential (anti-squatting)", async () => {
+    const { findEmailWalletByRecoveryEmail } = await vi.importActual<
+      typeof import("../../db/queries.js")
+    >("../../db/queries.js");
+    const query = vi.fn(async () => ({ rows: [] }));
+
+    await findEmailWalletByRecoveryEmail({ query } as never, {
+      appId: "app-a",
+      email: EMAIL,
+      rootOrganizationId: ROOT_ORG,
+    });
+
+    const sql = (query.mock.calls[0] as unknown as [string])[0].replace(/\s+/g, " ");
+    expect(sql).toContain(
+      "NOT EXISTS ( SELECT 1 FROM turnkey_resources o WHERE o.user_id = r.user_id AND o.id <> r.id )",
+    );
+    expect(sql).toContain("NOT EXISTS (SELECT 1 FROM linked_wallets l WHERE l.user_id = r.user_id)");
+  });
 });
