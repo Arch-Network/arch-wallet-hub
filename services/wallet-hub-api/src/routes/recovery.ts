@@ -70,6 +70,7 @@ import { timingSafeEqual } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
+import { RECOVERY_ROUTE_RATE_LIMIT } from "../plugins/rateLimit.js";
 import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
 import {
   computeCandidateToken,
@@ -126,7 +127,7 @@ const VERIFY_MAX_ATTEMPTS = 5;
 const MAX_OTP_SENDS = 5;
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const RECOVERY_API_KEY_TTL_SECONDS = "900"; // 15 minutes
+const RECOVERY_API_KEY_TTL_SECONDS = "86400"; // 24 hours
 
 function buildOtpEmailCustomization(
   config: Record<string, unknown>
@@ -235,6 +236,10 @@ const VerifyResponse = Type.Object({
 });
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
+  server.addHook("onRoute", (routeOptions) => {
+    routeOptions.config = { ...(routeOptions.config ?? {}), ...RECOVERY_ROUTE_RATE_LIMIT };
+  });
+
   server.post(
     "/recovery/email/init",
     {
@@ -774,7 +779,13 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
 
       try {
         const turnkey = getTurnkeyClient();
-        const { otpId, activityId } = await turnkey.initOtpAuth({
+        const {
+          otpId,
+          activityId,
+          submitElapsedMs,
+          pollElapsedMs,
+          pollAttempts
+        } = await turnkey.initOtpAuth({
           organizationId: candidate.organizationId,
           userId: candidate.rootUserId,
           contact: email,
@@ -843,6 +854,9 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
               ? { previousOtpIdHash: fingerprintOtpId(previousOtpId) }
               : {}),
             turnkeyElapsedMs,
+            turnkeySubmitElapsedMs: submitElapsedMs,
+            turnkeyPollElapsedMs: pollElapsedMs,
+            turnkeyPollAttempts: pollAttempts,
             turnkeyActivityId: activityId
           },
           "recovery.otp_start.succeeded"

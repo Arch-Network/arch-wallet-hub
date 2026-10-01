@@ -32,6 +32,7 @@ import type { PoolClient } from "pg";
 import crypto from "node:crypto";
 import { schnorr } from "@noble/curves/secp256k1";
 import { Verifier } from "@saturnbtcio/bip322-js";
+import { bip341TweakedOutputKeyHex } from "../arch/address.js";
 
 export const SESSION_TOKEN_PREFIX = "whs_v1_";
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
@@ -65,6 +66,8 @@ export type AuthChallengeRow = {
    */
   wallet_provider: string | null;
   address: string | null;
+  /** Turnkey challenges only (migration 018): the one resource whose key must sign. */
+  resource_id: string | null;
 };
 
 export type SessionPrincipal = {
@@ -128,11 +131,11 @@ export async function createChallenge(
   });
   const res = await client.query<{ id: string }>(
     `
-      INSERT INTO auth_challenges (app_id, user_id, payload_hex, message, expires_at)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO auth_challenges (app_id, user_id, payload_hex, message, expires_at, resource_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id
     `,
-    [params.appId, params.userId, payloadHex, message, expiresAt.toISOString()],
+    [params.appId, params.userId, payloadHex, message, expiresAt.toISOString(), params.resourceId],
   );
   return {
     challengeId: res.rows[0]!.id,
@@ -264,11 +267,51 @@ async function markChallengeConsumed(
 }
 
 /**
+ * Normalize a Turnkey/wallet pubkey hex to BIP-340 x-only (32 bytes /
+ * 64 hex). Turnkey's `walletAccounts.publicKey` is typically the
+ * compressed 33-byte form (66 hex); Arch identity and schnorr.verify
+ * both want the untweaked x coordinate only. Mirrors
+ * `archAccountFromInternalKey` so session mint and signing-request
+ * verification agree on the same key bytes.
+ *
+ * Returns null when the input cannot be interpreted as a secp256k1
+ * pubkey of a known length.
+ */
+export function toXOnlyPubkeyHex(publicKeyHex: string): string | null {
+  const clean = publicKeyHex.replace(/^0x/i, "").toLowerCase();
+  if (!/^[0-9a-f]+$/.test(clean)) return null;
+  if (clean.length === 64) return clean;
+  // Compressed: 02/03 || X
+  if (clean.length === 66 && (clean.startsWith("02") || clean.startsWith("03"))) {
+    return clean.slice(2);
+  }
+  // Uncompressed: 04 || X || Y
+  if (clean.length === 130 && clean.startsWith("04")) {
+    return clean.slice(2, 66);
+  }
+  return null;
+}
+
+/**
  * Verify the signature over the challenge's payload using the
  * resource's stored default Taproot xOnly pubkey. Returns true on
  * success. Implementation deliberately uses the same
  * `schnorr.verify` primitive the signing-requests route already
  * uses for Taproot sighash verification.
+ *
+ * Accepts compressed (66 hex) or uncompressed (130 hex) pubkeys as
+ * well as already-x-only (64 hex) — Turnkey persists the compressed
+ * form on `turnkey_resources.default_public_key_hex`.
+ *
+ * Two keys are accepted for the same resource: the stored internal
+ * key and its BIP-341 tweaked output key. Turnkey signs raw payloads
+ * for a P2TR wallet account with the *tweaked* key (that's what makes
+ * its signatures valid taproot key-path spends, and it's the key
+ * /signing-requests/:id/submit verifies against), while
+ * `default_public_key_hex` is the untweaked internal key. Verifying
+ * against only one of the two rejected every real wallet-minted
+ * signature. Both keys are deterministically derived from the same
+ * private key, so accepting either proves the same control.
  */
 export function verifyChallengeSignature(params: {
   payloadHex: string;
@@ -278,21 +321,34 @@ export function verifyChallengeSignature(params: {
   // Defensive shape checks: the noble primitive will throw on bad
   // inputs, so we convert those into a boolean here so callers can
   // reply with a consistent 400 rather than a 500.
-  const cleanSig = params.signatureHex.replace(/^0x/, "");
-  const cleanPayload = params.payloadHex.replace(/^0x/, "");
-  const cleanPub = params.defaultPublicKeyHex.replace(/^0x/, "");
+  const cleanSig = params.signatureHex.replace(/^0x/i, "");
+  const cleanPayload = params.payloadHex.replace(/^0x/i, "");
+  const xOnlyPub = toXOnlyPubkeyHex(params.defaultPublicKeyHex);
   if (cleanSig.length !== 128) return false;
   if (cleanPayload.length !== 64) return false;
-  if (cleanPub.length !== 64) return false;
+  if (!xOnlyPub) return false;
+
+  const verifyWith = (pubkeyHex: string): boolean => {
+    try {
+      return schnorr.verify(
+        Buffer.from(cleanSig, "hex"),
+        Buffer.from(cleanPayload, "hex"),
+        Buffer.from(pubkeyHex, "hex"),
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  if (verifyWith(xOnlyPub)) return true;
+
+  let tweakedHex: string;
   try {
-    return schnorr.verify(
-      Buffer.from(cleanSig, "hex"),
-      Buffer.from(cleanPayload, "hex"),
-      Buffer.from(cleanPub, "hex"),
-    );
+    tweakedHex = bip341TweakedOutputKeyHex(xOnlyPub);
   } catch {
     return false;
   }
+  return verifyWith(tweakedHex);
 }
 
 /**

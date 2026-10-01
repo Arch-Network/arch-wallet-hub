@@ -3,11 +3,14 @@
 // module init when used from the service worker context.
 import "../src/utils/buffer-polyfill";
 import { walletStore } from "../src/state/wallet-store";
+import { OPEN_AS_KEY, readOpenAsPreference } from "../src/state/open-as-preference";
 import { pendingRequestsStore } from "../src/messaging/pending-requests";
 import { keystore } from "../src/crypto/keystore";
 import type { PendingRequest } from "../src/messaging/types";
 import type { OpenAsMode } from "../src/state/types";
 import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
+import { reEncodeTaprootAddress } from "../src/utils/addressNetwork";
+import { parseU64DecimalString } from "../src/utils/u64-amount";
 import {
   applyDiagnosticsRuntime,
   installGlobalErrorHandlers,
@@ -91,13 +94,19 @@ async function applyOpenAsPreference(mode: OpenAsMode): Promise<void> {
   }
 }
 
-async function syncOpenAsFromStorage(): Promise<void> {
-  try {
-    const state = await walletStore.getState();
-    await applyOpenAsPreference(state.openAs ?? "popup");
-  } catch {
-    await applyOpenAsPreference("popup");
-  }
+let openAsSync = Promise.resolve();
+function syncOpenAsFromStorage(): Promise<void> {
+  // Serialize Chrome's two action-setting calls so rapid toggles cannot
+  // leave a popup configured alongside side-panel click behavior.
+  openAsSync = openAsSync.then(async () => {
+    const saved = await readOpenAsPreference();
+    const mode = saved ?? (await walletStore.getState()).openAs;
+    await applyOpenAsPreference(mode);
+  }).catch((err) => {
+    // A transient read failure should not reset the user's toolbar mode.
+    console.warn("[arch-wallet] Could not restore open mode", err);
+  });
+  return openAsSync;
 }
 
 /**
@@ -124,7 +133,7 @@ async function syncDiagnosticsFromStorage(): Promise<void> {
 async function rescheduleAutoLock(): Promise<void> {
   try {
     const state = await walletStore.getState();
-    const minutes = state.autoLockMinutes ?? 15;
+    const minutes = state.autoLockMinutes ?? 60;
     chrome.alarms.create(AUTO_LOCK_ALARM, { delayInMinutes: minutes });
     if (chrome.idle?.setDetectionInterval) {
       // Convert minutes -> seconds, clamp to chrome's 15s..240min window.
@@ -343,7 +352,7 @@ export default defineBackground(() => {
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.arch_wallet_keystore) {
+    if (changes.arch_wallet_keystore || changes[OPEN_AS_KEY]) {
       // Re-sync open-as in case the user toggled it from the UI.
       syncOpenAsFromStorage();
     }
@@ -539,9 +548,10 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: "Not authorized" });
           return false;
         }
-        rejectAndCleanup(message.requestId, "User rejected the request").then(() =>
-          sendResponse({ ok: true }),
-        );
+        rejectAndCleanup(
+          message.requestId,
+          typeof message.reason === "string" ? message.reason : "User rejected the request",
+        ).then(() => sendResponse({ ok: true }));
         return true;
       }
 
@@ -593,14 +603,14 @@ export default defineBackground(() => {
     const dappName = sender.tab?.title;
     const dappIconUrl = sender.tab?.favIconUrl;
 
-    const unlocked = await keystore.isUnlocked();
-
     switch (msg?.type) {
       case "PING": {
         return { id: msg.id, success: true, data: { ok: true } };
       }
       case "GET_ACCOUNT": {
-        if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
+        if (!(await keystore.isUnlocked())) {
+          return { id: msg.id, success: false, error: "Wallet locked" };
+        }
         // SECURITY: previously we returned address/pubkey to ANY site
         // the extension was injected into (which is `<all_urls>`).
         // Connecting requires user consent; identity reads must too,
@@ -612,13 +622,20 @@ export default defineBackground(() => {
         }
         const account = await walletStore.getAccountForOrigin(origin);
         if (!account) return { id: msg.id, success: false, error: "No active account" };
+        // Return the address encoded for the active network. The stored
+        // `btcAddress` is a single fixed encoding; without this a mainnet
+        // wallet hands the dapp a testnet-form address (and vice versa),
+        // which network-guarded dapps reject even though the wallet is on
+        // the right network. Mirrors what every display screen already does.
+        const { network } = await walletStore.getState();
         return {
           id: msg.id,
           success: true,
           data: {
-            address: account.btcAddress,
+            address: reEncodeTaprootAddress(account.btcAddress, network),
             publicKey: account.publicKeyHex,
             archAddress: account.archAddress,
+            kind: account.kind,
           },
         };
       }
@@ -626,22 +643,12 @@ export default defineBackground(() => {
       case "CONNECT": {
         const sealed = await keystore.isSealed();
         if (!sealed) return { id: msg.id, success: false, error: "Wallet not initialized" };
-        if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
 
-        const connected = await walletStore.isSiteConnected(origin);
-        if (connected) {
-          const account = await walletStore.getAccountForOrigin(origin);
-          return {
-            id: msg.id,
-            success: true,
-            data: {
-              address: account?.btcAddress,
-              publicKey: account?.publicKeyHex,
-              archAddress: account?.archAddress,
-            },
-          };
-        }
-
+        // MetaMask-style: keep CONNECT pending and open Approve even when
+        // locked. App.tsx gates locked → Unlock first, then the same
+        // `/approve/:id` route renders Connect after unlock — no "Try again"
+        // round-trip through the dapp. Always open Approve (including
+        // returning sites) so the in-approve network switcher is reachable.
         const reqId = genId();
         const req: PendingRequest = {
           id: reqId,
@@ -668,7 +675,8 @@ export default defineBackground(() => {
       case "SIGN_MESSAGE":
       case "SIGN_ARCH_MESSAGE_HASH":
       case "SIGN_PSBT": {
-        if (!unlocked) return { id: msg.id, success: false, error: "Wallet locked" };
+        // Locked is OK — open Approve; Unlock renders first, then the
+        // sign/send card (same pending-request flow as CONNECT).
         const connected = await walletStore.isSiteConnected(origin);
         if (!connected) return { id: msg.id, success: false, error: "Site not connected" };
 
@@ -687,6 +695,20 @@ export default defineBackground(() => {
                 "SIGN_ARCH_MESSAGE_HASH requires payload.messageHashHex = 64 lowercase hex chars (32-byte hash)",
             };
           }
+        }
+        if (msg.type === "SEND_TRANSFER" && parseU64DecimalString((msg as any).payload?.lamports) === null) {
+          return {
+            id: msg.id,
+            success: false,
+            error: "SEND_TRANSFER requires payload.lamports = decimal digit string between 0 and 2^64-1",
+          };
+        }
+        if (msg.type === "SEND_TOKEN_TRANSFER" && parseU64DecimalString((msg as any).payload?.amount) === null) {
+          return {
+            id: msg.id,
+            success: false,
+            error: "SEND_TOKEN_TRANSFER requires payload.amount = decimal digit string between 0 and 2^64-1",
+          };
         }
 
         // Per-origin permissions.

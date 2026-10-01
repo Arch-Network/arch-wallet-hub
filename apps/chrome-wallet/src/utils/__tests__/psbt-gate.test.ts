@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   evaluatePsbtGate,
+  deterministicPsbtSpendSats,
   PSBT_UNKNOWN_FEE_BLOCK_OUTFLOW_SATS,
   PSBT_HIGH_OUTFLOW_REQUIRE_CONFIRM_SATS,
   type PsbtSummary,
@@ -71,5 +72,69 @@ describe("evaluatePsbtGate", () => {
     );
     expect(gate.block).not.toBeNull();
     expect(gate.requireConfirm).toBeNull();
+  });
+});
+
+describe("deterministicPsbtSpendSats", () => {
+  function spendSummary(overrides: Partial<PsbtSummary> = {}): PsbtSummary {
+    return {
+      ...makeSummary({ netUserSats: -42_000, exactFee: true }),
+      inputs: [
+        {
+          txid: "a".repeat(64),
+          vout: 0,
+          valueSats: 50_000,
+          address: "bc1powned",
+          isMine: true,
+        },
+      ],
+      outputs: [
+        {
+          address: "bc1pexternal",
+          valueSats: 42_000,
+          isMine: false,
+          isChange: false,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("returns an exact outflow for a fully-owned, standard PSBT", () => {
+    expect(deterministicPsbtSpendSats(spendSummary())).toBe(42_000);
+  });
+
+  it("charges a deterministic fee-only PSBT as zero or greater spend", () => {
+    expect(
+      deterministicPsbtSpendSats(spendSummary({ netUserSats: 5_000 })),
+    ).toBe(0);
+  });
+
+  it("defers the cap when a prevout amount is missing", () => {
+    expect(
+      deterministicPsbtSpendSats(spendSummary({ exactFee: false })),
+    ).toBeNull();
+  });
+
+  it("defers the cap for collaborative inputs", () => {
+    const summary = spendSummary();
+    summary.inputs.push({
+      txid: "b".repeat(64),
+      vout: 1,
+      valueSats: 50_000,
+      address: "bc1pother",
+      isMine: false,
+    });
+    expect(deterministicPsbtSpendSats(summary)).toBeNull();
+  });
+
+  it("defers the cap for non-standard outputs", () => {
+    const summary = spendSummary();
+    summary.outputs[0]!.address = null;
+    expect(deterministicPsbtSpendSats(summary)).toBeNull();
+  });
+
+  it("defers the cap when there are no owned inputs", () => {
+    expect(deterministicPsbtSpendSats(spendSummary({ inputs: [] }))).toBeNull();
   });
 });

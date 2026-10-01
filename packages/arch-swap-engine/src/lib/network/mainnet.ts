@@ -14,19 +14,19 @@ import type {
 const MAINNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
   BTC: {
     symbol: "BTC",
-    name: "Bitcoin",
+    name: "Arch Bitcoin",
     icon: "/btc.png",
     decimals: 8,
-    mint: "66db8bdfee04bb957ca1e4fdf6a7ff9b55d4ec9f6521d783acdce93bec66755f",
+    mint: "225b03d6f9e05fd834cd18906b019fb46372544b0eeb9f6f8b615472467d46b0",
     mintAuthority: "36ba400747066a8fd2dfa87c152037347532b3405a0f6d7f2fa32bdf7d7845e0",
     pythHistorySymbol: "Crypto.BTC/USD",
   },
   USDT: {
     symbol: "USDT",
-    name: "Tether",
-    icon: "/usdt.png",
+    name: "Arch USD",
+    icon: "",
     decimals: 6,
-    mint: "7a52e0fbbc12e7cbf60cf608d394b5c005f61ff1d9c1df29321ea1e2b050e07e",
+    mint: "aec8ca1598d74bc27721536f1a88b5648740bc6a856546a0a47817ff7fe7437c",
     mintAuthority: "30cb47b0c98099ffd5f6d3011924cdff232169f6dcebf28d10ca57f473a4aec4",
     pythHistorySymbol: "Crypto.USDT/USD",
   },
@@ -37,9 +37,9 @@ export const MAINNET_CONFIG: NetworkConfig = {
   tokens: MAINNET_TOKENS,
   tradingPair: { base: "BTC", quote: "USDT" },
   clammProgramId:
-    "5c748cd0eb8a1a4aa5793f744f3ba00b814a7bdbb3ec568cc9cbb985480fbe98",
+    "96feb7352aa992398e76a99d8e1801057eac114ee8458d3668847287353bcfb7",
   clammPoolAddress:
-    "5f903ac05d8955be9ecedfa3c7b377b3040be0b25c1715f7ef6d049042c5a202",
+    "7caf3541b5d2d9bf06453480acbed988c1c9ebe9ff0edf6deb2f17e0e2e9cb32",
   lendingProgramId: "TODO_MAINNET_LENDING_PROGRAM_ID",
   oracleProgramId: "TODO_MAINNET_ORACLE_PROGRAM_ID",
   oracleSignerPubkey: "TODO_MAINNET_ORACLE_SIGNER",
@@ -60,12 +60,12 @@ export const MAINNET_CONFIG: NetworkConfig = {
   indexerApiBaseUrl: "https://explorer.arch.network/api/v1/mainnet",
   propAmmUpstreamUrl: "http://64.34.82.201:3001",
   propAmm: {
-    programId: "b15585263fa7ccdc99a912e3549be984b939e21ae42ba13cc644fb18b57e2928",
-    configPubkey: "c0c1c7809def76810b9ec7758e300276213477e9c8292aac753c4bcf7a83e5bd",
-    quoteSignerPubkey: "460b20ee0851ecd95f464c58a730c9d936262fd46ef926de82a319de2ca7bdd1",
+    programId: "d31a682e813c641f40fefe1c906c052063fcff6d628556e01344fd4660636aec",
+    configPubkey: "f1651efa9f9ecbd6cda417854e2acd976fd0469268dff3a07c39e07e643bf3a3",
+    quoteSignerPubkey: "8094dceb67a73510db62b9d519fff4ed59a7493695dc3458a6204c0b7ec33e97",
     vaults: {
-      BTC:  "3346c57b16c98065b8f8bae0cb13e11030d0faa0d6be2fb622a5f72a7d1582d3",
-      USDT: "aea079f7d8c7ae9ef32cbd4b3d3b814e37f24919fa68fb3304aa57f08f110451",
+      BTC:  "9de22416e3343655461f0da1c3a9b6eff3853882337d608ee106967fc9cfb7bf",
+      USDT: "f061a743352bfd12a3351b1b787d79456c9876c4e61cb04df16b5e18a9302b37",
     },
   },
 
@@ -75,5 +75,5 @@ export const MAINNET_CONFIG: NetworkConfig = {
   xverseNetworkType: "Mainnet",
   mempoolUrl: "https://mempool.space",
 
-  faucetEnabled: true,
+  faucetEnabled: false,
 };

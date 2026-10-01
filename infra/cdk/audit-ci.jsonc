@@ -1,0 +1,44 @@
+// audit-ci config for infra/cdk.
+//
+// Fail the build on any high or critical npm advisory that is NOT
+// listed here. Each allowlist entry MUST have a `notes` line capturing:
+//   - why we accept the risk today
+//   - link to the follow-up tracking issue
+//   - target removal date
+//
+// The settings match the workflow's no-config fallback
+// (`--high --skip-dev --report-type important`).
+//
+// Reviewed: 2026-09-30
+{
+  "$schema": "https://github.com/IBM/audit-ci/raw/main/docs/schema.json",
+  "high": true,
+  "critical": true,
+  "skip-dev": true,
+  "report-type": "important",
+  "package-manager": "npm",
+  "allowlist": [
+    // --- brace-expansion@5.0.9, bundled in aws-cdk-lib@2.271.0
+    // (aws-cdk-lib > minimatch@10.2.5 > brace-expansion). That is the
+    // latest aws-cdk-lib, and a bundled dependency can't be replaced
+    // with an npm override. It only runs during `cdk synth`/`cdk deploy`
+    // on dev and CI machines and is not in the deployed API image.
+    // `expiry` makes audit-ci fail again after the removal date.
+    // Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/120
+    // Target removal: 2026-10-31 (once aws-cdk-lib bundles >= 5.0.11).
+    {
+      "GHSA-6j4f-fj2g-mc7p": {
+        "active": true,
+        "notes": "brace-expansion 5.0.9 bundled in aws-cdk-lib 2.271.0 (latest); not overridable; runs only at CDK synth on dev/CI machines, not in the deployed image. Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/120",
+        "expiry": "2026-10-31"
+      }
+    },
+    {
+      "GHSA-qhr7-859c-m2p7": {
+        "active": true,
+        "notes": "brace-expansion 5.0.9 bundled in aws-cdk-lib 2.271.0 (latest); not overridable; runs only at CDK synth on dev/CI machines, not in the deployed image. Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/120",
+        "expiry": "2026-10-31"
+      }
+    }
+  ]
+}

@@ -111,7 +111,7 @@ describe("ensureHubSession (Turnkey)", () => {
       expiresAt: "2026-01-02T00:00:00.000Z",
     });
 
-    await ensureHubSession(passkeyAccount, "mainnet");
+    await expect(ensureHubSession(passkeyAccount, "mainnet")).resolves.toBe("ok");
 
     expect(mocks.createSessionChallenge).toHaveBeenCalledWith({
       externalUserId: "ext-1",
@@ -137,24 +137,46 @@ describe("ensureHubSession (Turnkey)", () => {
   it("reuses a cached token without minting", async () => {
     mocks.readHubToken.mockResolvedValue("whs_v1_cached");
 
-    await ensureHubSession(passkeyAccount, "mainnet");
+    await expect(ensureHubSession(passkeyAccount, "mainnet")).resolves.toBe("ok");
 
     expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
     expect(mocks.mintSessionToken).not.toHaveBeenCalled();
     expect(mocks.setSessionToken).toHaveBeenCalledWith("whs_v1_cached");
   });
 
-  it("is a no-op when the account has no turnkeyResourceId", async () => {
+  it("is skipped when the account has no turnkeyResourceId", async () => {
     mocks.readHubToken.mockResolvedValue(null);
-    await ensureHubSession({ ...passkeyAccount, turnkeyResourceId: "" }, "mainnet");
+    await expect(
+      ensureHubSession({ ...passkeyAccount, turnkeyResourceId: "" }, "mainnet"),
+    ).resolves.toBe("skipped");
     expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
   });
 
-  it("fails soft when minting throws (no throw, nothing persisted)", async () => {
+  it("fails soft when minting throws (no throw, nothing persisted, reports 'failed')", async () => {
     mocks.readHubToken.mockResolvedValue(null);
     mocks.createSessionChallenge.mockRejectedValue(new Error("hub offline"));
 
-    await expect(ensureHubSession(passkeyAccount, "mainnet")).resolves.toBeUndefined();
+    await expect(ensureHubSession(passkeyAccount, "mainnet")).resolves.toBe("failed");
+    expect(mocks.writeHubToken).not.toHaveBeenCalled();
+    expect(mocks.setSessionToken).not.toHaveBeenCalled();
+  });
+
+  it("reports 'failed' when the mint is rejected (e.g. InvalidSignature 401)", async () => {
+    mocks.readHubToken.mockResolvedValue(null);
+    mocks.createSessionChallenge.mockResolvedValue({
+      challengeId: "chal-1",
+      message: "msg",
+      payloadHex: "a".repeat(64),
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    });
+    mocks.signArchPayload.mockResolvedValue({ signature64Hex: "f".repeat(128) });
+    mocks.mintSessionToken.mockRejectedValue(
+      new Error(
+        "WalletHub error 401 Unauthorized: InvalidSignature: Challenge signature did not verify against any Turnkey resource for this user.",
+      ),
+    );
+
+    await expect(ensureHubSession(passkeyAccount, "mainnet")).resolves.toBe("failed");
     expect(mocks.writeHubToken).not.toHaveBeenCalled();
     expect(mocks.setSessionToken).not.toHaveBeenCalled();
   });
@@ -174,7 +196,7 @@ describe("ensureHubSession (external / BIP-322)", () => {
       expiresAt: "2026-01-02T00:00:00.000Z",
     });
 
-    await ensureHubSession(externalAccount, "mainnet");
+    await expect(ensureHubSession(externalAccount, "mainnet")).resolves.toBe("ok");
 
     expect(mocks.createExternalSessionChallenge).toHaveBeenCalledWith({
       externalUserId: "ext-1",
@@ -197,9 +219,9 @@ describe("ensureHubSession (external / BIP-322)", () => {
 });
 
 describe("ensureHubSession (watch-only)", () => {
-  it("is a no-op for watch-only accounts", async () => {
+  it("is skipped for watch-only accounts", async () => {
     const watch = { ...passkeyAccount, kind: "watch" } as WalletAccount;
-    await ensureHubSession(watch, "mainnet");
+    await expect(ensureHubSession(watch, "mainnet")).resolves.toBe("skipped");
     expect(mocks.getExternalUserId).not.toHaveBeenCalled();
     expect(mocks.createSessionChallenge).not.toHaveBeenCalled();
     expect(mocks.createExternalSessionChallenge).not.toHaveBeenCalled();

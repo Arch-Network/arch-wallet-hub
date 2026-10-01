@@ -7,6 +7,7 @@ import { deriveArchAccountAddress } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { formatUsd } from "../../utils/format";
+import { isAnsEnabledForNetwork, openAnsManager, resolvePrimaryName } from "../../utils/name-service";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 
@@ -23,6 +24,7 @@ export default function Receive() {
   const wide = useWideMode(720);
   const [tab, setTab] = useState<Tab>("btc");
   const [archAddress, setArchAddress] = useState<string>("");
+  const [primaryName, setPrimaryName] = useState<string | null>(null);
 
   const btcAddress = useMemo(
     () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
@@ -50,7 +52,19 @@ export default function Receive() {
         // derivation is fine for receive-side display.
       }
     })();
-  }, [activeAccount]);
+  }, [activeAccount, state.network]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrimaryName(null);
+    if (!archAddress) return;
+    void resolvePrimaryName(archAddress, { network: state.network }).then((name) => {
+      if (!cancelled) setPrimaryName(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [archAddress, state.network]);
 
   if (!activeAccount) return null;
 
@@ -93,26 +107,28 @@ export default function Receive() {
       </div>
 
       <div className="receive-card">
-        <div className="receive-qr-frame">
-          {address ? (
-            <QRCodeSVG
-              value={address}
-              size={wide ? 220 : 188}
-              bgColor="#ffffff"
-              fgColor="#0d0f17"
-              level="M"
-              marginSize={2}
-            />
-          ) : (
-            <div className="receive-qr-skeleton" aria-hidden>
-              <div className="spinner" />
-            </div>
-          )}
-        </div>
-
         <div className="receive-meta">
           <div className="receive-meta-label">{meta.label} address</div>
           <div className="receive-meta-network">{networkLabel}</div>
+          {tab === "arch" && primaryName && (
+            <button
+              type="button"
+              className="receive-meta-network receive-meta-link"
+              title={`View ${primaryName} on ANS`}
+              onClick={() => void openAnsManager({ view: primaryName })}
+            >
+              {primaryName}
+            </button>
+          )}
+          {tab === "arch" && isAnsEnabledForNetwork(state.network) && !primaryName && (
+            <button
+              type="button"
+              className="receive-meta-network receive-meta-link"
+              onClick={() => void openAnsManager("register")}
+            >
+              Get a .arch name
+            </button>
+          )}
         </div>
 
         {address ? (
@@ -125,6 +141,23 @@ export default function Receive() {
             {tab === "arch" ? "Resolving Arch address..." : "No address available"}
           </div>
         )}
+
+        <div className="receive-qr-frame">
+          {address ? (
+            <QRCodeSVG
+              value={address}
+              size={wide ? 176 : 156}
+              bgColor="#ffffff"
+              fgColor="#0d0f17"
+              level="M"
+              marginSize={2}
+            />
+          ) : (
+            <div className="receive-qr-skeleton" aria-hidden>
+              <div className="spinner" />
+            </div>
+          )}
+        </div>
 
         {tab === "btc" && btcUsd && (
           <div className="receive-price">
