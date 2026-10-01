@@ -67,6 +67,9 @@ export type IndexerClient = {
    */
   getBtcRune(rune: string): Promise<unknown>;
 
+  /** Per-output detail by outpoint (`txid:vout`). */
+  getBtcOutput(outpoint: string): Promise<unknown>;
+
   /**
    * Per-inscription metadata: id, number, content_type, satpoint,
    * content_length, genesis_height, owner, etc. Used by the gallery
@@ -273,6 +276,7 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
         })}`,
       ),
     getBtcRune: (rune) => getJson(`/bitcoin/runes/${enc(rune)}`),
+    getBtcOutput: (outpoint) => getJson(`/bitcoin/output/${enc(outpoint)}`),
     getBtcInscription: (id) => getJson(`/bitcoin/inscriptions/${enc(id)}`),
     getBtcInscriptionContent: async (id) => {
       // Inscription content is binary (image/video/text/etc) so we

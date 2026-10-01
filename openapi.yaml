@@ -1714,6 +1714,24 @@ paths:
                 items:
                   $ref: "#/components/schemas/BtcTransaction"
 
+  /api/v1/bitcoin/output/{outpoint}:
+    get:
+      tags: [Bitcoin]
+      summary: Per-output detail
+      description: Path param is `txid:vout` (URL-encode the colon when calling).
+      parameters:
+        - name: outpoint
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[0-9a-fA-F]{64}:[0-9]+$"
+      responses:
+        "200":
+          description: Output detail.
+        "404":
+          description: Output not found.
+
   /api/v1/bitcoin/tx/{txid}:
     get:
       tags: [Bitcoin]
