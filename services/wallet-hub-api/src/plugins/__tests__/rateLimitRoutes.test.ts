@@ -48,6 +48,9 @@ async function buildServer(mode: "enforce" | "log", logs: any[] = []) {
   await app.register(registerRecoveryRoutes, { prefix: "/v1" });
   await app.register(registerIndexerRoutes, { prefix: "/v1" });
   app.get("/v1/plain", async () => ({ ok: true }));
+  for (const url of ["/v1/health", "/v1/health/ready", "/v1/docs/json", "/documentation/json"]) {
+    app.get(url, async () => ({ ok: true }));
+  }
   await app.ready();
   return app;
 }
@@ -167,6 +170,23 @@ describe("route-group rate limits, registered like production", () => {
     }
     expect(statuses).not.toContain(429);
     expect((await hit(app, "POST", "/v1/indexer/btc/tx", { install: INSTALL_A })).statusCode).toBe(429);
+    await app.close();
+  }, 30_000);
+
+  it("ungrouped routes share the global app + IP bucket; health and docs stay exempt", async () => {
+    const app = await buildServer("enforce");
+    const max = RATE_LIMITS.global.max;
+    const plain = await hitN(app, max / 2, "GET", "/v1/plain");
+    const signingRead = await hitN(app, max / 2, "GET", "/v1/signing-requests/abc");
+    expect([...plain, ...signingRead]).not.toContain(429);
+    expect((await hit(app, "GET", "/v1/plain")).statusCode).toBe(429);
+    expect((await hit(app, "GET", "/v1/plain", { ip: "198.51.100.1" })).statusCode).not.toBe(429);
+
+    for (const url of ["/v1/health", "/v1/health/ready", "/v1/docs/json", "/documentation/json"]) {
+      const res = await hit(app, "GET", url);
+      expect(res.statusCode, url).toBe(200);
+      expect(res.headers["x-ratelimit-limit"], url).toBeUndefined();
+    }
     await app.close();
   }, 30_000);
 });
