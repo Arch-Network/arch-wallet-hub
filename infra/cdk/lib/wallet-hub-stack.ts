@@ -203,8 +203,8 @@ export class WalletHubStack extends cdk.Stack {
         ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: "false",
         // Global 300/min per app key + IP, plus per-route overrides. The
         // store is in-memory per task, so limits scale with desiredCount.
-        // Set to "false" to disable.
-        RATE_LIMIT_ENABLED: "true",
+        // Off, matching live revision 17. Turn on deliberately via a task-def revision or a stack change; hub PR #124 adds "log" for a dry run.
+        RATE_LIMIT_ENABLED: "false",
         // SECURITY: never default to `*`. Refuse to deploy without an
         // explicit allow-list. The `@fastify/cors` plugin also
         // enforces this server-side.
