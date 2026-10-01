@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { walletStore } from "../state/wallet-store";
 import { invalidateClientCache } from "../utils/sdk";
-import { keystore, SESSION_KEY_KEY, type MigrationStatus } from "../crypto/keystore";
+import { keystore, type MigrationStatus } from "../crypto/keystore";
 import type { AppState, WalletAccount, NetworkId, RecipientAsset, Contact } from "../state/types";
 import { DEFAULT_STATE } from "../state/types";
 import { OPEN_AS_KEY } from "../state/open-as-preference";
@@ -51,11 +51,12 @@ export function useWallet() {
     chrome.storage.local.onChanged.addListener(listener);
     let sessionListener: ((c: Record<string, chrome.storage.StorageChange>) => void) | null = null;
     try {
-      // The keystore KEK is the only session-storage key wallet state
-      // reads (lock/unlock); send-form checkpoints, Hub tokens, Turnkey
-      // snapshots and pending requests also live there.
+      // The keystore session key (lock/unlock) is the only session-storage
+      // key wallet state reads. Send-form checkpoints, Hub tokens, Turnkey
+      // snapshots and pending requests also live there, and refreshing on
+      // their writes re-renders every page that keys effects on wallet state.
       sessionListener = (changes) => {
-        if (SESSION_KEY_KEY in changes) refresh();
+        if ("arch_wallet_session_key" in changes) refresh();
       };
       chrome.storage.session?.onChanged.addListener(sessionListener);
     } catch {

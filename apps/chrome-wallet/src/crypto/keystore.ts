@@ -22,7 +22,7 @@
 
 const KEYSTORE_KEY = "arch_wallet_keystore";
 const LEGACY_STATE_KEY = "arch_wallet_state";
-export const SESSION_KEY_KEY = "arch_wallet_session_key";
+const SESSION_KEY_KEY = "arch_wallet_session_key";
 const KEYSTORE_SCHEMA = 2;
 const PBKDF2_ITERATIONS = 600_000;
 const SALT_BYTES = 16;
