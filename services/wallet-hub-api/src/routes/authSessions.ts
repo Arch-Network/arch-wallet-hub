@@ -34,7 +34,7 @@ import {
 } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { findTurnkeyWalletAccount } from "../turnkey/walletAccountVerification.js";
-import { AUTH_ROUTE_RATE_LIMIT } from "../plugins/rateLimit.js";
+import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
 import {
   createChallenge,
   createExternalChallenge,
@@ -137,9 +137,7 @@ async function verifyStoredResourceKey(
 }
 
 export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
-  server.addHook("onRoute", (routeOptions) => {
-    routeOptions.config = { ...(routeOptions.config ?? {}), ...AUTH_ROUTE_RATE_LIMIT };
-  });
+  setDefaultRateLimitGroup(server, "auth");
 
   server.post(
     "/auth/session/challenge",
