@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { truncateAddress } from "../utils/format";
-import { reEncodeTaprootAddress } from "../utils/addressNetwork";
+import { hasConfirmedMainnet, markMainnetConfirmed } from "../utils/mainnet-confirm";
+import { openAnsManager, resolvePrimaryName } from "../utils/name-service";
 import { useWideMode } from "../hooks/useWideMode";
 import CopyButton from "./CopyButton";
 import type { WalletAccount, NetworkId } from "../state/types";
@@ -16,9 +17,9 @@ interface HeaderProps {
 
 function LockIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5cb85c" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="10" width="14" height="10" rx="2.5" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
     </svg>
   );
 }
@@ -63,8 +64,6 @@ interface NetworkSwitcherProps {
   onChange: (n: NetworkId) => void | Promise<void>;
 }
 
-const MAINNET_CONFIRMED_KEY = "arch_wallet_mainnet_confirmed";
-
 function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherProps) {
   const [open, setOpen] = useState(false);
   const [confirmingMainnet, setConfirmingMainnet] = useState(false);
@@ -97,13 +96,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
     if (next === network) return;
     if (next === "mainnet") {
       // Phase 2.4: confirm the first mainnet switch on this install.
-      let confirmed = false;
-      try {
-        const res = await chrome.storage.local.get(MAINNET_CONFIRMED_KEY);
-        confirmed = !!res?.[MAINNET_CONFIRMED_KEY];
-      } catch {
-        confirmed = false;
-      }
+      const confirmed = await hasConfirmedMainnet();
       if (!confirmed) {
         setConfirmingMainnet(true);
         return;
@@ -114,11 +107,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 
   const confirmMainnet = async () => {
     setConfirmingMainnet(false);
-    try {
-      await chrome.storage.local.set({ [MAINNET_CONFIRMED_KEY]: true });
-    } catch {
-      /* ignore */
-    }
+    await markMainnetConfirmed();
     await onChange("mainnet");
   };
 
@@ -167,7 +156,7 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 
       {confirmingMainnet && (
         <div className="network-menu" role="alertdialog">
-          <div className="network-menu-header" style={{ color: "var(--danger)" }}>
+          <div className="network-menu-header" style={{ color: "var(--color-negative-text)" }}>
             Switch to Mainnet?
           </div>
           <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--text-secondary)" }}>
@@ -188,20 +177,30 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
 }
 
 export default function Header({ account, network, networkStatus, onLock, onNetworkChange }: HeaderProps) {
-  const displayAddress = useMemo(
-    () => account ? reEncodeTaprootAddress(account.btcAddress, network) : "",
-    [account, network]
-  );
+  const displayAddress = account?.archAddress ?? "";
+  const [primaryName, setPrimaryName] = useState<string | null>(null);
   const wide = useWideMode(720);
   const veryWide = useWideMode(1000);
   const addrChars = veryWide ? 16 : wide ? 10 : 5;
+
+  useEffect(() => {
+    let cancelled = false;
+    setPrimaryName(null);
+    if (!account?.archAddress) return;
+    void resolvePrimaryName(account.archAddress, { network }).then((name) => {
+      if (!cancelled) setPrimaryName(name);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.archAddress, network]);
 
   return (
     <header className="app-header">
       <div className="header-inner">
         <div className="header-brand">
-          <img src="/arch-logo.svg" alt="Arch" className="header-logo-img" />
-          <span className="header-brand-text">Arch<br/>Network</span>
+          <img src="/arch-logo-orange.svg" alt="Arch Network" className="header-logo-img header-logo-light" />
+          <img src="/arch-logo-cream.svg" alt="Arch Network" className="header-logo-img header-logo-dark" />
         </div>
 
         <div className="header-controls">
@@ -214,6 +213,17 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
             </span>
           )}
 
+          {account && primaryName && (
+            <button
+              type="button"
+              className="address-chip address-chip-link"
+              title={`View ${primaryName} on ANS`}
+              onClick={() => void openAnsManager({ view: primaryName })}
+            >
+              {primaryName}
+            </button>
+          )}
+
           {account && displayAddress && (
             <span className="address-chip" title={displayAddress}>
               {truncateAddress(displayAddress, addrChars)}
@@ -221,7 +231,7 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
             </span>
           )}
 
-          <button className="header-lock-btn" onClick={onLock} title="Lock wallet">
+          <button className="header-lock-btn" onClick={onLock} title="Lock wallet" aria-label="Lock wallet">
             <LockIcon />
           </button>
         </div>

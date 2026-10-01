@@ -1,4 +1,5 @@
 import bs58 from "bs58";
+import { parseU64DecimalString, U64_MAX } from "./u64-amount";
 
 export function truncateAddress(addr: string, chars = 6): string {
   if (!addr || addr.length <= chars * 2 + 3) return addr || "";
@@ -16,9 +17,15 @@ export function formatBtcAmount(sats: number): string {
 }
 
 export function formatArch(lamports: number | string): string {
-  const n = typeof lamports === "string" ? parseInt(lamports, 10) : lamports;
-  if (isNaN(n)) return "0 ARCH";
-  return `${(n / 1e9).toFixed(4)} ARCH`;
+  const n =
+    typeof lamports === "string"
+      ? parseU64DecimalString(lamports)
+      : Number.isInteger(lamports) && lamports >= 0 && BigInt(lamports) <= U64_MAX
+        ? BigInt(lamports)
+        : null;
+  if (n === null) return "Invalid amount";
+  const tenThousandths = (n + 50_000n) / 100_000n;
+  return `${tenThousandths / 10_000n}.${(tenThousandths % 10_000n).toString().padStart(4, "0")} ARCH`;
 }
 
 /** Just the numeric portion, e.g. "0.0010". Counterpart to formatBtcAmount. */

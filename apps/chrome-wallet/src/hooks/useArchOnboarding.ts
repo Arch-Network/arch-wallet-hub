@@ -140,6 +140,7 @@ export function useArchOnboarding({
       await ensureSwapOnboardingForAccount({
         account,
         config,
+        network,
         onPhase: (p) => setPhase(p),
       });
       // Re-probe to confirm the chain agrees; `ensureOnboarding` already
@@ -153,7 +154,7 @@ export function useArchOnboarding({
       setIsInitializing(false);
       setPhase(null);
     }
-  }, [account, config, isInitializing, runProbe]);
+  }, [account, config, isInitializing, network, runProbe]);
 
   const requestFunds = useCallback(
     async (symbol?: TokenSymbol) => {

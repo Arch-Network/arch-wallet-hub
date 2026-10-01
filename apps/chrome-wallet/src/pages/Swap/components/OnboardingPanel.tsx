@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import type { OnboardingPhase, SwapAccountReadiness } from "@arch/swap-engine";
 
 import { labelForPhase } from "../../../hooks/useArchOnboarding";
+import type { NetworkId } from "../../../state/types";
 
 type Props = {
   status: "unknown" | "probing" | "ready" | "needs-onboarding" | "error";
@@ -21,6 +22,7 @@ type Props = {
   phase: OnboardingPhase | null;
   error: string | null;
   isInitializing: boolean;
+  network: NetworkId;
   onInitialize: () => void;
 };
 
@@ -38,7 +40,10 @@ function phaseIndex(p: OnboardingPhase | null): number {
   return ALL_PHASES.indexOf(p);
 }
 
-function describeReadiness(r: SwapAccountReadiness | null): ReactNode {
+function describeReadiness(
+  r: SwapAccountReadiness | null,
+  network: NetworkId,
+): ReactNode {
   if (!r) {
     return "Before your first swap, we need to register your account on Arch L2 and create token accounts.";
   }
@@ -50,12 +55,18 @@ function describeReadiness(r: SwapAccountReadiness | null): ReactNode {
   if (!eligible) {
     switch (r.eligibility.reason) {
       case "missing":
+        if (network === "mainnet") {
+          return "Initialize this wallet in Arch Prime first. Once your mainnet Arch account exists, return here and we'll create the token accounts needed for swaps.";
+        }
         return missing.length > 0
           ? "Your Arch L2 account hasn't been created yet, and you'll also need token accounts for swaps. We'll handle both in two passkey-signed transactions."
           : "Your Arch L2 account hasn't been created yet. We'll register it with a passkey-signed transaction.";
       case "wrong_owner":
         return "Your Arch L2 account was created with an unexpected owner. Re-initializing will request a fresh account from the validator-blessed system program.";
       case "underfunded":
+        if (network === "mainnet") {
+          return "Your mainnet Arch account needs additional funding before it can pay transaction fees. Fund it in Arch Prime, then return here.";
+        }
         return "Your Arch L2 account exists but isn't rent-exempt yet. The faucet will top it up so the validator accepts it as a fee payer.";
     }
   }
@@ -85,6 +96,7 @@ export function OnboardingPanel({
   phase,
   error,
   isInitializing,
+  network,
   onInitialize,
 }: Props) {
   if (status === "ready" || status === "unknown" || status === "probing") {
@@ -100,7 +112,7 @@ export function OnboardingPanel({
         <h3 className="onboarding-panel__title">Initialize for swaps</h3>
       </div>
       <p className="onboarding-panel__copy">
-        {describeReadiness(readiness)}
+        {describeReadiness(readiness, network)}
       </p>
 
       {isInitializing && phase && (

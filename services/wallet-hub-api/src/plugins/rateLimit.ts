@@ -8,25 +8,53 @@ import rateLimit from "@fastify/rate-limit";
  * Defaults aim to be permissive for normal SDK use (a handful of
  * signing-request creations per minute per app) while making
  * credential-stuffing or recovery-OTP brute force unattractive. The
- * recovery + auth endpoints are tightened further inside their own
- * route handlers via `config.rateLimit`.
+ * recovery + auth route plugins tighten this via `config.rateLimit`
+ * (AUTH_ROUTE_RATE_LIMIT / RECOVERY_ROUTE_RATE_LIMIT below).
  *
- * Key derivation: prefer the authenticated `apiKeyId` (so a single
- * compromised API key can't drown out everyone else on the shared IP
- * of a serverless platform); fall back to the request IP. Behind ALB
- * we honor `X-Forwarded-For` via the `trustProxy` option set in
+ * Key derivation: `apiKeyId` + client IP. Every extension install shares
+ * one app key, so an app-only bucket would let one client throttle all
+ * users of that app. Unauthenticated requests fall back to the IP. Behind
+ * ALB we honor `X-Forwarded-For` via the `trustProxy` option set in
  * `server.ts`.
  */
-function keyForRequest(req: FastifyRequest): string {
+export function keyForRequest(req: FastifyRequest): string {
   const apiKeyId = req.app?.apiKeyId;
-  if (apiKeyId) return `app:${apiKeyId}`;
+  if (apiKeyId) return `app:${apiKeyId}:ip:${req.ip}`;
   return `ip:${req.ip}`;
 }
 
+/** Session challenge/mint/revoke. Spread onto a route's `config`. */
+export const AUTH_ROUTE_RATE_LIMIT = {
+  rateLimit: {
+    max: 20,
+    timeWindow: "1 minute",
+    keyGenerator: (req: FastifyRequest) => `auth:ip:${req.ip}`,
+  },
+};
+
+/** Email recovery init/start/verify, on top of the per-email DB caps. */
+export const RECOVERY_ROUTE_RATE_LIMIT = {
+  rateLimit: {
+    max: 10,
+    timeWindow: "1 minute",
+    keyGenerator: (req: FastifyRequest) => `recovery:ip:${req.ip}`,
+  },
+};
+
 const rateLimitPlugin: FastifyPluginAsync = async (server) => {
+  // Master switch. When disabled we skip registering @fastify/rate-limit
+  // entirely; because route-level `config.rateLimit` overrides only take
+  // effect when the global plugin is registered, this also makes every
+  // per-route limit inert. Fully reversible via RATE_LIMIT_ENABLED=true.
+  if (!server.config.RATE_LIMIT_ENABLED) {
+    server.log.warn("Rate limiting is DISABLED (RATE_LIMIT_ENABLED=false)");
+    return;
+  }
+  server.log.info("Rate limiting is enabled (300/min/key/ip global, per-route overrides apply)");
+
   await server.register(rateLimit, {
     global: true,
-    max: 300, // requests per window per key
+    max: 300, // requests per window per key + IP
     timeWindow: "1 minute",
     keyGenerator: keyForRequest,
     skipOnError: false,

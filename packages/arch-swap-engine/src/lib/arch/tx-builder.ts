@@ -5,7 +5,7 @@
 // Hex and integer-encoding primitives live in `@/arch/hex` and
 // `@/arch/borsh` respectively.
 
-import { SanitizedMessageUtil } from "@saturnbtcio/arch-sdk";
+import { SanitizedMessageUtil } from "@arch-network/arch-sdk";
 
 import { fetchBestBlockHash } from "@/lib/indexer/blocks";
 import { hexToBytes } from "@/lib/arch/hex";

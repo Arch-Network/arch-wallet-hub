@@ -26,6 +26,7 @@ import { passkeyBootstrap } from "../session/bootstrap-passkey";
 import { EmailBootstrap, type EmailBootstrapArgs } from "../session/bootstrap-email";
 import { ensureHubSession } from "../utils/hub-session";
 import { clearAllHubTokens } from "../utils/hub-session-store";
+import { readOpenAsPreference, writeOpenAsPreference } from "./open-as-preference";
 
 const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
 /**
@@ -211,7 +212,7 @@ export function migrateApiConfig(state: any): boolean {
  * both from getState (for legacy installs) and from the seal/unlock
  * paths.
  */
-function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
+export function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
   const state = { ...DEFAULT_STATE, ...stateInput };
   let migrated = false;
 
@@ -288,6 +289,21 @@ function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
       acct.archAddress = deriveArchAccountAddress(acct.publicKeyHex);
       migrated = true;
     }
+    // Canonical Arch identity fix (Unisat/external derivation bug): external
+    // accounts linked before the fix stored the Hub-echoed archAddress, which
+    // was the BIP-341 TWEAKED taproot output key — the wrong Arch account.
+    // The canonical identity is deterministically derivable from the wallet's
+    // public key, so recompute and repair. The old value is preserved in
+    // legacyArchAddress (first value wins) rather than discarded. Idempotent:
+    // once archAddress matches the canonical derivation this is a no-op.
+    if (acct.kind === "external" && acct.publicKeyHex && acct.publicKeyHex.length >= 64) {
+      const canonicalArchAddress = deriveArchAccountAddress(acct.publicKeyHex);
+      if (acct.archAddress && acct.archAddress !== canonicalArchAddress) {
+        if (!acct.legacyArchAddress) acct.legacyArchAddress = acct.archAddress;
+        acct.archAddress = canonicalArchAddress;
+        migrated = true;
+      }
+    }
   }
 
   if (migrateApiConfig(state)) migrated = true;
@@ -308,7 +324,7 @@ function migrateState(stateInput: any): { state: AppState; migrated: boolean } {
   }
 
   if (typeof state.autoLockMinutes !== "number" || state.autoLockMinutes <= 0) {
-    state.autoLockMinutes = 15;
+    state.autoLockMinutes = 60;
     migrated = true;
   }
 
@@ -357,14 +373,19 @@ export const walletStore = {
    * show the Unlock screen vs Onboarding).
    */
   async getState(): Promise<AppState> {
+    const openAs = await readOpenAsPreference();
     const sealed = await keystore.isSealed();
     const unlocked = await keystore.isUnlocked();
-    if (!sealed) return { ...DEFAULT_STATE };
-    if (!unlocked) return lockedShellState(true);
+    if (!sealed) return { ...DEFAULT_STATE, openAs: openAs ?? "popup" };
+    if (!unlocked) return { ...lockedShellState(true), openAs: openAs ?? "popup" };
     const raw = (await keystore.read()) as any;
-    if (!raw) return lockedShellState(true);
+    if (!raw) return { ...lockedShellState(true), openAs: openAs ?? "popup" };
     const { state, migrated } = migrateState(raw);
     state.locked = false;
+    // Migrate the legacy encrypted preference only after decryption succeeds.
+    // Never persist the locked shell's default over the user's choice.
+    if (openAs === undefined) await writeOpenAsPreference(state.openAs);
+    else state.openAs = openAs;
     if (migrated) await savePlaintextState(state);
     return state;
   },
@@ -631,7 +652,7 @@ export const walletStore = {
   sessionTtlSecondsFromState(state: AppState): number {
     const mins = Number.isFinite(state.autoLockMinutes)
       ? Math.max(1, Math.floor(state.autoLockMinutes))
-      : 15;
+      : 60;
     return mins * 60;
   },
 
@@ -679,7 +700,7 @@ export const walletStore = {
     // Phase 2a: opportunistically mint a Hub session token reusing the
     // session we just opened. Fire-and-forget + fail-soft: never blocks
     // or breaks unlock (see utils/hub-session.ts).
-    void ensureHubSession(account);
+    void ensureHubSession(account, state.network);
   },
 
   /**
@@ -710,7 +731,7 @@ export const walletStore = {
       bootstrap: new EmailBootstrap(args),
     });
     // Phase 2a: see openPasskeySessionForAccount.
-    void ensureHubSession(account);
+    void ensureHubSession(account, state.network);
   },
 
   /**
@@ -798,9 +819,7 @@ export const walletStore = {
   },
 
   async setOpenAs(mode: "popup" | "sidepanel"): Promise<void> {
-    const state = await this.requireUnlockedState();
-    state.openAs = mode;
-    await savePlaintextState(state);
+    await writeOpenAsPreference(mode);
   },
 
   /**

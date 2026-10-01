@@ -391,7 +391,8 @@ export default function SessionBootstrapper({
   return (
     <div className="onboarding">
       <div className="onboarding-logo">
-        <img src="/arch-logo.svg" alt="Arch" style={{ width: 64, height: 64 }} />
+        <img src="/arch-mark-orange.svg" alt="Arch" className="brand-swap-light" style={{ width: 64, height: 64 }} />
+        <img src="/arch-mark-white.svg" alt="Arch" className="brand-swap-dark" style={{ width: 64, height: 64 }} />
       </div>
       <h1 className="onboarding-title">Verify by email</h1>
       <p className="onboarding-sub">{subheader}</p>
