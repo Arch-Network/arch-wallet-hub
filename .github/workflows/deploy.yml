@@ -75,13 +75,12 @@ jobs:
 
       # NOTE: This job ONLY rolls the running tasks onto the newest image
       # (`update-service --force-new-deployment`). It does NOT register a
-      # new task definition. Any change to the task def, environment
-      # variables, or secrets (e.g. DB_*, AUDIT_HMAC_SECRET, CORS) MUST go
-      # through the CDK stack (infra/cdk) and `cdk deploy` — editing them
-      # here or by hand in the console causes the live task to drift from
-      # the source of truth (which is exactly what happened before the
-      # chore/wallet-hub-cdk-reconcile reconciliation). Keep task-def
-      # config in CDK only.
+      # new task definition, so env and secret changes in
+      # infra/cdk/lib/wallet-hub-stack.ts do NOT reach production through
+      # this workflow. The service runs a hand-registered task definition
+      # (see #123). Until a reviewed `cdk deploy` has happened, an env or
+      # secret change means registering a new revision by hand AND making
+      # the same change in the stack, so the two do not drift further.
       - name: Deploy API service
         run: |
           aws ecs update-service \

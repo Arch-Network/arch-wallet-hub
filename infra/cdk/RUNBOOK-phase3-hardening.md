@@ -11,22 +11,27 @@ executed by that PR. Each step is a separate, scheduled maintenance action.
   **only public subnets and no NAT gateway**, which is why public placement is
   the interim state.
 - The DB is **not** internet-reachable: `publiclyAccessible=false` and its
-  security group (`DbSg`) only allows `5432` from the API service SG
-  (`ApiServiceSg`). Tasks run with `assignPublicIp: true` purely so they can
-  pull images from ECR and read Secrets Manager (no NAT available).
+  security group (`DbSg`) only allows `5432` from the API service's
+  CDK-created SG (`ApiService/SecurityGroup`). Tasks run with
+  `assignPublicIp: true` purely so they can pull images from ECR and read
+  Secrets Manager (no NAT available).
 - The RDS master password is the existing value stored in
   `WalletHub/AppSecrets` under key `DB_PASSWORD`; CDK reuses it verbatim via
   `Credentials.fromPassword`. No plaintext `DATABASE_URL` is injected anymore.
-- The ALB serves **plain HTTP:80** because no ACM cert is wired
-  (`certificateArn` unset).
+- The stack manages only the ALB's **HTTP:80** listener. Production's HTTPS
+  listener on 443 was created by hand and is not in the stack; the stack
+  refuses `-c certificateArn=...` until that listener is imported (§C).
 
 Region: `us-east-1`. Account: `590184001652`. Stack: `WalletHubStack`.
 
-> **Golden rule:** every change below goes through CDK (`infra/cdk`) and
-> `cdk deploy`. Never hand-edit task definitions, SGs, or RDS settings in the
-> console / CLI — that is how the live stack drifted before. Always run
-> `cdk diff` first and confirm there is **no RDS replacement and no
-> `MasterUserPassword` change** before deploying.
+> **Golden rule:** no `cdk deploy` until a human has reviewed a fresh
+> `cdk diff --method template` against the live stack and confirmed RDS
+> deletion protection is on (see #123). The diff must show **no RDS
+> replacement, no `AppSecrets` change and no `MasterUserPassword` change**.
+> The default `cdk diff` method creates a CloudFormation change set; always
+> pass `--method template`. Until the stack has been deployed once, the CI
+> deploy workflow and hand-registered task definitions remain how production
+> changes.
 
 ---
 
@@ -93,7 +98,10 @@ Recommended sequencing:
    healthy tasks. Verify both target groups go healthy before continuing.
 3. **Move RDS last, in a window.** Update the DB's `vpcSubnets` to the private
    subnets. Snapshot the DB immediately before. Expect a short connection blip
-   / failover-style interruption. Keep the SG rule (`ApiServiceSg → 5432`).
+   / failover-style interruption. Keep the SG rule
+   (`ApiService/SecurityGroup → 5432`). Per #123, changing the instance's
+   subnet group is expected to force replacement, so plan for the
+   snapshot/restore path below rather than an in-place move.
    - If CFN attempts to **replace** the instance instead of modifying it
      (check `cdk diff` for `replace`/`requires replacement` on
      `Postgres9DC8BB04`), **STOP** — do not deploy. Instead import-and-adjust:
@@ -161,49 +169,40 @@ shared key):**
 
 ---
 
-## C. Wire ALB TLS (HTTPS:443 + HTTP→HTTPS redirect)
+## C. Bring the hand-made HTTPS listener under the stack
 
-Today the stack serves plain **HTTP:80** because `certificateArn` is unset, so
-CDK falls back to a single `HttpListener` on 80 and prints a warning. Providing
-a cert switches the stack to: a **443 HTTPS listener** (with the API `/v1/*`
-and default frontend routing) **plus an 80→443 permanent redirect** — the
-HTTP:80 serving listener is replaced by the redirect listener.
+Production already serves HTTPS: a **443 listener with an ACM certificate**
+was created by hand on `wallet-hub-alb`. It forwards `/v1/*` to `ApiTg` and
+everything else to `FrontendTg`. It is **not** in the stack, which manages
+only the port-80 `HttpListener` and throws if `-c certificateArn=...` is
+passed (creating a second 443 listener would conflict with the live one).
 
-**Prerequisites:**
+**Steps (a deploy action — schedule it, do not do it from a PR):**
 
-1. Decide the public hostname (e.g. `hub.arch.network`) and ensure DNS will
-   point to the ALB (`wallet-hub-alb`).
-2. Request/validate an ACM cert **in `us-east-1`** for that hostname (DNS
-   validation): `aws acm request-certificate --domain-name hub.arch.network
-   --validation-method DNS` → add the CNAME → wait for `ISSUED`.
+1. Record the live listener: `aws elbv2 describe-listeners` and
+   `describe-rules` for the ALB (port, certificate ARN, SSL policy, rules).
+   Check whether 443 ingress on the ALB's SG (`Alb/SecurityGroup`) was also
+   added by hand.
+2. Model it in the stack with the **same** properties, then bring it in with
+   `cdk import` (or a planned delete-and-recreate in a window). Remove the
+   `certificateArn` guard in the same change.
+3. Decide separately whether port 80 should keep forwarding or become an
+   80→443 redirect. Swapping it replaces `HttpListener`.
+4. `cdk diff --method template` must show the listener as imported/unchanged,
+   with no target-group replacement.
 
-**Deploy steps:**
-
-3. Pass the cert ARN to CDK (no code change needed — it's a prop/context):
-   `npx cdk deploy -c certificateArn=arn:aws:acm:us-east-1:590184001652:certificate/<id>
-   -c corsAllowOrigins=https://hub.arch.network`
-   (or set `certificateArn` on the stack props in `bin/app.ts`).
-4. `cdk diff` first. Expect: **new** `HttpsListener` (443) + new
-   `HttpRedirectListener` (80, redirect), and the existing `HttpListener` (80,
-   forward) **removed/replaced**. Listeners are stateless — no data risk.
-5. Deploy, then verify: `https://hub.arch.network/v1/health` returns 200, and
-   `http://hub.arch.network` 301-redirects to `https://`.
-
-- **In-place vs window:** effectively in-place. There is a brief moment as the
-  80 listener is swapped from forward → redirect; clients on HTTP get a 301
-  thereafter. No task restarts required.
-- **Rollback:** remove `certificateArn` and redeploy to return to the HTTP:80
-  listener (the stack supports the certless fallback). Or point DNS back.
-- **Risk callouts:** cert MUST be in `us-east-1` (same region as the ALB) or
-  the listener creation fails; if `corsAllowOrigins` isn't updated to the
-  HTTPS origin the API will reject browser calls; ensure the ALB SG already
-  allows `443` (it does — `AlbSg` opens 80 and 443).
+- **Risk callouts:** if `FrontendTg` is replaced (e.g. by moving the frontend
+  to port 8080), the hand-made listener's default action still points at the
+  old target group. Rebuild the frontend image, the target group and the
+  listener together.
 
 ---
 
 ## Pre-flight checklist (run before ANY deploy above)
 
-- [ ] `cd infra/cdk && npx cdk diff -c corsAllowOrigins=https://hub.arch.network`
+- [ ] `cd infra/cdk && npx cdk diff WalletHubStack --method template -c corsAllowOrigins=https://hub.arch.network`
+- [ ] Confirm **no** change to `AWS::SecretsManager::Secret AppSecrets` (any
+      `GenerateSecretString` change overwrites every populated key).
 - [ ] Confirm `AWS::RDS::DBInstance Postgres` shows **no** `replace` /
       `requires replacement`.
 - [ ] Confirm **no** `MasterUserPassword` line in the diff.
