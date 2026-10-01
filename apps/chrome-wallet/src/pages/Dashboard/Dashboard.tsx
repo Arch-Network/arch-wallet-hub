@@ -532,7 +532,8 @@ export default function Dashboard() {
         const tb = timestampToMs(b.timestamp) ?? 0;
         return tb - ta;
       });
-      setRecentTxs((prev) => (busyForMs !== null && prev ? prev : merged.slice(0, 5)));
+      const keepLastActivity = busyForMs !== null;
+      setRecentTxs((prev) => (keepLastActivity && prev ? prev : merged.slice(0, 5)));
       setTxsLoaded(true);
     }).catch((e: any) => {
       const msg = e?.message || "Failed to load balances";
