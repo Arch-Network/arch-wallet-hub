@@ -163,7 +163,7 @@ function isBtcTxConfirmed(tx: any): boolean {
 }
 
 export default function Dashboard() {
-  const { activeAccount, state } = useWallet();
+  const { activeAccount, state, loading: walletLoading } = useWallet();
   const navigate = useNavigate();
   const { price: btcUsd } = useBtcUsdPrice();
   // Matches the 880px breakpoint that flips the dashboard into a
@@ -239,6 +239,9 @@ export default function Dashboard() {
 
   const fetchAll = useCallback(async (opts?: { noCache?: boolean }) => {
     if (!activeAccount) {
+      // Not loaded yet is not "no account": zeros here would be kept as
+      // the last good balance if the account's first read then fails.
+      if (walletLoading) return;
       setBtcBalance(0);
       setBtcPending(0);
       setBtcProtected(0);
@@ -575,6 +578,7 @@ export default function Dashboard() {
     activeAccount?.publicKeyHex,
     markDashboardLoaded,
     state.network,
+    walletLoading,
   ]);
 
   useEffect(() => {
