@@ -212,4 +212,48 @@ describe("signPsbtViaRawSighash", () => {
       signPsbtViaRawSighash(psbt, async () => "deadbeef")
     ).rejects.toThrow(/4 bytes for input 0 \(want 64\)/);
   });
+
+  it("signs only the listed inputs, next to a foreign non-P2TR input", async () => {
+    const key = deriveBip86(makePriv(6), network);
+    const psbt = buildRuneShapedPsbt(key, 2);
+    const foreignP2wpkh = Buffer.concat([Buffer.from([0x00, 0x14]), Buffer.alloc(20, 0xee)]);
+    psbt.addInput({
+      hash: fullTxid(9),
+      index: 1,
+      witnessUtxo: { script: foreignP2wpkh, value: 50_000n },
+    });
+    const digests: string[] = [];
+    const sign32 = localSign32(key.tweakedPriv);
+
+    await signPsbtViaRawSighash(
+      psbt,
+      async (digestHex) => {
+        digests.push(digestHex);
+        return sign32(digestHex);
+      },
+      [1],
+    );
+
+    expect(digests).toHaveLength(1);
+    expect(psbt.data.inputs[0]!.tapKeySig).toBeUndefined();
+    expect(psbt.data.inputs[2]!.tapKeySig).toBeUndefined();
+    const sig = psbt.data.inputs[1]!.tapKeySig!;
+    expect(sig.length).toBe(64);
+    const unsigned = (psbt as any).__CACHE.__TX as bitcoin.Transaction;
+    const digest = unsigned.hashForWitnessV1(
+      1,
+      [key.scriptPubKey, key.scriptPubKey, foreignP2wpkh],
+      [10_000n, 10_001n, 50_000n],
+      0x00,
+    );
+    expect(verifySchnorr(digest, key.outputXOnly, sig)).toBe(true);
+  });
+
+  it("rejects an out-of-range input index", async () => {
+    const key = deriveBip86(makePriv(7), network);
+    const psbt = buildRuneShapedPsbt(key, 1);
+    await expect(
+      signPsbtViaRawSighash(psbt, localSign32(key.tweakedPriv), [1])
+    ).rejects.toThrow(/out of range/);
+  });
 });

@@ -212,11 +212,10 @@ export class WalletHubStack extends cdk.Stack {
         INDEXER_BASE_URL: "https://explorer.arch.network/api/v1/testnet",
         INDEXER_INTERNAL_BASE_URL: "https://explorer.arch.network",
         ARCH_TRANSFER_REQUIRE_ANCHORED_UTXO: "false",
-        // Rate limiting is currently DISABLED to remove throttling. The
-        // application code defaults this to "true"; we override to "false"
-        // here. Reversible: set back to "true" (or remove this line) to
-        // restore the global 300/min/key limit + per-route overrides.
-        RATE_LIMIT_ENABLED: "false",
+        // Global 300/min per app key + IP, plus per-route overrides. The
+        // store is in-memory per task, so limits scale with desiredCount.
+        // Set to "false" to disable.
+        RATE_LIMIT_ENABLED: "true",
         // SECURITY: never default to `*`. Refuse to deploy without an
         // explicit allow-list. The `@fastify/cors` plugin also
         // enforces this server-side.
