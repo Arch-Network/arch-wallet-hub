@@ -270,18 +270,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
         if (res.kind !== "created") return res;
         const externalUserId = (body as any).externalUserId;
-        const userEmail = (body as any).userEmail;
         const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
-        // Phase 1.10: persist the recovery email at sign-up so the
-        // /recovery/email/init endpoint can resolve this user without
-        // trusting client-supplied email values at recovery time.
-        if (typeof userEmail === "string" && userEmail.trim().length > 0) {
-          await updateUserRecoveryEmail(client, {
-            appId,
-            userId: user.id,
-            email: userEmail
-          });
-        }
         return { ...res, userId: user.id };
       });
 
@@ -366,6 +355,18 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         }
 
         const response = await withDbTransaction(db, async (client) => {
+          // Phase 1.10: persist the recovery email so /recovery/email/init
+          // can resolve this user without trusting client-supplied email
+          // values at recovery time. Written only once the sub-org exists,
+          // in the same tx as the resource, so a failed create leaves any
+          // previous recovery_email untouched.
+          if (typeof userEmail === "string" && userEmail.trim().length > 0) {
+            await updateUserRecoveryEmail(client, {
+              appId,
+              userId,
+              email: userEmail
+            });
+          }
           const resource = await insertTurnkeyResource(client, {
             appId,
             userId,
@@ -490,15 +491,9 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         if (res.kind !== "created") return res;
 
         const externalUserId = body.externalUserId;
-        const userEmail = body.userEmail;
         const user = await getOrCreateUserByExternalId(client, {
           appId,
           externalUserId,
-        });
-        await updateUserRecoveryEmail(client, {
-          appId,
-          userId: user.id,
-          email: userEmail,
         });
         return { ...res, userId: user.id };
       });
@@ -595,6 +590,14 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         }
 
         const response = await withDbTransaction(db, async (client) => {
+          // Written only once the sub-org exists, in the same tx as the
+          // resource, so a failed create leaves any previous
+          // recovery_email untouched.
+          await updateUserRecoveryEmail(client, {
+            appId,
+            userId,
+            email: userEmail,
+          });
           const resource = await insertTurnkeyResource(client, {
             appId,
             userId,
