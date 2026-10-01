@@ -18,6 +18,13 @@ permissions:
   id-token: write
   contents: read
 
+# Each run pins a specific SHA, so overlapping runs must not finish out
+# of order and leave an older image in service. Queue; never cancel a
+# deploy mid-flight.
+concurrency:
+  group: deploy-ecs-fargate
+  cancel-in-progress: false
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -73,30 +80,45 @@ jobs:
           docker push $ECR_REGISTRY/$FRONTEND_REPO:${{ github.sha }}
           docker push $ECR_REGISTRY/$FRONTEND_REPO:latest
 
-      # NOTE: This job ONLY rolls the running tasks onto the newest image
-      # (`update-service --force-new-deployment`). It does NOT register a
-      # new task definition, so env and secret changes in
-      # infra/cdk/lib/wallet-hub-stack.ts do NOT reach production through
-      # this workflow. The service runs a hand-registered task definition
-      # (see #123). Until a reviewed `cdk deploy` has happened, an env or
-      # secret change means registering a new revision by hand AND making
-      # the same change in the stack, so the two do not drift further.
+      # Pin the running task definition to the SHA we just pushed.
+      # Do not --force-new-deployment :latest (issue #47): that re-pulls
+      # a mutable tag. The helper clones the revision the service is
+      # *running* (describe-services → taskDefinition) and changes only
+      # the matching container image, then registers that as a new
+      # revision.
+      #
+      # NOTE: env and secret changes in infra/cdk/lib/wallet-hub-stack.ts
+      # still do NOT reach production through this workflow; every field
+      # but the image is copied from the live revision. The service runs
+      # a hand-registered task definition (see #123). Until a reviewed
+      # `cdk deploy` has happened, an env or secret change means
+      # registering a new revision by hand AND making the same change in
+      # the stack, so the two do not drift further. The next run of this
+      # job then clones that revision.
+      #
+      # IMAGE_TAG is passed through env (not interpolated into the
+      # script body) — same injection-sink rule as PR #43, even though
+      # github.sha is not user-controlled.
       - name: Deploy API service
+        env:
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $API_SERVICE \
-            --force-new-deployment \
-            --region $AWS_REGION
+          bash deploy/pin-ecs-image.sh \
+            --cluster "$ECS_CLUSTER" \
+            --service "$API_SERVICE" \
+            --region "$AWS_REGION" \
+            --image "$ECR_REGISTRY/$API_REPO:$IMAGE_TAG"
 
       - name: Deploy Frontend service
         if: false
+        env:
+          IMAGE_TAG: ${{ github.sha }}
         run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $FRONTEND_SERVICE \
-            --force-new-deployment \
-            --region $AWS_REGION
+          bash deploy/pin-ecs-image.sh \
+            --cluster "$ECS_CLUSTER" \
+            --service "$FRONTEND_SERVICE" \
+            --region "$AWS_REGION" \
+            --image "$ECR_REGISTRY/$FRONTEND_REPO:$IMAGE_TAG"
 
       - name: Wait for API service stability
         run: |
