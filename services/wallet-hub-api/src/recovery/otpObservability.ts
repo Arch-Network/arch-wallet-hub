@@ -94,8 +94,7 @@ export type ResendThrottleDecision =
  *
  * `previousOtpStartCount` is how many OTPs have already been sent for
  * this candidate. A resend would push it one higher, so once it has
- * reached `maxSends` we refuse rather than mint another OTP -- this
- * stops a user from using resend to reset verify attempts indefinitely.
+ * reached `maxSends` we refuse rather than mint another OTP.
  *
  * `previousOtpAgeMs` is the age of the most recent OTP (null when no
  * start timestamp exists). A resend inside the cooldown window is

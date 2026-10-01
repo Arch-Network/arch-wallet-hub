@@ -83,7 +83,7 @@ import {
   markRecoveryChallengeStatus,
   maskAddress,
   maskEmail,
-  resetRecoveryAttempts,
+  otpUserIdentifier,
   updateRecoveryChallengeCandidates,
   type RecoveryCandidate
 } from "../db/recovery.js";
@@ -123,7 +123,7 @@ const VERIFY_MAX_ATTEMPTS = 5;
 // no longer verifies. To keep this from spiralling we (a) cap total OTP
 // sends per challenge candidate -- initial send plus resends -- and (b)
 // require a cooldown between resends to reduce overlapping in-flight
-// OTPs. The send cap also bounds the verify-attempt reset on resend.
+// OTPs. Verify attempts are counted across all sends of a challenge.
 const MAX_OTP_SENDS = 5;
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -787,6 +787,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           organizationId: candidate.organizationId,
           userId: candidate.rootUserId,
           contact: email,
+          userIdentifier: otpUserIdentifier(appId, email),
           emailCustomization: buildOtpEmailCustomization(server.config)
         });
         const turnkeyElapsedMs = Date.now() - startRequestedAtMs;
@@ -795,9 +796,9 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         // resends on the same challenge cannot lose each other's otpId /
         // otpStartCount. Re-resolving the candidate from the locked row
         // (rather than the pre-Turnkey snapshot) makes last-write-wins
-        // deterministic. On a resend, reset the verify attempt counter in
-        // the SAME tx so the fresh code gets a clean attempt budget; the
-        // send cap above prevents this from granting unlimited verifies.
+        // deterministic. The verify attempt counter is NOT reset on a
+        // resend: VERIFY_MAX_ATTEMPTS is a budget for the whole challenge,
+        // not per code.
         const updatedCandidate = await withDbTransaction(db, async (client) => {
           const locked = await getRecoveryChallengeForUpdate(client, {
             appId,
@@ -817,9 +818,6 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             id: challenge.id,
             candidates
           });
-          if (isResend) {
-            await resetRecoveryAttempts(client, { id: challenge.id });
-          }
           await auditEvent({
             client,
             appId,
@@ -833,8 +831,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             payloadJson: {
               candidateResourceId: candidate.resourceId,
               isResend,
-              otpStartCount: nextCandidate.otpStartCount,
-              attemptsReset: isResend
+              otpStartCount: nextCandidate.otpStartCount
             },
             outcome: "succeeded"
           });

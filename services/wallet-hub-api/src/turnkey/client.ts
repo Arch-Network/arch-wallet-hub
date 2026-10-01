@@ -411,6 +411,7 @@ export class TurnkeyService {
     organizationId: string;
     userId: string;
     contact: string;
+    userIdentifier: string;
     emailCustomization?: Record<string, unknown>;
   }): Promise<{
     otpId: string;
@@ -428,6 +429,7 @@ export class TurnkeyService {
         otpType: "OTP_TYPE_EMAIL",
         contact: params.contact,
         userId: params.userId,
+        userIdentifier: params.userIdentifier,
         ...(params.emailCustomization
           ? { emailCustomization: params.emailCustomization }
           : {})

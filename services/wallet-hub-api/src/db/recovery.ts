@@ -59,6 +59,17 @@ export function hashEmailForRateLimit(email: string): string {
   return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 }
 
+/**
+ * Turnkey INIT_OTP_AUTH `userIdentifier`: Turnkey applies its per-user
+ * OTP limits only when one is sent. Stable per (app, normalised email)
+ * and never the raw address.
+ */
+export function otpUserIdentifier(appId: string, email: string): string {
+  return createHash("sha256")
+    .update(`wallet-hub:otp-user-identifier:v1:${appId}:${hashEmailForRateLimit(email)}`)
+    .digest("hex");
+}
+
 export function maskEmail(email: string): string {
   const [local = "", domain = ""] = email.split("@");
   if (!domain) return "***";
@@ -179,24 +190,6 @@ export async function incrementRecoveryAttemptIfUnderCap(
     [params.id, params.appId, params.maxAttempts]
   );
   return res.rows[0] ?? null;
-}
-
-/**
- * Reset the verify attempt counter to zero. Called in the same
- * transaction as the candidate/otpId update on a resend so the user
- * gets a fresh set of verify attempts against the new code -- stale
- * codes from a superseded OTP should not burn the new code's budget.
- * The per-challenge send cap (MAX_OTP_SENDS) bounds how often this can
- * happen, so resetting here cannot grant unlimited verify attempts.
- */
-export async function resetRecoveryAttempts(
-  client: PoolClient,
-  params: { id: string }
-): Promise<void> {
-  await client.query(
-    `UPDATE recovery_challenges SET attempts = 0 WHERE id = $1`,
-    [params.id]
-  );
 }
 
 export async function updateRecoveryChallengeCandidates(
