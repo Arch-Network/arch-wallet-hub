@@ -1,13 +1,20 @@
 /**
  * Client-side handling of Wallet Hub 429s.
  *
- * One cooldown for the whole Hub (per extension context), not per route:
- * the Hub's limiter keys a single bucket on app key + client IP across
- * every route, so once one route returns 429 the others would too. While
- * the cooldown runs, Hub calls fail fast locally with `HubRateLimitError`
- * instead of reaching the network. Consecutive 429s back off
- * exponentially with jitter, never sooner than the Hub asked, capped at
- * a minute.
+ * One cooldown per route group, the first path segment after `/v1`
+ * (`indexer`, `auth`, `recovery`, `signing-requests`, ...), not one for
+ * the whole Hub: the Hub limits indexer reads per install, session mint
+ * and recovery per IP, and everything else per app key + IP, each in its
+ * own bucket. A throttled indexer must not block a session mint or a
+ * signing request, and an IP-wide auth limit must not freeze balances.
+ * Groups that share the Hub's default bucket each pay at most one 429
+ * before failing fast too.
+ *
+ * While a group's cooldown runs, its calls fail fast locally with
+ * `HubRateLimitError` instead of reaching the network. Consecutive 429s
+ * back off exponentially with jitter, never sooner than the Hub asked
+ * unless that exceeds the one-minute cap. State is per extension context
+ * (popup, side panel, service worker) and is not persisted.
  *
  * Deliberately dependency-free so both the indexer client and the SDK
  * client wiring in `sdk.ts` can import it without a cycle.
@@ -29,8 +36,16 @@ export class HubRateLimitError extends Error {
   }
 }
 
-let cooldownUntil = 0;
-let consecutive429s = 0;
+interface Cooldown {
+  until: number;
+  consecutive429s: number;
+}
+
+const cooldowns = new Map<string, Cooldown>();
+
+export function hubRouteGroup(url: string): string {
+  return /\/v1\/([^/?#]+)/.exec(url)?.[1] ?? "";
+}
 
 /**
  * The wait the Hub asked for, in ms: `retry-after`, else
@@ -58,14 +73,8 @@ export function cooldownMs(
   return Math.min(MAX_COOLDOWN_MS, wait);
 }
 
-export function hubCooldownRemainingMs(now = Date.now()): number {
-  return Math.max(0, cooldownUntil - now);
-}
-
-/** Throw while a cooldown runs, before any network call. */
-export function assertHubAvailable(): void {
-  const remaining = hubCooldownRemainingMs();
-  if (remaining > 0) throw new HubRateLimitError(remaining);
+export function hubCooldownRemainingMs(group: string, now = Date.now()): number {
+  return Math.max(0, (cooldowns.get(group)?.until ?? 0) - now);
 }
 
 /**
@@ -73,42 +82,53 @@ export function assertHubAvailable(): void {
  * were already in flight when the cooldown started neither extend it
  * nor count as another consecutive 429.
  */
-export function noteHubRateLimited(headers: Headers): HubRateLimitError {
+function noteRateLimited(group: string, headers: Headers): HubRateLimitError {
   const now = Date.now();
-  if (now >= cooldownUntil) {
-    consecutive429s += 1;
-    cooldownUntil = now + cooldownMs(consecutive429s, parseRetryAfterMs(headers));
+  const cooldown = cooldowns.get(group) ?? { until: 0, consecutive429s: 0 };
+  if (now >= cooldown.until) {
+    cooldown.consecutive429s += 1;
+    cooldown.until = now + cooldownMs(cooldown.consecutive429s, parseRetryAfterMs(headers));
+    cooldowns.set(group, cooldown);
   }
-  return new HubRateLimitError(cooldownUntil - now);
+  return new HubRateLimitError(cooldown.until - now);
 }
 
-export function noteHubSuccess(): void {
-  if (Date.now() >= cooldownUntil) consecutive429s = 0;
+/**
+ * `fetchImpl` gated by the request's route-group cooldown: throws
+ * `HubRateLimitError` without a network call while it runs, and on a 429.
+ */
+export async function fetchWithHubRateLimit(
+  fetchImpl: typeof fetch,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const group = hubRouteGroup(url);
+  const remaining = hubCooldownRemainingMs(group);
+  if (remaining > 0) throw new HubRateLimitError(remaining);
+  const res = await fetchImpl(input, init);
+  if (res.status === 429) throw noteRateLimited(group, res.headers);
+  if (res.ok && hubCooldownRemainingMs(group) === 0) cooldowns.delete(group);
+  return res;
 }
 
 /**
  * `fetchImpl` for the Wallet Hub SDK client. The SDK rewraps anything
- * fetch throws as "WalletHub network error: …" and a 429 response as
- * "WalletHub error 429 …"; `isHubRateLimitError` recognizes both.
+ * fetch throws as "WalletHub network error: …", which `hubRetryAfterMs`
+ * still reads.
  */
-export async function hubRateLimitedFetch(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-): Promise<Response> {
-  assertHubAvailable();
-  const res = await fetch(input, init);
-  if (res.status === 429) noteHubRateLimited(res.headers);
-  else if (res.ok) noteHubSuccess();
-  return res;
+export function hubRateLimitedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return fetchWithHubRateLimit(fetch, input, init);
+}
+
+/** The delay a Hub rate-limit error carries, or null for any other error. */
+export function hubRetryAfterMs(err: unknown): number | null {
+  if (err instanceof HubRateLimitError) return err.retryAfterMs;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  const match = /Wallet Hub rate limit: retry in (\d+)s/.exec(message);
+  return match ? Number(match[1]) * 1000 : null;
 }
 
 export function isHubRateLimitError(err: unknown): boolean {
-  if (err instanceof HubRateLimitError) return true;
-  const message = err instanceof Error ? err.message : String(err ?? "");
-  return /\bWalletHub error 429\b/.test(message) || message.includes("Wallet Hub rate limit:");
-}
-
-/** Epoch ms the running Hub cooldown ends, or null when none is running. */
-export function hubCooldownEndsAt(): number | null {
-  return cooldownUntil > Date.now() ? cooldownUntil : null;
+  return hubRetryAfterMs(err) !== null;
 }

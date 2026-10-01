@@ -6,7 +6,7 @@ import type { NetworkId } from "../state/types";
 import { DEFAULT_HUB_API_KEY, DEFAULT_HUB_BASE_URL } from "../state/types";
 import { invalidateIndexerCache } from "./indexer";
 import { readHubToken } from "./hub-session-store";
-import { hubCooldownRemainingMs, hubRateLimitedFetch, isHubRateLimitError } from "./hub-rate-limit";
+import { hubRateLimitedFetch, hubRetryAfterMs } from "./hub-rate-limit";
 
 let cachedClient: WalletHubClient | null = null;
 let cachedBaseUrl: string | null = null;
@@ -181,11 +181,9 @@ export async function resetHubConfigToDefaults(): Promise<void> {
 export function formatWalletHubError(err: unknown, fallback = "Wallet Hub request failed"): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
 
-  if (isHubRateLimitError(err)) {
-    const seconds = Math.ceil(hubCooldownRemainingMs() / 1000);
-    return seconds > 0
-      ? `Wallet Hub is busy. Try again in ${seconds}s.`
-      : "Wallet Hub is busy. Try again in a minute.";
+  const retryAfterMs = hubRetryAfterMs(err);
+  if (retryAfterMs !== null) {
+    return `Wallet Hub is busy. Try again in ${Math.max(1, Math.ceil(retryAfterMs / 1000))}s.`;
   }
 
   if (isWalletHubSessionError(err)) {

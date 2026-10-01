@@ -44,7 +44,7 @@ import type {
   IndexerNetwork
 } from "./indexer";
 import { IndexerApiKeyRejectedError } from "./indexer";
-import { assertHubAvailable, noteHubRateLimited, noteHubSuccess } from "./hub-rate-limit";
+import { fetchWithHubRateLimit } from "./hub-rate-limit";
 
 export interface ArchHubIndexerClientOptions {
   /** Hub base URL, e.g. `https://hub.arch.network`. No trailing slash. */
@@ -142,13 +142,8 @@ export class ArchHubIndexerClient {
     );
   }
 
-  /** Every Hub request goes through here so a 429 cools all of them down. */
-  private async fetchHub(url: string, init: RequestInit): Promise<Response> {
-    assertHubAvailable();
-    const res = await this.fetchImpl(url, init);
-    if (res.status === 429) throw noteHubRateLimited(res.headers);
-    if (res.ok) noteHubSuccess();
-    return res;
+  private fetchHub(url: string, init: RequestInit): Promise<Response> {
+    return fetchWithHubRateLimit(this.fetchImpl, url, init);
   }
 
   private async getJson<T>(path: string): Promise<T> {
