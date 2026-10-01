@@ -59,6 +59,8 @@ export interface SignArchResult {
 
 export interface SignPsbtOptions {
   psbtHex: string;
+  /** Sign only these inputs. Turnkey's `signTransaction` can't be limited, so this forces the raw-sighash path. */
+  inputsToSign?: number[];
 }
 
 export interface SignPsbtResult {
@@ -70,7 +72,7 @@ export interface SignPsbtResult {
  *
  * What gets BIP-322'd is the **hex string** form of the hash (its
  * UTF-8 bytes), not the 32 raw bytes the hex represents. That's the
- * convention `@saturnbtcio/arch-sdk` and the on-chain Arch validator
+ * convention `@arch-network/arch-sdk` and the on-chain Arch validator
  * agree on: `SanitizedMessageUtil.hash` itself returns
  * `TextEncoder().encode(hex.encode(finalHash))` -- i.e. the 64-char
  * lowercase hex string as UTF-8 bytes -- and `bip322-js`'s
@@ -187,7 +189,7 @@ export class SessionStampedSigner implements Signer {
     // tapKeySig-populated PSBT the existing finalize/broadcast
     // pipeline consumes unchanged.
     const parsed = bitcoin.Psbt.fromHex(opts.psbtHex);
-    if (psbtHasOpReturnOutput(parsed)) {
+    if (opts.inputsToSign || psbtHasOpReturnOutput(parsed)) {
       await signPsbtViaRawSighash(parsed, async (digestHex) => {
         const r = await this.signArchPayload({
           signingRequestId: "",
@@ -197,7 +199,7 @@ export class SessionStampedSigner implements Signer {
         // string -- exactly what tapKeySig wants for
         // SIGHASH_DEFAULT.
         return r.signature64Hex;
-      });
+      }, opts.inputsToSign);
       return { signedPsbtHex: parsed.toHex() };
     }
 

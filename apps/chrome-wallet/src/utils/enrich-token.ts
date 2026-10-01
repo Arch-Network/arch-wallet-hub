@@ -62,6 +62,23 @@ export interface EnrichedToken {
 }
 
 /**
+ * Temporary NFT classification until the indexer exposes a token standard.
+ * Requiring all three signals avoids treating normal image-backed APL tokens
+ * as collectibles.
+ */
+export function isNftToken(
+  token: Pick<EnrichedToken, "image" | "decimals" | "balance">,
+): boolean {
+  return Boolean(token.image) && token.decimals === 0 && token.balance === 1;
+}
+
+export function isRawNftCandidate(
+  token: Pick<RawIndexerToken, "image" | "decimals" | "amount">,
+): boolean {
+  return Boolean(token.image) && token.decimals === 0 && Number(token.amount) === 1;
+}
+
+/**
  * Resolve an indexer token row into a display-ready `EnrichedToken`.
  *
  * `indexer` is optional — if omitted (e.g. unit tests, or pages that

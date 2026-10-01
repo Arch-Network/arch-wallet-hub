@@ -28,7 +28,7 @@ export default function Receive() {
 
   const btcAddress = useMemo(
     () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
-    [activeAccount, state.network]
+    [activeAccount?.btcAddress, state.network]
   );
 
   useEffect(() => {
@@ -52,7 +52,7 @@ export default function Receive() {
         // derivation is fine for receive-side display.
       }
     })();
-  }, [activeAccount, state.network]);
+  }, [activeAccount?.id, activeAccount?.archAddress, activeAccount?.publicKeyHex, state.network]);
 
   useEffect(() => {
     let cancelled = false;

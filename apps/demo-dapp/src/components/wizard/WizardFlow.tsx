@@ -17,7 +17,7 @@ export interface WalletState {
   network: string;
   turnkeyResourceId?: string;
   // For Turnkey wallets
-  isCustodial?: boolean; // true = server can sign, false = passkey must sign
+  isCustodial?: boolean; // false = passkey must sign; anything else is an unsupported legacy custodial wallet
   organizationId?: string;
 }
 

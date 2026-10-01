@@ -88,7 +88,7 @@ Push to `main` triggers `.github/workflows/deploy.yml`:
 2. Pushes to ECR as both `:${{ github.sha }}` (immutable) and `:latest` (operator convenience / CDK fallback)
 3. Pins the running ECS task definition to the SHA tag via `deploy/pin-ecs-image.sh` (rolling deployment of that revision)
 
-The pin helper **clones the live task definition** and changes only the matching container image. It does **not** `--force-new-deployment` of `:latest` (that re-pulls a mutable tag; issue #47) and it does **not** register a CDK-shaped revision (live env/secrets have drifted from `infra/cdk`). Env, secret, CPU, and networking changes still belong in CDK and must go through `cdk deploy`.
+The pin helper **clones the live task definition** and changes only the matching container image. It does **not** `--force-new-deployment` of `:latest` (that re-pulls a mutable tag; issue #47) and it does **not** register a CDK-shaped revision (production runs a hand-registered task definition; see #123). Env, secret, and CPU changes therefore never reach production through CI: register the new revision by hand and make the same change in `infra/cdk`, and do not `cdk deploy` without the reviewed template diff described under [Infrastructure changes (CDK)](#infrastructure-changes-cdk). The next CI run clones whatever revision the service is running.
 
 **Prerequisites:** Set `AWS_DEPLOY_ROLE_ARN` in GitHub repo secrets. The role needs ECR push plus:
 
@@ -149,11 +149,27 @@ aws ecs update-service --cluster wallet-hub --service wallet-hub-api --force-new
 
 ### Infrastructure changes (CDK)
 
+> **Do not `cdk deploy` without a reviewed template diff** (see #123). The
+> stack has not been deployed since 2026-05-06; production runs hand-registered
+> API task definitions and a hand-made HTTPS listener. Before any deploy, a
+> human must review a fresh `cdk diff --method template` against the live
+> stack (no RDS replacement, no `AppSecrets` change) and confirm RDS deletion
+> protection is on.
+
 ```bash
 cd infra/cdk
-npm install
-npx cdk deploy --require-approval never
+npm ci
+# Read-only: compares against the deployed template. The default diff method
+# creates a CloudFormation change set, so always pass --method template.
+npx cdk diff WalletHubStack --method template \
+  -c corsAllowOrigins=https://hub.arch.network
+# Only after the review above. CDK prompts before IAM / security-group changes;
+# do not pass --require-approval never.
+npx cdk deploy WalletHubStack -c corsAllowOrigins=https://hub.arch.network
 ```
+
+`npx cdk` resolves to the `aws-cdk` CLI pinned in `infra/cdk/package.json`.
+`corsAllowOrigins` is required; synthesis fails without it.
 
 ### View logs
 

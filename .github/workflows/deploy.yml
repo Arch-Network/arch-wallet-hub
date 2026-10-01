@@ -75,10 +75,19 @@ jobs:
 
       # Pin the running task definition to the SHA we just pushed.
       # Do not --force-new-deployment :latest (issue #47): that re-pulls
-      # a mutable tag and is how live env/secrets already drifted from
-      # CDK. The helper clones the *live* revision and changes only the
-      # matching container image. Env/secret/CPU changes still belong
-      # in infra/cdk and must go through `cdk deploy`.
+      # a mutable tag. The helper clones the revision the service is
+      # *running* (describe-services → taskDefinition) and changes only
+      # the matching container image, then registers that as a new
+      # revision.
+      #
+      # NOTE: env and secret changes in infra/cdk/lib/wallet-hub-stack.ts
+      # still do NOT reach production through this workflow; every field
+      # but the image is copied from the live revision. The service runs
+      # a hand-registered task definition (see #123). Until a reviewed
+      # `cdk deploy` has happened, an env or secret change means
+      # registering a new revision by hand AND making the same change in
+      # the stack, so the two do not drift further. The next run of this
+      # job then clones that revision.
       #
       # IMAGE_TAG is passed through env (not interpolated into the
       # script body) — same injection-sink rule as PR #43, even though

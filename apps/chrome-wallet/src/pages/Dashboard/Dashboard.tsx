@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { useWideMode } from "../../hooks/useWideMode";
+import { useRetryCountdown } from "../../hooks/useRetryCountdown";
 import {
   getIndexer,
   isIndexerAuthError,
   isIndexerNotFoundError,
+  isIndexerRateLimitError,
   type BtcAddressRuneBalance,
   type BtcInscriptionSummary,
   type IndexerClient
@@ -14,6 +16,7 @@ import {
 import { formatRuneAmount, labelForRune } from "../../utils/runes-format";
 import { InscriptionThumb } from "../../components/InscriptionThumb";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
+import { hubRetryAfterMs } from "../../utils/hub-rate-limit";
 import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd, formatUsd } from "../../utils/format";
@@ -45,6 +48,8 @@ interface TokenBalance {
 type RecentTx = ActivityRowTx;
 
 const DASHBOARD_FETCH_DEDUPE_MS = 30_000;
+/** Retry delay for a rate limit that carries none, e.g. an upstream indexer throttle. */
+const RATE_LIMIT_RETRY_FALLBACK_MS = 30_000;
 
 function SkeletonBalance() {
   return (
@@ -158,7 +163,7 @@ function isBtcTxConfirmed(tx: any): boolean {
 }
 
 export default function Dashboard() {
-  const { activeAccount, state } = useWallet();
+  const { activeAccount, state, loading: walletLoading } = useWallet();
   const navigate = useNavigate();
   const { price: btcUsd } = useBtcUsdPrice();
   // Matches the 880px breakpoint that flips the dashboard into a
@@ -197,6 +202,7 @@ export default function Dashboard() {
   const [tokensLoaded, setTokensLoaded] = useState(false);
   const [txsLoaded, setTxsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busyRetryAt, setBusyRetryAt] = useState<number | null>(null);
   const [airdropLoading, setAirdropLoading] = useState(false);
   const inFlightFetchKeyRef = useRef<string | null>(null);
   const lastFetchRef = useRef<{ key: string; at: number } | null>(null);
@@ -233,6 +239,9 @@ export default function Dashboard() {
 
   const fetchAll = useCallback(async (opts?: { noCache?: boolean }) => {
     if (!activeAccount) {
+      // Not loaded yet is not "no account": zeros here would be kept as
+      // the last good balance if the account's first read then fails.
+      if (walletLoading) return;
       setBtcBalance(0);
       setBtcPending(0);
       setBtcProtected(0);
@@ -259,8 +268,29 @@ export default function Dashboard() {
       }
     }
 
+    if (lastFetchRef.current && lastFetchRef.current.key !== fetchKey) {
+      // A failed read keeps the last good data, which here belongs to
+      // the previous account or network.
+      setBtcBalance(null);
+      setBtcPending(0);
+      setBtcProtected(0);
+      setArchLamports(null);
+      setTokens(null);
+      setRunes(null);
+      setInscriptions(null);
+      setRecentTxs(null);
+      setOverviewLoaded(false);
+      setTokensLoaded(false);
+      setTxsLoaded(false);
+    }
     inFlightFetchKeyRef.current = fetchKey;
     setError(null);
+    let busyForMs = null as number | null;
+    const noteRateLimit = (e: unknown): boolean => {
+      if (!isIndexerRateLimitError(e)) return false;
+      busyForMs = Math.max(busyForMs ?? 0, hubRetryAfterMs(e) ?? RATE_LIMIT_RETRY_FALLBACK_MS);
+      return true;
+    };
     try {
       const indexer = await getIndexer();
       const btcAddrForNetwork = reEncodeTaprootAddress(inputAddr, state.network);
@@ -278,9 +308,12 @@ export default function Dashboard() {
     // (the source-of-truth signal for AMM swaps). Same response is
     // re-used by the token display flow below to avoid a duplicate
     // network call.
+    let tokensFailed = false;
     const rawTokensPromise = indexer.getAccountTokens(archAddr || inputAddr).catch((e: any) => {
       if (!isIndexerAuthError(e) && !isIndexerNotFoundError(e)) {
         console.warn("[Dashboard] getAccountTokens failed:", e?.message);
+        tokensFailed = true;
+        noteRateLimit(e);
       }
       return null;
     });
@@ -292,6 +325,19 @@ export default function Dashboard() {
       noCache: opts?.noCache
     }).then(async (overview) => {
       const btcSummary = overview?.btc?.summary;
+      // A failed or timed-out read is an unknown balance, not zero: keep
+      // whatever was last shown (null renders a skeleton).
+      const btcUnknown = !btcSummary && (overview.btc.summaryTimedOut || !!overview.btc.summaryError);
+      const archUnknown =
+        !overview.arch.account && (overview.arch.accountTimedOut || !!overview.arch.accountError);
+      const rateLimited = [
+        overview.btc.summaryError,
+        overview.arch.accountError,
+        overview.arch.recentTransactionsError,
+      ].filter(noteRateLimit).length > 0;
+      if ((btcUnknown || archUnknown) && !rateLimited) {
+        setError("Couldn't load your balances. Try again in a moment.");
+      }
       let confirmedSats = 0;
       let pendingSats = 0;
       // `protected_value` is only present when the indexer has
@@ -323,22 +369,24 @@ export default function Dashboard() {
 
       const lamports = overview?.arch?.account?.lamports_balance ?? 0;
       const archAddr = activeAccount.archAddress ?? overview?.archAccountAddress ?? "";
-      setBtcBalance(confirmedSats);
-      setBtcPending(pendingSats);
-      setBtcProtected(protectedSats);
-      setArchLamports(lamports);
+      if (!btcUnknown) {
+        setBtcBalance(confirmedSats);
+        setBtcPending(pendingSats);
+        setBtcProtected(protectedSats);
+      }
+      if (!archUnknown) setArchLamports(lamports);
       setArchAddress(archAddr);
       setOverviewLoaded(true);
 
       // Fetch aggregated rune balances in parallel with the rest of
-      // the overview. Failure is silent (sets []) because rune
-      // balances are an additive display surface -- if the indexer
-      // hiccups, the user still sees BTC/Arch/tokens correctly. The
-      // dashboard refresh interval will retry naturally.
+      // the overview. Failure is silent (keeps the last list, else [])
+      // because rune balances are an additive display surface -- if the
+      // indexer hiccups, the user still sees BTC/Arch/tokens correctly.
+      // The dashboard refresh interval will retry naturally.
       indexer
         .getBtcAddressRunes(btcAddrForNetwork)
         .then((r) => setRunes(Array.isArray(r?.balances) ? r.balances : []))
-        .catch(() => setRunes([]));
+        .catch(() => setRunes((prev) => prev ?? []));
 
       // Fetch the first page of inscriptions held at this address.
       // Same best-effort pattern: silent fallback to empty on error,
@@ -351,7 +399,7 @@ export default function Dashboard() {
         .then((r) =>
           setInscriptions(Array.isArray(r?.inscriptions) ? r.inscriptions : [])
         )
-        .catch(() => setInscriptions([]));
+        .catch(() => setInscriptions((prev) => prev ?? []));
 
       const btcTxItems: RecentTx[] = [];
       try {
@@ -422,6 +470,7 @@ export default function Dashboard() {
       } catch (e: any) {
         if (!isIndexerAuthError(e) && !isIndexerNotFoundError(e)) {
           console.warn("[Dashboard] getBtcAddressTxs failed:", e?.message);
+          noteRateLimit(e);
         }
       }
 
@@ -483,12 +532,13 @@ export default function Dashboard() {
         const tb = timestampToMs(b.timestamp) ?? 0;
         return tb - ta;
       });
-      setRecentTxs(merged.slice(0, 5));
+      const keepLastActivity = busyForMs !== null;
+      setRecentTxs((prev) => (keepLastActivity && prev ? prev : merged.slice(0, 5)));
       setTxsLoaded(true);
     }).catch((e: any) => {
       const msg = e?.message || "Failed to load balances";
       const isNetworkError = /fetch|network|ECONNREFUSED|abort/i.test(msg);
-      if (!isNetworkError) setError(msg);
+      if (!noteRateLimit(e) && !isNetworkError) setError(msg);
       setOverviewLoaded(true);
       setTxsLoaded(true);
     });
@@ -498,6 +548,7 @@ export default function Dashboard() {
     // round-trip on every dashboard render.
     const tokensPromise = rawTokensPromise.then(async (res) => {
       try {
+        if (tokensFailed) return;
         const rawTokens = res?.tokens ?? [];
         const enriched = await enrichIndexerTokens(rawTokens, state.network, indexer);
         setTokens(enriched);
@@ -512,26 +563,32 @@ export default function Dashboard() {
       await Promise.allSettled([overviewPromise, tokensPromise]);
     } catch (e: any) {
       console.warn("[Dashboard] load failed:", e?.message);
-      setBtcBalance(0);
-      setBtcPending(0);
-      setBtcProtected(0);
-      setRunes([]);
-      setInscriptions([]);
-      setArchLamports(0);
-      setTokens([]);
-      setRecentTxs([]);
+      if (!noteRateLimit(e)) setError(e?.message || "Failed to load balances");
       markDashboardLoaded();
     } finally {
       if (inFlightFetchKeyRef.current === fetchKey) {
         inFlightFetchKeyRef.current = null;
       }
       lastFetchRef.current = { key: fetchKey, at: Date.now() };
+      setBusyRetryAt(busyForMs === null ? null : Date.now() + busyForMs);
     }
-  }, [activeAccount, markDashboardLoaded, state.network]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.btcAddress,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    markDashboardLoaded,
+    state.network,
+    walletLoading,
+  ]);
 
   useEffect(() => {
     fetchAll();
   }, [fetchAll]);
+
+  const busySeconds = useRetryCountdown(busyRetryAt, () => {
+    void fetchAll({ noCache: true });
+  });
 
   const [refreshing, setRefreshing] = useState(false);
   const handleRefresh = useCallback(async () => {
@@ -577,7 +634,9 @@ export default function Dashboard() {
 
   const isTestnet = state.network === "testnet4";
   const ansEnabled = isAnsEnabledForNetwork(state.network);
-  const balancesReady = overviewLoaded;
+  // A balance that failed to load stays null; it renders as a skeleton,
+  // never as zero.
+  const balancesReady = overviewLoaded && btcBalance !== null && archLamports !== null;
 
   // The swap engine has its own NetworkConfig (token mints, program ids,
   // PropAMM deployment metadata). It needs the same network-id mapping
@@ -609,6 +668,11 @@ export default function Dashboard() {
 
       <div className="dashboard-shell">
       {error && <div className="error-banner">{error}</div>}
+      {busySeconds !== null && (
+        <div className="warning-banner">
+          {busySeconds > 0 ? `Busy right now. Retrying in ${busySeconds}s…` : "Busy right now. Retrying…"}
+        </div>
+      )}
 
       {/* Action bar */}
       {balancesReady ? (
@@ -760,7 +824,7 @@ export default function Dashboard() {
 
           {/* APL tokens (capped inline; overflow folds into a
               "+N more tokens" row that deep-links to the token list). */}
-          {tokensLoaded
+          {tokensLoaded && tokens !== null
             ? (() => {
                 const allTokens = tokens ?? [];
                 const visible = allTokens.slice(0, inlineTokenCap);
@@ -825,8 +889,8 @@ export default function Dashboard() {
               <div
                 className="asset-row clickable"
                 key={r.rune_id}
-                onClick={() => navigate(`/send-rune/${encodeURIComponent(r.rune_id)}`)}
-                title={`Send ${r.spaced_name}`}
+                onClick={() => navigate(`/rune/${encodeURIComponent(r.rune_id)}`)}
+                title={`View ${r.spaced_name}`}
               >
                 <div className="asset-icon rune">
                   {r.symbol && r.symbol.trim().length > 0 ? r.symbol : "\u00A4"}
@@ -907,8 +971,8 @@ export default function Dashboard() {
           </button>
         </div>
         <div className="card">
-          {txsLoaded ? (
-            (recentTxs ?? []).length > 0 ? (
+          {txsLoaded && recentTxs !== null ? (
+            recentTxs.length > 0 ? (
               recentTxs!.map((tx) => (
                 <ActivityRow
                   key={`${tx.type}-${tx.txid}`}

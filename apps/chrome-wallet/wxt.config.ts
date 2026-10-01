@@ -8,7 +8,7 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 // In monorepos with nested `node_modules` (this repo: arch-sdk lives at
-// `packages/arch-swap-engine/node_modules/@saturnbtcio/arch-sdk/`) Rolldown
+// `packages/arch-swap-engine/node_modules/@arch-network/arch-sdk/`) Rolldown
 // can't walk up to find the bare specifier `vite-plugin-node-polyfills/
 // shims/*` from those nested importers because the plugin is only installed
 // in the chrome-wallet package. The plugin's `globals: { Buffer | global |
@@ -155,7 +155,7 @@ export default defineConfig({
       // them as plain `resolve.alias` strings, which Rolldown can't resolve
       // when the importer lives in a nested `node_modules/` that has no copy
       // of `vite-plugin-node-polyfills` (e.g. `packages/arch-swap-engine/
-      // node_modules/@saturnbtcio/arch-sdk/`). `enforce: 'pre'` ensures we
+      // node_modules/@arch-network/arch-sdk/`). `enforce: 'pre'` ensures we
       // intercept before Rolldown's own resolver tries (and fails).
       // (https://github.com/davidmyersdev/vite-plugin-node-polyfills/issues/81)
       {

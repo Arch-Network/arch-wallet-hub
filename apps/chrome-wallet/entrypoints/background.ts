@@ -3,12 +3,14 @@
 // module init when used from the service worker context.
 import "../src/utils/buffer-polyfill";
 import { walletStore } from "../src/state/wallet-store";
+import { OPEN_AS_KEY, readOpenAsPreference } from "../src/state/open-as-preference";
 import { pendingRequestsStore } from "../src/messaging/pending-requests";
 import { keystore } from "../src/crypto/keystore";
 import type { PendingRequest } from "../src/messaging/types";
 import type { OpenAsMode } from "../src/state/types";
 import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
 import { reEncodeTaprootAddress } from "../src/utils/addressNetwork";
+import { parseU64DecimalString } from "../src/utils/u64-amount";
 import {
   applyDiagnosticsRuntime,
   installGlobalErrorHandlers,
@@ -92,13 +94,19 @@ async function applyOpenAsPreference(mode: OpenAsMode): Promise<void> {
   }
 }
 
-async function syncOpenAsFromStorage(): Promise<void> {
-  try {
-    const state = await walletStore.getState();
-    await applyOpenAsPreference(state.openAs ?? "popup");
-  } catch {
-    await applyOpenAsPreference("popup");
-  }
+let openAsSync = Promise.resolve();
+function syncOpenAsFromStorage(): Promise<void> {
+  // Serialize Chrome's two action-setting calls so rapid toggles cannot
+  // leave a popup configured alongside side-panel click behavior.
+  openAsSync = openAsSync.then(async () => {
+    const saved = await readOpenAsPreference();
+    const mode = saved ?? (await walletStore.getState()).openAs;
+    await applyOpenAsPreference(mode);
+  }).catch((err) => {
+    // A transient read failure should not reset the user's toolbar mode.
+    console.warn("[arch-wallet] Could not restore open mode", err);
+  });
+  return openAsSync;
 }
 
 /**
@@ -344,7 +352,7 @@ export default defineBackground(() => {
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (changes.arch_wallet_keystore) {
+    if (changes.arch_wallet_keystore || changes[OPEN_AS_KEY]) {
       // Re-sync open-as in case the user toggled it from the UI.
       syncOpenAsFromStorage();
     }
@@ -540,9 +548,10 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: "Not authorized" });
           return false;
         }
-        rejectAndCleanup(message.requestId, "User rejected the request").then(() =>
-          sendResponse({ ok: true }),
-        );
+        rejectAndCleanup(
+          message.requestId,
+          typeof message.reason === "string" ? message.reason : "User rejected the request",
+        ).then(() => sendResponse({ ok: true }));
         return true;
       }
 
@@ -686,6 +695,20 @@ export default defineBackground(() => {
                 "SIGN_ARCH_MESSAGE_HASH requires payload.messageHashHex = 64 lowercase hex chars (32-byte hash)",
             };
           }
+        }
+        if (msg.type === "SEND_TRANSFER" && parseU64DecimalString((msg as any).payload?.lamports) === null) {
+          return {
+            id: msg.id,
+            success: false,
+            error: "SEND_TRANSFER requires payload.lamports = decimal digit string between 0 and 2^64-1",
+          };
+        }
+        if (msg.type === "SEND_TOKEN_TRANSFER" && parseU64DecimalString((msg as any).payload?.amount) === null) {
+          return {
+            id: msg.id,
+            success: false,
+            error: "SEND_TOKEN_TRANSFER requires payload.amount = decimal digit string between 0 and 2^64-1",
+          };
         }
 
         // Per-origin permissions.

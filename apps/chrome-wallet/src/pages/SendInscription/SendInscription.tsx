@@ -120,7 +120,7 @@ export default function SendInscription() {
       if (!ck || ck.form.kind !== "inscription") return;
       setRecipient(ck.form.recipient);
     })();
-  }, [activeAccount, inscriptionId, state.network]);
+  }, [activeAccount?.id, inscriptionId, state.network]);
 
   useEffect(() => {
     if (!activeAccount || !inscriptionId) return;
@@ -131,7 +131,7 @@ export default function SendInscription() {
       accountId: activeAccount.id,
       network: state.network,
     });
-  }, [step, recipient, activeAccount, inscriptionId, state.network]);
+  }, [step, recipient, activeAccount?.id, inscriptionId, state.network]);
 
   useEffect(() => {
     if (step === "sent") {

@@ -26,6 +26,7 @@ import { passkeyBootstrap } from "../session/bootstrap-passkey";
 import { EmailBootstrap, type EmailBootstrapArgs } from "../session/bootstrap-email";
 import { ensureHubSession } from "../utils/hub-session";
 import { clearAllHubTokens } from "../utils/hub-session-store";
+import { readOpenAsPreference, writeOpenAsPreference } from "./open-as-preference";
 
 const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
 /**
@@ -372,14 +373,19 @@ export const walletStore = {
    * show the Unlock screen vs Onboarding).
    */
   async getState(): Promise<AppState> {
+    const openAs = await readOpenAsPreference();
     const sealed = await keystore.isSealed();
     const unlocked = await keystore.isUnlocked();
-    if (!sealed) return { ...DEFAULT_STATE };
-    if (!unlocked) return lockedShellState(true);
+    if (!sealed) return { ...DEFAULT_STATE, openAs: openAs ?? "popup" };
+    if (!unlocked) return { ...lockedShellState(true), openAs: openAs ?? "popup" };
     const raw = (await keystore.read()) as any;
-    if (!raw) return lockedShellState(true);
+    if (!raw) return { ...lockedShellState(true), openAs: openAs ?? "popup" };
     const { state, migrated } = migrateState(raw);
     state.locked = false;
+    // Migrate the legacy encrypted preference only after decryption succeeds.
+    // Never persist the locked shell's default over the user's choice.
+    if (openAs === undefined) await writeOpenAsPreference(state.openAs);
+    else state.openAs = openAs;
     if (migrated) await savePlaintextState(state);
     return state;
   },
@@ -813,9 +819,7 @@ export const walletStore = {
   },
 
   async setOpenAs(mode: "popup" | "sidepanel"): Promise<void> {
-    const state = await this.requireUnlockedState();
-    state.openAs = mode;
-    await savePlaintextState(state);
+    await writeOpenAsPreference(mode);
   },
 
   /**

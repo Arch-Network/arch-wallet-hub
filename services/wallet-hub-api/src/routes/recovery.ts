@@ -70,6 +70,7 @@ import { timingSafeEqual } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
+import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
 import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
 import {
   computeCandidateToken,
@@ -235,6 +236,8 @@ const VerifyResponse = Type.Object({
 });
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
+  setDefaultRateLimitGroup(server, "recovery");
+
   server.post(
     "/recovery/email/init",
     {
@@ -774,7 +777,13 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
 
       try {
         const turnkey = getTurnkeyClient();
-        const { otpId, activityId } = await turnkey.initOtpAuth({
+        const {
+          otpId,
+          activityId,
+          submitElapsedMs,
+          pollElapsedMs,
+          pollAttempts
+        } = await turnkey.initOtpAuth({
           organizationId: candidate.organizationId,
           userId: candidate.rootUserId,
           contact: email,
@@ -843,6 +852,9 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
               ? { previousOtpIdHash: fingerprintOtpId(previousOtpId) }
               : {}),
             turnkeyElapsedMs,
+            turnkeySubmitElapsedMs: submitElapsedMs,
+            turnkeyPollElapsedMs: pollElapsedMs,
+            turnkeyPollAttempts: pollAttempts,
             turnkeyActivityId: activityId
           },
           "recovery.otp_start.succeeded"

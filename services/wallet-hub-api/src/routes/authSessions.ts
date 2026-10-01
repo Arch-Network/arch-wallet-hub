@@ -20,13 +20,21 @@
  * challenge-signature handshake.
  */
 
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync, FastifyRequest } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { Address as Bip322Address } from "@saturnbtcio/bip322-js";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { getOrCreateUserByExternalId } from "../db/apps.js";
-import { getLinkedWalletForUser, getTurnkeyResourceByIdForApp } from "../db/queries.js";
+import {
+  getLinkedWalletForUser,
+  getTurnkeyResourceByIdForApp,
+  markTurnkeyResourceKeyVerifiedForApp,
+  type TurnkeyResourceRow,
+} from "../db/queries.js";
+import { getTurnkeyClient } from "../turnkey/store.js";
+import { findTurnkeyWalletAccount } from "../turnkey/walletAccountVerification.js";
+import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
 import {
   createChallenge,
   createExternalChallenge,
@@ -92,7 +100,45 @@ const RevokeResponse = Type.Object({
   revoked: Type.Boolean(),
 });
 
+/**
+ * Rows imported before migration 018 hold a caller-supplied key. Confirm
+ * it against Turnkey once and remember the result; anything Turnkey
+ * doesn't know (or a parent-org row) stays untrusted.
+ */
+async function verifyStoredResourceKey(
+  server: FastifyInstance,
+  request: FastifyRequest,
+  resource: TurnkeyResourceRow,
+): Promise<boolean> {
+  if (!resource.default_address || !resource.default_public_key_hex) return false;
+  if (resource.organization_id === server.config.TURNKEY_ORGANIZATION_ID) return false;
+  try {
+    const found = await findTurnkeyWalletAccount(getTurnkeyClient(), {
+      organizationId: resource.organization_id,
+      address: resource.default_address,
+      publicKeyHex: resource.default_public_key_hex,
+    });
+    if (!found) return false;
+    await withDbTransaction(getDbPool(), (client) =>
+      markTurnkeyResourceKeyVerifiedForApp(client, {
+        id: resource.id,
+        appId: resource.app_id,
+        walletId: found.walletId,
+      }),
+    );
+    return true;
+  } catch (err: any) {
+    request.log.warn(
+      { resourceId: resource.id, err: String(err?.message ?? err) },
+      "auth.session.challenge.key_verification_failed",
+    );
+    return false;
+  }
+}
+
 export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
+  setDefaultRateLimitGroup(server, "auth");
+
   server.post(
     "/auth/session/challenge",
     {
@@ -110,7 +156,8 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
       // Ensure the user exists. This is the same upsert the rest of
       // the API uses; the proof-of-control comes from the Turnkey
       // signature on the challenge, not from this lookup.
-      const challenge = await withDbTransaction(getDbPool(), async (client) => {
+      const db = getDbPool();
+      const lookup = await withDbTransaction(db, async (client) => {
         const user = await getOrCreateUserByExternalId(client, {
           appId,
           externalUserId: body.externalUserId,
@@ -122,20 +169,30 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
         if (!resource) return null;
         if (resource.user_id !== user.id) return null;
         if (!resource.default_public_key_hex) return null;
-        return createChallenge(client, {
-          appId,
-          userId: user.id,
-          externalUserId: body.externalUserId,
-          resourceId: resource.id,
-        });
+        return { user, resource };
       });
+      const keyTrusted =
+        !!lookup &&
+        (!!lookup.resource.key_verified_at ||
+          (await verifyStoredResourceKey(server, request, lookup.resource)));
+      const challenge =
+        lookup && keyTrusted
+          ? await withDbTransaction(db, (client) =>
+              createChallenge(client, {
+                appId,
+                userId: lookup.user.id,
+                externalUserId: body.externalUserId,
+                resourceId: lookup.resource.id,
+              }),
+            )
+          : null;
 
       if (!challenge) {
         return reply.code(400).send({
           statusCode: 400,
           error: "InvalidResource",
           message:
-            "Turnkey resource not found for this user, or resource has no default public key on file.",
+            "Turnkey resource not found for this user, or resource has no Turnkey-verified public key on file.",
         });
       }
 
@@ -162,40 +219,26 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
           challengeId: body.challengeId,
           appId,
         });
-        if (!challenge) return { kind: "challenge_not_found" as const };
+        // External challenges and pre-018 challenges carry no resource.
+        if (!challenge || !challenge.resource_id) return { kind: "challenge_not_found" as const };
 
-        // Look up the user's most-recent matching resource by
-        // cross-referencing the challenge's user_id with their
-        // turnkey_resources. We persisted resource_id implicitly via
-        // the challenge message; re-derive it from the user's
-        // resources here to keep the schema lean.
-        const resourceRes = await client.query<{
-          default_public_key_hex: string | null;
-        }>(
-          `
-            SELECT default_public_key_hex
-            FROM turnkey_resources
-            WHERE app_id = $1 AND user_id = $2
-              AND default_public_key_hex IS NOT NULL
-            ORDER BY created_at DESC
-          `,
-          [appId, challenge.user_id],
-        );
-
-        // Try every candidate key. In the common case a user has one
-        // Turnkey resource; trying all defends against the edge case
-        // where a user has multiple resources and we don't know
-        // which one signed.
-        const candidates = resourceRes.rows
-          .map((r) => r.default_public_key_hex)
-          .filter((k): k is string => !!k);
-        const verified = candidates.some((pubkey) =>
-          verifyChallengeSignature({
-            payloadHex: challenge.payload_hex,
-            signatureHex: body.signatureHex,
-            defaultPublicKeyHex: pubkey,
-          }),
-        );
+        const resource = await getTurnkeyResourceByIdForApp(client, {
+          id: challenge.resource_id,
+          appId,
+        });
+        if (
+          !resource ||
+          resource.user_id !== challenge.user_id ||
+          !resource.key_verified_at ||
+          !resource.default_public_key_hex
+        ) {
+          return { kind: "bad_signature" as const };
+        }
+        const verified = verifyChallengeSignature({
+          payloadHex: challenge.payload_hex,
+          signatureHex: body.signatureHex,
+          defaultPublicKeyHex: resource.default_public_key_hex,
+        });
         if (!verified) return { kind: "bad_signature" as const };
 
         const minted = await mintSession(client, {
@@ -218,7 +261,7 @@ export const registerAuthSessionRoutes: FastifyPluginAsync = async (server) => {
           statusCode: 401,
           error: "InvalidSignature",
           message:
-            "Challenge signature did not verify against any Turnkey resource for this user.",
+            "Challenge signature did not verify against the challenge's Turnkey resource.",
         });
       }
       return {

@@ -4,11 +4,26 @@ import { invalidateClientCache } from "../utils/sdk";
 import { keystore, type MigrationStatus } from "../crypto/keystore";
 import type { AppState, WalletAccount, NetworkId, RecipientAsset, Contact } from "../state/types";
 import { DEFAULT_STATE } from "../state/types";
+import { OPEN_AS_KEY } from "../state/open-as-preference";
 
 export interface WalletStateBundle {
   state: AppState;
   migration: MigrationStatus;
   loading: boolean;
+}
+
+// getState() decrypts a fresh copy on every call, and pages key fetch
+// effects on `state` / `activeAccount`, so unchanged content must keep
+// the previous object identity or every refresh refetches.
+function reuseUnchanged(prev: AppState, next: AppState): AppState {
+  if (JSON.stringify(prev) === JSON.stringify(next)) return prev;
+  return {
+    ...next,
+    accounts: next.accounts.map((account) => {
+      const old = prev.accounts.find((a) => a.id === account.id);
+      return old && JSON.stringify(old) === JSON.stringify(account) ? old : account;
+    }),
+  };
 }
 
 export function useWallet() {
@@ -21,7 +36,7 @@ export function useWallet() {
       walletStore.getState(),
       keystore.getMigrationStatus(),
     ]);
-    setState(s);
+    setState((prev) => reuseUnchanged(prev, s));
     setMigration(m);
     setLoading(false);
   }, []);
@@ -29,15 +44,19 @@ export function useWallet() {
   useEffect(() => {
     refresh();
     const listener = (changes: Record<string, chrome.storage.StorageChange>) => {
-      if ("arch_wallet_keystore" in changes || "arch_wallet_state" in changes) {
+      if ("arch_wallet_keystore" in changes || "arch_wallet_state" in changes || OPEN_AS_KEY in changes) {
         refresh();
       }
     };
     chrome.storage.local.onChanged.addListener(listener);
     let sessionListener: ((c: Record<string, chrome.storage.StorageChange>) => void) | null = null;
     try {
-      sessionListener = () => {
-        refresh();
+      // The keystore session key (lock/unlock) is the only session-storage
+      // key wallet state reads. Send-form checkpoints, Hub tokens, Turnkey
+      // snapshots and pending requests also live there, and refreshing on
+      // their writes re-renders every page that keys effects on wallet state.
+      sessionListener = (changes) => {
+        if ("arch_wallet_session_key" in changes) refresh();
       };
       chrome.storage.session?.onChanged.addListener(sessionListener);
     } catch {
