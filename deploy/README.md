@@ -131,11 +131,27 @@ After updating secrets, force a new API deployment to pick up the changes.
 
 ### Infrastructure changes (CDK)
 
+> **Do not `cdk deploy` without a reviewed template diff** (see #123). The
+> stack has not been deployed since 2026-05-06; production runs hand-registered
+> API task definitions and a hand-made HTTPS listener. Before any deploy, a
+> human must review a fresh `cdk diff --method template` against the live
+> stack (no RDS replacement, no `AppSecrets` change) and confirm RDS deletion
+> protection is on.
+
 ```bash
 cd infra/cdk
-npm install
-npx cdk deploy --require-approval never
+npm ci
+# Read-only: compares against the deployed template. The default diff method
+# creates a CloudFormation change set, so always pass --method template.
+npx cdk diff WalletHubStack --method template \
+  -c corsAllowOrigins=https://hub.arch.network
+# Only after the review above. CDK prompts before IAM / security-group changes;
+# do not pass --require-approval never.
+npx cdk deploy WalletHubStack -c corsAllowOrigins=https://hub.arch.network
 ```
+
+`npx cdk` resolves to the `aws-cdk` CLI pinned in `infra/cdk/package.json`.
+`corsAllowOrigins` is required; synthesis fails without it.
 
 ### View logs
 

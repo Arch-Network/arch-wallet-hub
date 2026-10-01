@@ -73,6 +73,14 @@ jobs:
           docker push $ECR_REGISTRY/$FRONTEND_REPO:${{ github.sha }}
           docker push $ECR_REGISTRY/$FRONTEND_REPO:latest
 
+      # NOTE: This job ONLY rolls the running tasks onto the newest image
+      # (`update-service --force-new-deployment`). It does NOT register a
+      # new task definition, so env and secret changes in
+      # infra/cdk/lib/wallet-hub-stack.ts do NOT reach production through
+      # this workflow. The service runs a hand-registered task definition
+      # (see #123). Until a reviewed `cdk deploy` has happened, an env or
+      # secret change means registering a new revision by hand AND making
+      # the same change in the stack, so the two do not drift further.
       - name: Deploy API service
         run: |
           aws ecs update-service \
