@@ -19,14 +19,11 @@
  *
  * Implementation note
  * -------------------
- * Calling `initRecoveryEmail` *will* send a real OTP. We do not
- * call `verifyRecoveryEmail` -- the test is satisfied when the Hub
- * confirms at least one candidate was contacted (i.e. Turnkey
- * accepted INIT_OTP_AUTH against a known sub-org and we can mask
- * out the destination address). Each click also counts against the
- * 3-per-hour init rate limit, which we surface in the UI so the
- * user doesn't accidentally burn their recovery budget right
- * before they actually need it.
+ * `/recovery/email/init` only enumerates candidate wallets. The
+ * actual Turnkey send is `/recovery/email/start`. We call both, then
+ * stop -- no verify. Arrival in the inbox is enough. Each click
+ * counts against the Hub's hourly init limit, so don't spam this
+ * right before a real recovery.
  */
 
 import { useCallback, useState } from "react";
@@ -46,9 +43,11 @@ interface Props {
    * button renders disabled with an explanatory tooltip.
    */
   email: string | undefined;
+  /** Active wallet resource id; used when one email backs several wallets. */
+  resourceId?: string;
 }
 
-export default function TestRecoveryEmailButton({ email }: Props) {
+export default function TestRecoveryEmailButton({ email, resourceId }: Props) {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
   const handleClick = useCallback(async () => {
@@ -57,26 +56,44 @@ export default function TestRecoveryEmailButton({ email }: Props) {
     try {
       const client = await getClient();
       const res = await client.initRecoveryEmail({ email });
-      if (res.candidates.length > 0) {
-        setStatus({
-          kind: "sent",
-          emailMasked: res.emailMasked,
-          candidates: res.candidates.length,
-        });
-      } else {
+      if (res.candidates.length === 0) {
         // Server returns 0 candidates both for "no match found" and
         // "you hit the rate limit"; we can't tell them apart on the
         // client by design (anti-enumeration). The message below
         // covers both cases.
         setStatus({ kind: "no_match" });
+        return;
       }
+      const candidate =
+        (resourceId
+          ? res.candidates.find((c) => c.resourceId === resourceId)
+          : undefined) ??
+        (res.candidates.length === 1 ? res.candidates[0] : null);
+      if (!candidate) {
+        setStatus({
+          kind: "error",
+          message:
+            "This email has multiple wallets. Use Recover via email to pick one.",
+        });
+        return;
+      }
+      const started = await client.startRecoveryEmailOtp({
+        challengeId: res.challengeId,
+        candidateToken: candidate.candidateToken,
+        email,
+      });
+      setStatus({
+        kind: "sent",
+        emailMasked: started.emailMasked || res.emailMasked,
+        candidates: res.candidates.length,
+      });
     } catch (e: any) {
       setStatus({
         kind: "error",
         message: e?.message ?? "Unknown error",
       });
     }
-  }, [email]);
+  }, [email, resourceId]);
 
   const disabled = !email || status.kind === "sending";
   const tooltip = email
@@ -105,7 +122,7 @@ export default function TestRecoveryEmailButton({ email }: Props) {
       >
         Verifies your recovery email is reachable. You don't need to
         enter the code -- arrival in your inbox is enough. Counts
-        against the 3-per-hour recovery limit, so don't spam this
+        against the hourly recovery limit, so don't spam this
         right before a real recovery.
       </p>
 
@@ -123,6 +140,7 @@ function StatusRow({ status }: { status: Status }) {
     borderRadius: 6,
     fontSize: 11,
     lineHeight: 1.4 as const,
+    overflowWrap: "anywhere" as const,
   };
 
   if (status.kind === "sent") {
@@ -131,14 +149,14 @@ function StatusRow({ status }: { status: Status }) {
         role="status"
         style={{
           ...common,
-          background: "var(--success-bg, rgba(34,197,94,0.1))",
-          color: "var(--success-text, #16a34a)",
-          border: "1px solid var(--success-border, rgba(34,197,94,0.3))",
+          background: "color-mix(in srgb, var(--color-positive) 10%, transparent)",
+          color: "var(--color-positive)",
+          border: "1px solid color-mix(in srgb, var(--color-positive) 30%, transparent)",
         }}
       >
         Sent to {status.emailMasked}
         {status.candidates > 1
-          ? ` (covers ${status.candidates} wallets on this email)`
+          ? ` (this email has ${status.candidates} wallets; code is for the active one)`
           : ""}
         . Check your inbox -- you can discard the code.
       </div>
@@ -151,9 +169,9 @@ function StatusRow({ status }: { status: Status }) {
         role="status"
         style={{
           ...common,
-          background: "var(--warning-bg, rgba(234,179,8,0.1))",
-          color: "var(--warning-text, #ca8a04)",
-          border: "1px solid var(--warning-border, rgba(234,179,8,0.3))",
+          background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+          color: "var(--color-warning-text)",
+          border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
         }}
       >
         No wallet matched, or you hit the hourly recovery limit. If
@@ -167,9 +185,9 @@ function StatusRow({ status }: { status: Status }) {
       role="alert"
       style={{
         ...common,
-        background: "var(--error-bg, rgba(239,68,68,0.1))",
-        color: "var(--error-text, #dc2626)",
-        border: "1px solid var(--error-border, rgba(239,68,68,0.3))",
+        background: "color-mix(in srgb, var(--color-negative) 10%, transparent)",
+        color: "var(--color-negative-text)",
+        border: "1px solid color-mix(in srgb, var(--color-negative) 30%, transparent)",
       }}
     >
       Failed: {status.message}

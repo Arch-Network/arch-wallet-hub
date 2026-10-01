@@ -19,6 +19,7 @@ import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import fp from "fastify-plugin";
 import { getDbPool } from "../db/pool.js";
 import { withDbTransaction } from "../db/tx.js";
+import { userHasCredentials } from "../db/apps.js";
 import {
   resolveSessionToken,
   SESSION_TOKEN_PREFIX,
@@ -39,6 +40,12 @@ declare module "fastify" {
      * safe to ship ahead of turning enforcement on.
      */
     enforceSessionForRoute: (routeKey: string) => preHandlerHookHandler;
+    /**
+     * preHandler for routes that attach a new credential (Turnkey
+     * resource or linked wallet) to the claimed externalUserId. Always
+     * on, independent of SESSION_ENFORCED_ROUTES.
+     */
+    requireSessionForExistingUser: preHandlerHookHandler;
   }
 }
 
@@ -102,6 +109,24 @@ export function sessionEnforcementDecision(args: {
   if (typeof claimed === "string" && claimed.length > 0) {
     if (claimed !== args.sessionExternalUserId) return "forbidden";
   }
+  return "allow";
+}
+
+/**
+ * Pure decision for `requireSessionForExistingUser`. A user with no
+ * credential yet has nothing to take over and can't hold a session, so
+ * onboarding passes; once a user owns a credential, attaching another
+ * one requires a session for that same user.
+ */
+export function credentialAttachDecision(args: {
+  userHasCredentials: boolean;
+  hasValidSession: boolean;
+  sessionExternalUserId?: string;
+  claimedExternalUserId: string;
+}): SessionEnforcementDecision {
+  if (!args.userHasCredentials) return "skip";
+  if (!args.hasValidSession) return "unauthorized";
+  if (args.sessionExternalUserId !== args.claimedExternalUserId) return "forbidden";
   return "allow";
 }
 
@@ -191,6 +216,30 @@ const sessionAuthPlugin: FastifyPluginAsync = async (server) => {
       }
     };
   });
+
+  server.decorate("requireSessionForExistingUser", async function (request, reply) {
+    if (reply.sent) return;
+    const claimed = claimedExternalUserId(request);
+    if (typeof claimed !== "string" || !claimed || !request.app?.appId) return;
+    const appId = request.app.appId;
+    const hasCredentials = await withDbTransaction(getDbPool(), (client) =>
+      userHasCredentials(client, { appId, externalUserId: claimed }),
+    );
+    if (!hasCredentials) return;
+    if (!request.session) {
+      const ok = await attachSessionOrReply(request, reply);
+      if (!ok) return;
+    }
+    const decision = credentialAttachDecision({
+      userHasCredentials: true,
+      hasValidSession: true,
+      sessionExternalUserId: request.session?.externalUserId,
+      claimedExternalUserId: claimed,
+    });
+    if (decision === "forbidden") {
+      return reply.forbidden("Body/query externalUserId does not match session principal");
+    }
+  } as preHandlerHookHandler);
 };
 
 export const registerSessionAuth = fp(sessionAuthPlugin, { name: "session-auth" });

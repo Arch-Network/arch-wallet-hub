@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getClient } from "../utils/sdk";
-import { getIndexer, isIndexerAuthError } from "../utils/indexer";
+import { getIndexer, isIndexerAuthError, isIndexerRateLimitError } from "../utils/indexer";
 
 type StatusValue = "connected" | "disconnected" | "checking";
 
@@ -37,6 +37,7 @@ const MIN_FAILURES_TO_DISCONNECT = 2;
 const FAST_CONFIRM_DELAY_MS = 3_000;
 const PROBE_KEYS = ["arch", "bitcoin", "api"] as const;
 type ProbeKey = (typeof PROBE_KEYS)[number];
+type ProbeResult = "connected" | "disconnected" | "rate-limited";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -56,21 +57,23 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 /**
  * Run a single upstream probe with one cold-start retry. The first attempt
- * uses the short timeout; if it fails for any reason we wait briefly and
- * try once more with a longer timeout. Returns "connected" if either
- * attempt succeeds, otherwise "disconnected".
+ * uses the short timeout; if it fails we wait briefly and try once more
+ * with a longer timeout. Returns "connected" if either attempt succeeds,
+ * "rate-limited" as soon as an attempt is rate limited (never retried),
+ * otherwise "disconnected".
  */
-async function probeWithRetry(fn: () => Promise<unknown>): Promise<"connected" | "disconnected"> {
+export async function probeWithRetry(fn: () => Promise<unknown>): Promise<ProbeResult> {
   try {
     await withTimeout(fn(), PROBE_TIMEOUT_MS);
     return "connected";
-  } catch {
+  } catch (err) {
+    if (isIndexerRateLimitError(err)) return "rate-limited";
     try {
       await new Promise((r) => setTimeout(r, PROBE_RETRY_DELAY_MS));
       await withTimeout(fn(), PROBE_RETRY_TIMEOUT_MS);
       return "connected";
-    } catch {
-      return "disconnected";
+    } catch (retryErr) {
+      return isIndexerRateLimitError(retryErr) ? "rate-limited" : "disconnected";
     }
   }
 }
@@ -116,22 +119,27 @@ export function useApiStatus(options: UseApiStatusOptions = {}) {
 
       const archProbe = indexer
         ? probeWithRetry(() => indexer.getNetworkStats())
-        : Promise.resolve<"disconnected">("disconnected");
+        : Promise.resolve<ProbeResult>("disconnected");
       const btcProbe = indexer
         ? probeWithRetry(() => indexer.getBtcFeeEstimates())
-        : Promise.resolve<"disconnected">("disconnected");
+        : Promise.resolve<ProbeResult>("disconnected");
       const apiProbe = probeWithRetry(async () => {
         const client = await getClient();
         return client.getTurnkeyConfig();
       });
 
       const [arch, bitcoin, api] = await Promise.all([archProbe, btcProbe, apiProbe]);
-      const results: Record<ProbeKey, "connected" | "disconnected"> = { arch, bitcoin, api };
+      const results: Record<ProbeKey, ProbeResult> = { arch, bitcoin, api };
 
       let needsConfirm = false;
       setStatus((prev) => {
         const next: NetworkStatus = { ...prev };
         for (const key of PROBE_KEYS) {
+          if (results[key] === "rate-limited") {
+            // The Hub answered, so this says nothing about the upstream's
+            // health; keep the last reading and let the next poll decide.
+            continue;
+          }
           if (results[key] === "connected") {
             failuresRef.current[key] = 0;
             next[key] = "connected";

@@ -58,18 +58,29 @@ export interface OpenSessionArgs {
 
 /**
  * Key under `chrome.storage.session` where we record the liveness
- * pointer for the current Turnkey session. Two fields, both already
- * non-secret: which account the session belongs to, and when it
- * expires. The actual signing material stays in IndexedDB (origin-
+ * pointer for the current Turnkey session. Three fields, all already
+ * non-secret: which account the session belongs to, when it expires,
+ * and the PUBLIC half of the IndexedDB keypair it was registered
+ * with. The actual signing material stays in IndexedDB (origin-
  * shared, never leaves the extension origin); this is purely the
  * "yes there is a session, here's whose" hand-off between document
  * contexts.
+ *
+ * Why the pubkey is recorded: the IndexedDB keypair is shared across
+ * every extension context, so another context rotating it (its own
+ * `open()`) silently invalidates any snapshot written for the OLD
+ * key. Rehydration compares the on-disk key against the snapshot's
+ * pubkey and refuses on mismatch -- otherwise this context would
+ * stamp requests with a key Turnkey has registered under a different
+ * session (or account) and every sign would fail upstream.
  */
 const SHARED_SESSION_KEY = "arch-wallet:session-snapshot";
 
 interface SessionSnapshot {
   accountId: string;
   expiresAt: number;
+  /** Public key of the IndexedDB keypair this snapshot was written for. */
+  publicKeyHex: string;
 }
 
 /**
@@ -83,6 +94,36 @@ function sessionStorage(): chrome.storage.StorageArea | null {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c: any = typeof chrome !== "undefined" ? chrome : undefined;
   return c?.storage?.session ?? null;
+}
+
+/**
+ * Delete the IndexedDB session key pair without an `IndexedDbStamper`,
+ * whose constructor throws when `window` is undefined (the service
+ * worker). DB, store and key names are @turnkey/indexed-db-stamper 1.x's.
+ */
+function clearStamperKeyPair(idb: IDBFactory): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = idb.open("TurnkeyStamperDB", 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore("KeyStore");
+    };
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction("KeyStore", "readwrite");
+      const store = tx.objectStore("KeyStore");
+      store.delete("turnkeyKeyPair-pub");
+      store.delete("turnkeyKeyPair-priv");
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    };
+  });
 }
 
 export class SessionManager {
@@ -112,6 +153,26 @@ export class SessionManager {
    */
   private listeners = new Set<() => void>();
   private version = 0;
+
+  constructor() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c: any = typeof chrome !== "undefined" ? chrome : undefined;
+    // Another realm's close() removes the shared snapshot; drop our copy of
+    // that same session. Matching on the pubkey keeps a close()-then-open()
+    // in this realm from dropping the session it just opened.
+    c?.storage?.onChanged?.addListener(
+      (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+        const change = changes[SHARED_SESSION_KEY];
+        if (areaName !== "session" || !change || change.newValue !== undefined) return;
+        const removedPub = (change.oldValue as { publicKeyHex?: unknown } | undefined)?.publicKeyHex;
+        if (!this.stamper || removedPub !== this.stamper.getPublicKey()) return;
+        this.stamper = null;
+        this.currentAccountId = null;
+        this.expiresAt = 0;
+        this.notify();
+      },
+    );
+  }
 
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
@@ -204,6 +265,7 @@ export class SessionManager {
     await this.writeSharedSnapshot({
       accountId: account.id,
       expiresAt: this.expiresAt,
+      publicKeyHex: pubkey,
     });
     this.notify();
     return this.buildClient(stamper);
@@ -288,6 +350,16 @@ export class SessionManager {
       await this.clearSharedSnapshot();
       return null;
     }
+    if (pub !== snapshot.publicKeyHex) {
+      // The on-disk key is NOT the one this snapshot was written
+      // for: another context rotated it after the snapshot landed.
+      // Adopting it would stamp with a key registered under a
+      // different session, so refuse and drop the stale snapshot.
+      // We deliberately leave the IndexedDB key alone -- it may be
+      // mid-registration by the context that rotated it.
+      await this.clearSharedSnapshot();
+      return null;
+    }
 
     this.stamper = stamper;
     this.currentAccountId = snapshot.accountId;
@@ -310,10 +382,10 @@ export class SessionManager {
    * a context that didn't open the session in the first place
    * (e.g. the background service worker locking on the auto-lock
    * alarm). When we don't hold an in-memory stamper reference, we
-   * spin up a transient one to perform the on-disk clear -- the
-   * extension origin's IndexedDB is shared across popup, sidepanel,
-   * and background, so this reliably revokes the session no matter
-   * which context first opened it.
+   * delete the on-disk key pair directly -- the extension origin's
+   * IndexedDB is shared across popup, sidepanel, and background, so
+   * this reliably revokes the session no matter which context first
+   * opened it.
    */
   async close(): Promise<void> {
     const stamper = this.stamper;
@@ -338,8 +410,7 @@ export class SessionManager {
     }
     if (typeof globalThis.indexedDB === "undefined") return;
     try {
-      const fresh = new IndexedDbStamper();
-      await fresh.clear();
+      await clearStamperKeyPair(globalThis.indexedDB);
     } catch {
       // Worst case the session simply ages out via its server-side
       // expirationSeconds; we don't want lock() to throw.
@@ -359,10 +430,19 @@ export class SessionManager {
       if (!raw || typeof raw !== "object") return null;
       const accountId = (raw as { accountId?: unknown }).accountId;
       const expiresAt = (raw as { expiresAt?: unknown }).expiresAt;
-      if (typeof accountId !== "string" || typeof expiresAt !== "number") {
+      const publicKeyHex = (raw as { publicKeyHex?: unknown }).publicKeyHex;
+      if (
+        typeof accountId !== "string" ||
+        typeof expiresAt !== "number" ||
+        // A snapshot without a pubkey (pre-binding format) can't be
+        // verified against the on-disk key, so treat it as absent:
+        // fail closed into a fresh open() (one extra auth ceremony)
+        // rather than risk adopting a rotated key.
+        typeof publicKeyHex !== "string"
+      ) {
         return null;
       }
-      return { accountId, expiresAt };
+      return { accountId, expiresAt, publicKeyHex };
     } catch {
       // chrome.storage.session can be evicted; treat any read error
       // as "no session" rather than failing the sign attempt.

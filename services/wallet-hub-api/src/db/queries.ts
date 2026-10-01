@@ -32,6 +32,8 @@ export type InsertTurnkeyResourceParams = {
   defaultAddressFormat: string | null;
   defaultDerivationPath: string | null;
   authMethod: TurnkeyAuthMethod | null;
+  /** True only when `defaultPublicKeyHex` came from Turnkey itself. */
+  keyVerified: boolean;
 };
 
 export type TurnkeyResourceRow = {
@@ -49,6 +51,7 @@ export type TurnkeyResourceRow = {
   default_address_format: string | null;
   default_derivation_path: string | null;
   auth_method: TurnkeyAuthMethod | null;
+  key_verified_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -72,9 +75,10 @@ export async function insertTurnkeyResource(
         default_public_key_hex,
         default_address_format,
         default_derivation_path,
-        auth_method
+        auth_method,
+        key_verified_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, CASE WHEN $14::boolean THEN NOW() ELSE NULL END)
       RETURNING *
     `,
     [
@@ -90,7 +94,8 @@ export async function insertTurnkeyResource(
       params.defaultPublicKeyHex,
       params.defaultAddressFormat,
       params.defaultDerivationPath,
-      params.authMethod
+      params.authMethod,
+      params.keyVerified
     ]
   );
   return res.rows[0]!;
@@ -118,6 +123,34 @@ export async function getTurnkeyResourceByIdForApp(
   return res.rows[0] ?? null;
 }
 
+export type LinkedWalletRow = {
+  id: string;
+  app_id: string;
+  user_id: string;
+  wallet_provider: string;
+  address: string;
+};
+
+/**
+ * Fetch a linked wallet for (app, user, provider, address). Used by the
+ * external-wallet session-mint to confirm the BIP-322 signer's address
+ * belongs to the challenge's user before issuing a token.
+ */
+export async function getLinkedWalletForUser(
+  client: PoolClient,
+  params: { appId: string; userId: string; walletProvider: string; address: string }
+): Promise<LinkedWalletRow | null> {
+  const res = await client.query<LinkedWalletRow>(
+    `
+      SELECT id, app_id, user_id, wallet_provider, address
+      FROM linked_wallets
+      WHERE app_id = $1 AND user_id = $2 AND wallet_provider = $3 AND address = $4
+    `,
+    [params.appId, params.userId, params.walletProvider, params.address]
+  );
+  return res.rows[0] ?? null;
+}
+
 export async function updateTurnkeyResourceDefaultPublicKeyHexForApp(
   client: PoolClient,
   params: { id: string; appId: string; defaultPublicKeyHex: string }
@@ -130,6 +163,22 @@ export async function updateTurnkeyResourceDefaultPublicKeyHexForApp(
       RETURNING *
     `,
     [params.id, params.appId, params.defaultPublicKeyHex]
+  );
+  return res.rows[0] ?? null;
+}
+
+export async function markTurnkeyResourceKeyVerifiedForApp(
+  client: PoolClient,
+  params: { id: string; appId: string; walletId: string }
+): Promise<TurnkeyResourceRow | null> {
+  const res = await client.query<TurnkeyResourceRow>(
+    `
+      UPDATE turnkey_resources
+      SET key_verified_at = NOW(), wallet_id = COALESCE(wallet_id, $3), updated_at = NOW()
+      WHERE id = $1 AND app_id = $2
+      RETURNING *
+    `,
+    [params.id, params.appId, params.walletId]
   );
   return res.rows[0] ?? null;
 }

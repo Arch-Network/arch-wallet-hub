@@ -121,7 +121,7 @@ export default function SendRune() {
       setRecipient(ck.form.recipient);
       setAmountText(ck.form.amount);
     })();
-  }, [activeAccount, runeId, state.network]);
+  }, [activeAccount?.id, runeId, state.network]);
 
   // Persist while on the data-entry step. Skip empty forms so a
   // quick bounce into /send-rune/X and back doesn't stomp a real
@@ -140,7 +140,7 @@ export default function SendRune() {
       accountId: activeAccount.id,
       network: state.network,
     });
-  }, [step, recipient, amountText, activeAccount, runeId, state.network]);
+  }, [step, recipient, amountText, activeAccount?.id, runeId, state.network]);
 
   // Clear once the transfer broadcasts. We don't want the form to
   // auto-restore after a successful send.
@@ -488,7 +488,7 @@ export default function SendRune() {
             Available <strong>{balanceHuman}</strong>
           </span>
         </div>
-        <div className="form-field-input">
+        <div className="form-field-input form-field-input--amount">
           <input
             type="text"
             inputMode="decimal"

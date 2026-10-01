@@ -32,7 +32,7 @@ KEY FEATURES
 
 • Testnet Ready — Built-in testnet4 support with one-click ARCH faucet airdrop for developers.
 
-• Open Source — Fully open-source at https://github.com/hoffmabc/arch-wallet-hub
+• Open Source — Fully open-source at https://github.com/Arch-Network/arch-wallet-hub
 
 SUPPORTED NETWORKS
 
@@ -55,18 +55,41 @@ English
 
 ## Privacy Policy URL
 
-https://github.com/hoffmabc/arch-wallet-hub/blob/main/PRIVACY_POLICY.md
+https://github.com/Arch-Network/arch-wallet-hub/blob/main/PRIVACY_POLICY.md
 
 ## Single Purpose Description
 
 Arch Wallet serves a single purpose: it is a cryptocurrency wallet that lets users manage Bitcoin and Arch Network assets and connect to decentralized applications. The extension requires host_permissions on all URLs because it injects a JavaScript provider object (window.arch) into web pages so that Arch-compatible dApps can communicate with the wallet. This is the standard pattern used by all major browser wallet extensions (MetaMask, Phantom, Keplr, etc.). No user browsing data is collected or transmitted.
 
-## Screenshots Needed
+## Screenshots & Store Icon
 
-Capture at 1280x800 (or 640x400):
+Generate the real extension captures before uploading:
 
-1. screenshot-dashboard.png — Dashboard showing BTC + ARCH balances and recent activity
-2. screenshot-send.png — Send screen with address input and amount
-3. screenshot-receive.png — Receive screen with QR code and addresses
-4. screenshot-history.png — Transaction history with BTC and Arch transactions
-5. screenshot-connect.png — dApp connection approval prompt (if available)
+```bash
+cd apps/chrome-wallet
+npm run screenshots
+```
+
+The command loads the built MV3 extension with a synthetic encrypted testnet
+wallet and intercepted fixture responses. It needs no live credentials or
+services. The generated images are intentionally gitignored in
+`apps/chrome-wallet/.screenshots/`; review and upload them manually rather
+than adding them to this repository.
+
+Screenshots (1280x800, recommended upload order):
+
+1. `.screenshots/dashboard-light.png` — portfolio dashboard with fixture BTC and ARCH balances
+2. `.screenshots/send-light.png` — send flow with available asset balances and fee tiers
+3. `.screenshots/receive-dark.png` — receive screen and QR code
+4. `.screenshots/settings-dark.png` — wallet preferences
+
+Do not use the onboarding or unlock captures in the public listing. They are
+generated for visual regression coverage, not product marketing.
+
+Store icon (128x128):
+
+- store-icon-128.png — Rebranded store icon
+
+Chrome Web Store accepts screenshots at 1280×800 or 640×400; this harness
+outputs 1280×800. See `apps/chrome-wallet/screenshots/README.md` for
+prerequisites, capture details, and the manual dashboard upload steps.

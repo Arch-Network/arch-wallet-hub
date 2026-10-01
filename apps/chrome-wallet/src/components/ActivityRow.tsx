@@ -64,8 +64,8 @@ function DirectionGlyph({ tx, variant }: { tx: ActivityRowTx; variant: ActivityR
   if (tx.direction === "out") return <ArrowUp />;
 
   if (tx.type === "btc") return <span style={{ fontSize: 14, lineHeight: 1 }}>₿</span>;
-  if (tx.type === "apl") return <ArchIcon size={16} color="#7b68ee" />;
-  return <ArchIcon size={16} color="#c19a5b" />;
+  if (tx.type === "apl") return <ArchIcon size={16} color="var(--color-usd)" />;
+  return <ArchIcon size={16} color="var(--color-primary)" />;
 }
 
 function ArrowDown() {

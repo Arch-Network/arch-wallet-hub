@@ -175,7 +175,9 @@ async function buildUnsignedPsbt(params: {
 
 const BuildBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
-  turnkeyResourceId: Type.String({ minLength: 1 }),
+  // UUID-constrained: `turnkey_resources.id` is a Postgres uuid, so a
+  // malformed id must 400 at validation rather than 22P02-500 at the DB.
+  turnkeyResourceId: Type.String({ format: "uuid" }),
   toAddress: Type.String({ minLength: 1 }),
   amountSats: Type.Integer({ minimum: 546 }),
   feeRate: Type.Optional(Type.Number({ minimum: 1 })),
@@ -194,7 +196,8 @@ const BroadcastBody = Type.Object({
 
 const EstimateFeeBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
-  turnkeyResourceId: Type.String({ minLength: 1 }),
+  // UUID-constrained: see BuildBody above (avoids a DB 22P02 500).
+  turnkeyResourceId: Type.String({ format: "uuid" }),
   toAddress: Type.String({ minLength: 1 }),
   amountSats: Type.Integer({ minimum: 546 }),
 });

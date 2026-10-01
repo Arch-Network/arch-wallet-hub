@@ -662,7 +662,8 @@ export default function Recover({ onRecovered }: RecoverProps) {
     return (
       <div className="onboarding">
         <div className="onboarding-logo">
-          <img src="/arch-logo.svg" alt="Arch" style={{ width: 64, height: 64 }} />
+          <img src="/arch-mark-orange.svg" alt="Arch" className="brand-swap-light" style={{ width: 64, height: 64 }} />
+        <img src="/arch-mark-white.svg" alt="Arch" className="brand-swap-dark" style={{ width: 64, height: 64 }} />
         </div>
         <h1 className="onboarding-title">Recovery complete</h1>
         <p className="onboarding-sub">
@@ -684,7 +685,8 @@ export default function Recover({ onRecovered }: RecoverProps) {
       />
 
       <div className="onboarding-logo">
-        <img src="/arch-logo.svg" alt="Arch" style={{ width: 64, height: 64 }} />
+        <img src="/arch-mark-orange.svg" alt="Arch" className="brand-swap-light" style={{ width: 64, height: 64 }} />
+        <img src="/arch-mark-white.svg" alt="Arch" className="brand-swap-dark" style={{ width: 64, height: 64 }} />
       </div>
       <h1 className="onboarding-title">Recover wallet</h1>
       <p className="onboarding-sub">

@@ -15,31 +15,46 @@
   "report-type": "important",
   "package-manager": "npm",
   "allowlist": [
-    // --- fastify@4 line: three high-severity advisories that are only
-    // patched in fastify@5. Migration tracked in audit backlog Deps M-new.
-    // Mitigations in place today:
-    //   * sendWebStream (GHSA-mrq3-vjjr-p77c): we don't stream WebStream
-    //     responses from any route in src/routes/.
+    // --- fastify@4 line: high-severity advisory that is only patched in
+    // fastify@5. Migration tracked in audit backlog Deps M-new.
+    // Mitigation in place today:
     //   * Content-Type tab bypass (GHSA-jx2c-rxcm-jvmq): every route
     //     uses TypeBox schemas with `additionalProperties:false`, so a
     //     body-validation bypass still produces an unusable payload.
-    //   * X-Forwarded-Proto/Host spoof (GHSA-444r-cwp2-x5xf): mitigated
-    //     at the ALB layer in infra/cdk — only the ALB injects these
-    //     headers, and the SG only accepts traffic from the ALB.
     // Target removal: 2026-07-15 (after fastify@5 migration).
-    "GHSA-mrq3-vjjr-p77c",
     "GHSA-jx2c-rxcm-jvmq",
-    "GHSA-444r-cwp2-x5xf",
 
-    // --- elliptic chain via @saturnbtcio/bip322-js
-    // GHSA-848j-6mx2-7j84 — "Elliptic uses a cryptographic primitive
-    // with a risky implementation". The advisory has no fix available
-    // and applies to all versions of `elliptic`. We use bip322-js only
-    // for BIP-322 signature verification on user-supplied messages;
-    // private-key operations happen in Turnkey. Constant-time timing
-    // attacks against verification are not within our threat model.
-    // Tracked as Deps H-elliptic in audit backlog; long-term fix is to
-    // replace bip322-js with a @noble-based implementation.
-    "GHSA-848j-6mx2-7j84"
+    // --- find-my-way via fastify@4
+    // GHSA-c96f-x56v-gq3h — "find-my-way: DDoS with HTTP2". Patched in
+    // find-my-way 9.7.0; fastify@4 pins find-my-way ^8, so only fastify@5
+    // picks it up. The crash needs a request method like `__proto__`,
+    // which only Node's HTTP/2 server passes through. We don't set
+    // `http2` in createServer() (src/server.ts), Node's HTTP/1.1 parser
+    // rejects unknown methods, and the ALB target group uses the default
+    // HTTP/1 protocol version. Plausibly unreachable; re-check if
+    // `http2` is ever enabled.
+    // Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/118
+    // Target removal: 2026-10-31 (after fastify@5 migration).
+    "GHSA-c96f-x56v-gq3h",
+
+    // --- fastify@4 line: four high advisories published 2026-09/10,
+    // all patched only in fastify 5.12.2 (latest 4.x is 4.29.1, still
+    // vulnerable). Each needs a route feature src/ does not use:
+    //   * GHSA-667r-xxjv-c9mm — body replacement via `$async` schema
+    //     result; no route uses an `$async` schema.
+    //   * GHSA-9q9j-q6p8-xq58 — header-schema `dependencies` not
+    //     lowercased; no route declares a `headers` schema.
+    //   * GHSA-hwr6-493r-vm6h — boolean `false` request schema skipped;
+    //     no route uses `false` as a schema.
+    //   * GHSA-p68q-wchp-6fh7 — malformed URL reaches a sibling plugin's
+    //     not-found handler; we never call setNotFoundHandler(), and auth
+    //     does not rely on a not-found handler.
+    // Plausibly unreachable; re-check if any of those features are added.
+    // Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/118
+    // Target removal: 2026-10-31 (after fastify@5 migration).
+    "GHSA-667r-xxjv-c9mm",
+    "GHSA-9q9j-q6p8-xq58",
+    "GHSA-hwr6-493r-vm6h",
+    "GHSA-p68q-wchp-6fh7"
   ]
 }
