@@ -35,6 +35,26 @@
     // `http2` is ever enabled.
     // Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/118
     // Target removal: 2026-10-31 (after fastify@5 migration).
-    "GHSA-c96f-x56v-gq3h"
+    "GHSA-c96f-x56v-gq3h",
+
+    // --- fastify@4 line: four high advisories published 2026-09/10,
+    // all patched only in fastify 5.12.2 (latest 4.x is 4.29.1, still
+    // vulnerable). Each needs a route feature src/ does not use:
+    //   * GHSA-667r-xxjv-c9mm — body replacement via `$async` schema
+    //     result; no route uses an `$async` schema.
+    //   * GHSA-9q9j-q6p8-xq58 — header-schema `dependencies` not
+    //     lowercased; no route declares a `headers` schema.
+    //   * GHSA-hwr6-493r-vm6h — boolean `false` request schema skipped;
+    //     no route uses `false` as a schema.
+    //   * GHSA-p68q-wchp-6fh7 — malformed URL reaches a sibling plugin's
+    //     not-found handler; we never call setNotFoundHandler(), and auth
+    //     does not rely on a not-found handler.
+    // Plausibly unreachable; re-check if any of those features are added.
+    // Tracking: https://github.com/Arch-Network/arch-wallet-hub/issues/118
+    // Target removal: 2026-10-31 (after fastify@5 migration).
+    "GHSA-667r-xxjv-c9mm",
+    "GHSA-9q9j-q6p8-xq58",
+    "GHSA-hwr6-493r-vm6h",
+    "GHSA-p68q-wchp-6fh7"
   ]
 }
