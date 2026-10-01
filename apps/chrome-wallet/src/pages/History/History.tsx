@@ -2,6 +2,9 @@ import EmptyStateArt from "../../components/EmptyStateArt";
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
+import { useRetryCountdown } from "../../hooks/useRetryCountdown";
+import { USE_DIRECT_INDEXER } from "../../utils/explorer-config";
+import { hubRetryAfterMs } from "../../utils/hub-rate-limit";
 import {
   getIndexer,
   isIndexerAuthError,
@@ -14,7 +17,7 @@ import { formatArchId, truncateAddress, formatBtc, timestampToMs } from "../../u
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { txHasRunestone } from "../../utils/btc-tx-classify";
 import { indexRuneTxsByTxid, runeRowLabel, formatRuneDelta } from "../../utils/rune-history";
-import type { BtcRuneTransaction } from "../../utils/indexer";
+import type { BtcRuneTransaction, BtcInscriptionSummary } from "../../utils/indexer";
 import { summarizeArchTx } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
@@ -74,15 +77,36 @@ function parseBtcTx(tx: any, walletAddress: string): { direction: "in" | "out" |
   return { direction, amountSats: netSats };
 }
 
+/**
+ * Prev-output outpoints ("txid:vout") spent by a tx, across both
+ * indexer shapes: Esplora-like `vin[].{txid,vout}` and the Titan-native
+ * `input[].previous_output.{txid,vout}`. Used to spot a tx that spends
+ * a known inscription UTXO (an inscription send).
+ */
+function inputOutpoints(tx: any): string[] {
+  const out: string[] = [];
+  for (const i of Array.isArray(tx.vin) ? tx.vin : []) {
+    if (i?.txid != null && i?.vout != null) out.push(`${i.txid}:${i.vout}`);
+  }
+  for (const i of Array.isArray(tx.input) ? tx.input : []) {
+    const po = i?.previous_output;
+    if (po?.txid != null && po?.vout != null) out.push(`${po.txid}:${po.vout}`);
+  }
+  return out;
+}
+
 function isAplTransaction(tx: any): boolean {
   if (Array.isArray(tx.token_mints) && tx.token_mints.length > 0) return true;
   if (tx.token_transfer) return true;
   return false;
 }
 
+/** Retry delay for a rate limit that carries none, e.g. an upstream indexer throttle. */
+const RATE_LIMIT_RETRY_FALLBACK_MS = 30_000;
+
 type FetchBanner =
   | { kind: "none" }
-  | { kind: "rate-limit"; chain: "btc" | "arch" }
+  | { kind: "rate-limit"; chain: "btc" | "arch"; retryAt: number }
   | { kind: "auth"; chain: "btc" | "arch" }
   | { kind: "other"; chain: "btc" | "arch"; message: string };
 
@@ -155,7 +179,10 @@ export default function History() {
           tokenAccounts.map((acct) =>
             indexer
               .getAccountTransactionsV2(acct, 50)
-              .catch(() => indexer.getAccountTransactions(acct, 50))
+              .catch((err) => {
+                if (isIndexerRateLimitError(err)) throw err;
+                return indexer.getAccountTransactions(acct, 50);
+              })
           )
         );
         for (const r of tokenTxResults) {
@@ -179,6 +206,7 @@ export default function History() {
         const archRes = await indexer
           .getAccountTransactionsV2(archAddr, 20, archPage)
           .catch((err) => {
+            if (isIndexerRateLimitError(err)) throw err;
             console.warn("[History] v2 transactions failed, falling back to v1:", err?.message);
             return indexer.getAccountTransactions(archAddr, 20, archPage);
           });
@@ -316,6 +344,35 @@ export default function History() {
         }
       }
 
+      // Inscription transfer labels. Best-effort, like the rune join:
+      // there's no inscription-history endpoint, so we use the address's
+      // current inscriptions (satpoint = "txid:vout:offset") to recognize
+      // (a) a tx that SPENDS an inscription UTXO -> outbound send, and
+      // (b) a tx whose output now HOLDS the inscription -> inbound receive.
+      // A pending send still shows the inscription at its old (input-side)
+      // satpoint, so (a) catches it; once confirmed under the recipient,
+      // (b) catches their receive. A fully-sent, already-reindexed
+      // inscription drops off the sender's list -> that historical row
+      // degrades to a plain BTC label (same limitation as fully-sent runes).
+      const inscriptionByOutpoint = new Map<string, BtcInscriptionSummary>();
+      const inscriptionByLandingTxid = new Map<string, BtcInscriptionSummary>();
+      {
+        try {
+          const insRes = await indexer.getBtcAddressInscriptions(btcAddr);
+          for (const ins of insRes?.inscriptions ?? []) {
+            const sp = ins?.satpoint;
+            if (typeof sp !== "string") continue;
+            const [stxid, svout] = sp.split(":");
+            if (stxid && svout != null && svout !== "") {
+              inscriptionByOutpoint.set(`${stxid}:${svout}`, ins);
+              inscriptionByLandingTxid.set(stxid, ins);
+            }
+          }
+        } catch {
+          // Inscription labels are non-essential; never block BTC history.
+        }
+      }
+
       try {
         const btcTxs = await indexer.getBtcAddressTxs(btcAddr);
         const rawList = btcTxs ?? [];
@@ -390,6 +447,25 @@ export default function History() {
           const runeEvent = runeTxByTxid.get(txid);
           const isRune = Boolean(runeEvent) || txHasRunestone(tx);
 
+          // Inscription send/receive: a spent input that is a known
+          // inscription UTXO => outbound; otherwise an inscription that
+          // landed in THIS tx (satpoint txid === txid) => inbound. Runes
+          // win if both somehow match (disjoint in practice).
+          let inscriptionHit: { ins: BtcInscriptionSummary; dir: "out" | "in" } | null = null;
+          if (!isRune) {
+            for (const op of inputOutpoints(tx)) {
+              const ins = inscriptionByOutpoint.get(op);
+              if (ins) {
+                inscriptionHit = { ins, dir: "out" };
+                break;
+              }
+            }
+            if (!inscriptionHit) {
+              const landed = inscriptionByLandingTxid.get(txid);
+              if (landed) inscriptionHit = { ins: landed, dir: "in" };
+            }
+          }
+
           let rowLabel: string;
           let rowDirection: TxItem["direction"] = direction;
           let rowAmountLabel: string | undefined;
@@ -401,6 +477,17 @@ export default function History() {
               rowDirection = amt.direction;
               rowAmountLabel = amt.amountLabel;
             }
+          } else if (inscriptionHit) {
+            // Label without a BTC amount: the only sats that move are the
+            // inscription's dust postage + fee, which would misrepresent
+            // the transfer as a tiny BTC payment.
+            const num = inscriptionHit.ins.number;
+            const suffix = typeof num === "number" ? ` #${num}` : "";
+            rowLabel =
+              inscriptionHit.dir === "out"
+                ? `Sent Inscription${suffix}`
+                : `Received Inscription${suffix}`;
+            rowDirection = inscriptionHit.dir;
           } else if (isRune) {
             // Runestone detected locally but not yet in the rune index.
             // Label without an amount -- the BTC dust+fee debit (~1500-
@@ -422,8 +509,8 @@ export default function History() {
           }
 
           // Only attach raw sats (drives the USD subtitle) for genuine
-          // BTC rows; rune rows carry a rune amount, not a BTC value.
-          const showBtcAmount = !isRune && amountSats > 0;
+          // BTC rows; rune/inscription rows aren't a BTC value movement.
+          const showBtcAmount = !isRune && !inscriptionHit && amountSats > 0;
           items.push({
             txid,
             displayTxid: truncateAddress(txid, 8),
@@ -455,7 +542,8 @@ export default function History() {
         if (!err) return null;
         if (isIndexerNotFoundError(err)) return null;
         if (isIndexerRateLimitError(err)) {
-          return { kind: "rate-limit", chain };
+          const retryAfterMs = hubRetryAfterMs(err) ?? RATE_LIMIT_RETRY_FALLBACK_MS;
+          return { kind: "rate-limit", chain, retryAt: Date.now() + retryAfterMs };
         }
         if (isIndexerAuthError(err)) {
           return { kind: "auth", chain };
@@ -491,11 +579,27 @@ export default function History() {
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, archPage, archExplorer, btcExplorer, state.network]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    activeAccount?.btcAddress,
+    archPage,
+    archExplorer,
+    btcExplorer,
+    state.network,
+  ]);
 
   useEffect(() => {
     fetchTransactions();
   }, [fetchTransactions]);
+
+  // Direct-indexer builds spend the user's own key, so their banner
+  // points at Settings instead of waiting the limit out.
+  const busySeconds = useRetryCountdown(
+    banner.kind === "rate-limit" && !USE_DIRECT_INDEXER ? banner.retryAt : null,
+    () => void fetchTransactions(),
+  );
 
   const filtered =
     tab === "all" ? transactions
@@ -530,7 +634,12 @@ export default function History() {
             overflowWrap: "anywhere",
           }}
         >
-          {banner.kind === "rate-limit" ? (
+          {banner.kind === "rate-limit" && busySeconds !== null ? (
+            <>
+              <strong>Busy right now.</strong>{" "}
+              {busySeconds > 0 ? `Retrying in ${busySeconds}s…` : "Retrying…"}
+            </>
+          ) : banner.kind === "rate-limit" ? (
             <>
               <strong>
                 {banner.chain === "btc" ? "Bitcoin" : "Arch"} indexer rate-limited.

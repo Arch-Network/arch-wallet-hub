@@ -315,7 +315,13 @@ export default function Send({ networkStatus }: SendProps) {
     };
     loadBalances();
     return () => clearTimeout(timeout);
-  }, [activeAccount, state.network]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.btcAddress,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    state.network,
+  ]);
 
   // ── Form-state persistence (chrome.storage.session) ───────────
   //
@@ -353,7 +359,7 @@ export default function Send({ networkStatus }: SendProps) {
         setStep(2);
       }
     })();
-  }, [activeAccount, presetAsset, state.network]);
+  }, [activeAccount?.id, presetAsset, state.network]);
 
   // Phase 2 of the restore: tokensHeld loads async; once it does,
   // resolve the persisted APL mint to its TokenHolding so the form
@@ -390,7 +396,7 @@ export default function Send({ networkStatus }: SendProps) {
       accountId: activeAccount.id,
       network: state.network,
     });
-  }, [step, asset, selectedToken, recipient, amount, activeAccount, state.network]);
+  }, [step, asset, selectedToken?.mint, recipient, amount, activeAccount?.id, state.network]);
 
   // Drop the parked form once a transaction broadcasts. We don't
   // want a successful send to leave its inputs lingering and

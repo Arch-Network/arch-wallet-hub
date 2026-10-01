@@ -129,12 +129,28 @@ export async function saveSendForm(
 ): Promise<void> {
   const store = sessionStore();
   if (!store) return;
-  const payload: SendFormCheckpoint = { ...input, savedAt: Date.now() };
+  const key = keyForKind(input.form.kind);
   try {
-    await store.set({ [keyForKind(input.form.kind)]: payload });
+    // Re-saving identical content would only bump `savedAt`, and every
+    // session-storage write wakes every onChanged listener.
+    const existing = (await store.get(key))[key] as SendFormCheckpoint | undefined;
+    if (existing && sameCheckpoint(existing, input)) return;
+    const payload: SendFormCheckpoint = { ...input, savedAt: Date.now() };
+    await store.set({ [key]: payload });
   } catch {
     /* best-effort */
   }
+}
+
+function sameCheckpoint(
+  a: SendFormCheckpoint,
+  b: Omit<SendFormCheckpoint, "savedAt">,
+): boolean {
+  return (
+    a.accountId === b.accountId &&
+    a.network === b.network &&
+    JSON.stringify(a.form) === JSON.stringify(b.form)
+  );
 }
 
 /**

@@ -70,7 +70,7 @@ import { timingSafeEqual } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
-import { RECOVERY_ROUTE_RATE_LIMIT } from "../plugins/rateLimit.js";
+import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
 import { registerEmailSigninRoute } from "./recoverySignin.js";
 import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
 import {
@@ -237,9 +237,7 @@ const VerifyResponse = Type.Object({
 });
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
-  server.addHook("onRoute", (routeOptions) => {
-    routeOptions.config = { ...(routeOptions.config ?? {}), ...RECOVERY_ROUTE_RATE_LIMIT };
-  });
+  setDefaultRateLimitGroup(server, "recovery");
 
   registerEmailSigninRoute(server, {
     maxPerWindow: RATE_LIMIT_MAX_INITS,
