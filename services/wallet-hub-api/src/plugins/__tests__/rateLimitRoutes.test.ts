@@ -235,8 +235,6 @@ describe("log-only mode", () => {
   });
 
   it("logs the per-IP ceiling with its count, and skips it for requests the install limit already caught", async () => {
-    const app = await buildServer("log", []);
-    await app.close();
     const ceiling = RATE_LIMITS.indexer.ipCeiling!;
     const installMax = RATE_LIMITS.indexer.max;
     // One looping install well past its own limit: in enforce mode the
