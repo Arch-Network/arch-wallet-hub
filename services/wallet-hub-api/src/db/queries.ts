@@ -208,6 +208,13 @@ export type EmailWalletRow = TurnkeyResourceRow & { external_user_id: string | n
  * Both tables are pinned to `appId` so the lookup can never cross apps.
  * Parent-org rows and rows without a root user are excluded because
  * INIT_OTP_AUTH cannot target them.
+ *
+ * SECURITY (wallet squatting): `recovery_email` is per user, not per
+ * wallet, so a user holding any other credential (another resource or a
+ * linked wallet) could point it at a victim's email while keeping a
+ * session for that user. Only wallets that are their owner's sole
+ * credential qualify: nobody can then mint a session for that user
+ * without signing with this wallet, which needs the OTP to its root email.
  */
 export async function findEmailWalletByRecoveryEmail(
   client: PoolClient,
@@ -228,6 +235,10 @@ export async function findEmailWalletByRecoveryEmail(
         AND r.turnkey_root_user_id IS NOT NULL
         AND r.default_address IS NOT NULL
         AND r.default_public_key_hex IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM turnkey_resources o WHERE o.user_id = r.user_id AND o.id <> r.id
+        )
+        AND NOT EXISTS (SELECT 1 FROM linked_wallets l WHERE l.user_id = r.user_id)
       ORDER BY r.created_at ASC
       LIMIT 1
     `,
