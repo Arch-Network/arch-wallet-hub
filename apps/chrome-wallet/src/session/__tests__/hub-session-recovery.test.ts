@@ -12,6 +12,7 @@ import type { WalletAccount } from "../../state/types";
  *   - external accounts are never rebuilt (no Turnkey session, and a
  *     retry would re-prompt the source wallet),
  *   - a second failure is reported, not retried again,
+ *   - nothing is rebuilt while the Hub's auth routes are rate limited,
  *   - EmailSessionNeededError from the rebuild propagates so the
  *     caller's OTP gate takes over.
  */
@@ -30,6 +31,7 @@ vi.mock("../ensure-signing-session", () => ({
 }));
 
 import { mintHubSessionWithRecovery } from "../hub-session-recovery";
+import { fetchWithHubRateLimit } from "../../utils/hub-rate-limit";
 
 const passkeyAccount: WalletAccount = {
   id: "acct-1",
@@ -128,5 +130,26 @@ describe("mintHubSessionWithRecovery", () => {
     await expect(
       mintHubSessionWithRecovery(passkeyAccount, "mainnet"),
     ).rejects.toBe(gateError);
+  });
+
+  it("never rebuilds while the Hub's auth routes are cooling down from a 429", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(1_000_000);
+      const tooMany = (async () => new Response("{}", { status: 429 })) as unknown as typeof fetch;
+      await fetchWithHubRateLimit(tooMany, "https://hub.arch.network/v1/auth/session").catch(() => {});
+      mocks.ensureHubSession.mockResolvedValue("failed");
+      const onRecovery = vi.fn();
+
+      await expect(
+        mintHubSessionWithRecovery(passkeyAccount, "mainnet", { onRecovery }),
+      ).resolves.toBe("failed");
+
+      expect(mocks.ensureHubSession).toHaveBeenCalledTimes(1);
+      expect(mocks.ensureSigningSessionForAccount).not.toHaveBeenCalled();
+      expect(onRecovery).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

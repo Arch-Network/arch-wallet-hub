@@ -2,6 +2,9 @@ import EmptyStateArt from "../../components/EmptyStateArt";
 import { useState, useEffect, useCallback } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
+import { useRetryCountdown } from "../../hooks/useRetryCountdown";
+import { USE_DIRECT_INDEXER } from "../../utils/explorer-config";
+import { hubRetryAfterMs } from "../../utils/hub-rate-limit";
 import {
   getIndexer,
   isIndexerAuthError,
@@ -80,9 +83,12 @@ function isAplTransaction(tx: any): boolean {
   return false;
 }
 
+/** Retry delay for a rate limit that carries none, e.g. an upstream indexer throttle. */
+const RATE_LIMIT_RETRY_FALLBACK_MS = 30_000;
+
 type FetchBanner =
   | { kind: "none" }
-  | { kind: "rate-limit"; chain: "btc" | "arch" }
+  | { kind: "rate-limit"; chain: "btc" | "arch"; retryAt: number }
   | { kind: "auth"; chain: "btc" | "arch" }
   | { kind: "other"; chain: "btc" | "arch"; message: string };
 
@@ -155,7 +161,10 @@ export default function History() {
           tokenAccounts.map((acct) =>
             indexer
               .getAccountTransactionsV2(acct, 50)
-              .catch(() => indexer.getAccountTransactions(acct, 50))
+              .catch((err) => {
+                if (isIndexerRateLimitError(err)) throw err;
+                return indexer.getAccountTransactions(acct, 50);
+              })
           )
         );
         for (const r of tokenTxResults) {
@@ -179,6 +188,7 @@ export default function History() {
         const archRes = await indexer
           .getAccountTransactionsV2(archAddr, 20, archPage)
           .catch((err) => {
+            if (isIndexerRateLimitError(err)) throw err;
             console.warn("[History] v2 transactions failed, falling back to v1:", err?.message);
             return indexer.getAccountTransactions(archAddr, 20, archPage);
           });
@@ -455,7 +465,8 @@ export default function History() {
         if (!err) return null;
         if (isIndexerNotFoundError(err)) return null;
         if (isIndexerRateLimitError(err)) {
-          return { kind: "rate-limit", chain };
+          const retryAfterMs = hubRetryAfterMs(err) ?? RATE_LIMIT_RETRY_FALLBACK_MS;
+          return { kind: "rate-limit", chain, retryAt: Date.now() + retryAfterMs };
         }
         if (isIndexerAuthError(err)) {
           return { kind: "auth", chain };
@@ -491,11 +502,27 @@ export default function History() {
     } finally {
       setLoading(false);
     }
-  }, [activeAccount, archPage, archExplorer, btcExplorer, state.network]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    activeAccount?.btcAddress,
+    archPage,
+    archExplorer,
+    btcExplorer,
+    state.network,
+  ]);
 
   useEffect(() => {
     fetchTransactions();
   }, [fetchTransactions]);
+
+  // Direct-indexer builds spend the user's own key, so their banner
+  // points at Settings instead of waiting the limit out.
+  const busySeconds = useRetryCountdown(
+    banner.kind === "rate-limit" && !USE_DIRECT_INDEXER ? banner.retryAt : null,
+    () => void fetchTransactions(),
+  );
 
   const filtered =
     tab === "all" ? transactions
@@ -530,7 +557,12 @@ export default function History() {
             overflowWrap: "anywhere",
           }}
         >
-          {banner.kind === "rate-limit" ? (
+          {banner.kind === "rate-limit" && busySeconds !== null ? (
+            <>
+              <strong>Busy right now.</strong>{" "}
+              {busySeconds > 0 ? `Retrying in ${busySeconds}s…` : "Retrying…"}
+            </>
+          ) : banner.kind === "rate-limit" ? (
             <>
               <strong>
                 {banner.chain === "btc" ? "Bitcoin" : "Arch"} indexer rate-limited.

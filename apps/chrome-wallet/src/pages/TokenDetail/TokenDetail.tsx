@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
-import { getIndexer } from "../../utils/indexer";
+import { getIndexer, isIndexerRateLimitError } from "../../utils/indexer";
 import { enrichIndexerToken, isNftToken } from "../../utils/enrich-token";
 import { addressForms } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
@@ -387,7 +387,7 @@ export default function TokenDetail() {
     })();
 
     return () => { cancelled = true; };
-  }, [activeAccount, mint, state.network]);
+  }, [activeAccount?.id, activeAccount?.archAddress, activeAccount?.btcAddress, mint, state.network]);
 
   useEffect(() => {
     if (!token?.tokenAccount) {
@@ -449,6 +449,10 @@ export default function TokenDetail() {
                 instructionsList = Array.isArray(ixs) ? ixs : [];
               } catch (e) {
                 console.debug("[TokenDetail] getTransactionTree failed", tx.txid, e);
+                if (isIndexerRateLimitError(e)) {
+                  instructionsList = [];
+                  return instructionsList;
+                }
                 // Fall back to the flat endpoint so direct transfers
                 // still resolve when the indexer's /tree route is
                 // unavailable (older indexer versions, or transient

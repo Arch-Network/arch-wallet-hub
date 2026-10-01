@@ -16,6 +16,7 @@
 
 import { isExternalAccount, type NetworkId, type WalletAccount } from "../state/types";
 import { ensureHubSession, type HubSessionResult } from "../utils/hub-session";
+import { hubCooldownRemainingMs } from "../utils/hub-rate-limit";
 import { ensureSigningSessionForAccount } from "./ensure-signing-session";
 
 export interface MintHubSessionOptions {
@@ -31,9 +32,12 @@ export interface MintHubSessionOptions {
  * mint failure by force-rebuilding the Turnkey signing session.
  *
  * External accounts are never rebuilt: they have no Turnkey session to
- * refresh, and retrying would re-prompt the source wallet. Email
- * wallets propagate `EmailSessionNeededError` from the rebuild so the
- * caller's existing OTP gate takes over.
+ * refresh, and retrying would re-prompt the source wallet. Nor is
+ * anything rebuilt while the Hub's `/v1/auth` routes are cooling down
+ * from a 429: the re-mint would fail fast locally, so the rebuild (a
+ * passkey tap or an emailed code) is wasted. Email wallets propagate
+ * `EmailSessionNeededError` from the rebuild so the caller's existing
+ * OTP gate takes over.
  */
 export async function mintHubSessionWithRecovery(
   account: WalletAccount,
@@ -42,6 +46,7 @@ export async function mintHubSessionWithRecovery(
 ): Promise<HubSessionResult> {
   const first = await ensureHubSession(account, network);
   if (first !== "failed" || isExternalAccount(account)) return first;
+  if (hubCooldownRemainingMs("auth") > 0) return first;
 
   opts.onRecovery?.();
   await ensureSigningSessionForAccount(account, { forceFresh: true });

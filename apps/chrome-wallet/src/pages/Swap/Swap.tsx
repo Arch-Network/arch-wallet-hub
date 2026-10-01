@@ -315,7 +315,15 @@ export default function Swap() {
     return () => {
       cancelled = true;
     };
-  }, [activeAccount, state.network, availableSymbols, config, balanceRefreshKey]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    state.network,
+    availableSymbols,
+    config,
+    balanceRefreshKey,
+  ]);
 
   // ── quote ─────────────────────────────────────────────────────────
   const sellAmount = useMemo(() => {
