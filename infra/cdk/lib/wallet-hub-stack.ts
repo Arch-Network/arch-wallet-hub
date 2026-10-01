@@ -40,7 +40,6 @@ export class WalletHubStack extends cdk.Stack {
           TURNKEY_ORGANIZATION_ID: "CHANGE_ME",
           PLATFORM_ADMIN_API_KEY: "CHANGE_ME",
           INDEXER_API_KEY: "",
-          INDEXER_SERVICE_KEY: "CHANGE_ME",
           INTERNAL_API_KEY: "CHANGE_ME",
         }),
         generateStringKey: "PLACEHOLDER",
