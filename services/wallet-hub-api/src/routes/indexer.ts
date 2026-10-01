@@ -696,6 +696,48 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
   );
 
   server.get(
+    "/indexer/btc/runes/:rune",
+    {
+      schema: {
+        summary: "Rune metadata by rune id or spaced name (proxied)",
+        tags: ["indexer"],
+        params: Type.Object({
+          rune: Type.String({ minLength: 1, maxLength: 256 }),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { rune } = request.params as { rune: string };
+      const result = await forward(reply, () => indexer.getBtcRune(rune));
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
+    "/indexer/btc/output/:outpoint",
+    {
+      schema: {
+        summary: "Bitcoin output detail by outpoint (proxied)",
+        tags: ["indexer"],
+        // Outpoints are `<txid>:<vout>`. Validating only the shape; the
+        // upstream will 404 on a bogus value.
+        params: Type.Object({
+          outpoint: Type.String({ minLength: 66, maxLength: 80, pattern: "^[0-9a-fA-F]{64}:[0-9]+$" }),
+        }),
+      },
+    },
+    async (request, reply) => {
+      const indexer = indexerOr501(request, reply);
+      if (!indexer) return;
+      const { outpoint } = request.params as { outpoint: string };
+      const result = await forward(reply, () => indexer.getBtcOutput(outpoint));
+      if (result !== undefined) reply.send(result);
+    },
+  );
+
+  server.get(
     "/indexer/btc/inscriptions/:id",
     {
       schema: {
