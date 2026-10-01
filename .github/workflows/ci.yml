@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Default deny; each job requests what it needs.
+permissions: {}
+
+# Supersede stale runs on the same PR; never cancel a run on main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# No path filters: these are meant to be required status checks, and a
+# required check that is skipped by a path filter never reports and
+# blocks the PR.
+jobs:
+  sdk:
+    name: wallet-hub-sdk (typecheck, build, test)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: packages/wallet-hub-sdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: packages/wallet-hub-sdk/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npm test
+
+  hub:
+    name: wallet-hub-api (typecheck, build, test)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            packages/wallet-hub-sdk/package-lock.json
+            services/wallet-hub-api/package-lock.json
+      # The hub depends on the SDK via `file:`; its `prepare` (tsc) needs
+      # the SDK's own devDependencies, so install it first. Same order as
+      # deploy/Dockerfile.api.
+      - name: Build wallet-hub-sdk
+        working-directory: packages/wallet-hub-sdk
+        run: |
+          npm ci
+          npm run build
+      - name: Install
+        working-directory: services/wallet-hub-api
+        run: npm ci
+      - name: Typecheck
+        working-directory: services/wallet-hub-api
+        run: npm run typecheck
+      - name: Build
+        working-directory: services/wallet-hub-api
+        run: npm run build
+      - name: Test
+        working-directory: services/wallet-hub-api
+        run: npm test
+
+  extension:
+    name: chrome-wallet (typecheck, test, build)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            packages/wallet-hub-sdk/package-lock.json
+            packages/arch-swap-engine/package-lock.json
+            services/wallet-hub-api/package-lock.json
+            apps/chrome-wallet/package-lock.json
+      # `file:` dependencies of the extension; built first, as in
+      # release-chrome-wallet.yml.
+      - name: Build wallet-hub-sdk
+        working-directory: packages/wallet-hub-sdk
+        run: |
+          npm ci
+          npm run build
+      - name: Build arch-swap-engine
+        working-directory: packages/arch-swap-engine
+        run: |
+          npm ci
+          npm run build
+      # src/utils/__tests__/session-token-verify.test.ts imports hub
+      # source by relative path, so typecheck and that test resolve the
+      # hub's imports (pg, bitcoinjs-lib, @noble/*, ...) from
+      # services/wallet-hub-api/node_modules.
+      - name: Install wallet-hub-api dependencies
+        working-directory: services/wallet-hub-api
+        run: npm ci
+      - name: Install
+        working-directory: apps/chrome-wallet
+        run: npm ci
+      # tsconfig.json extends .wxt/tsconfig.json, which only exists after
+      # `wxt prepare` (or a build).
+      - name: Generate WXT types
+        working-directory: apps/chrome-wallet
+        run: npx wxt prepare
+      - name: Typecheck
+        working-directory: apps/chrome-wallet
+        run: npm run typecheck
+      - name: Test
+        working-directory: apps/chrome-wallet
+        run: npm test
+      # Production build with empty API keys; `postbuild` runs the
+      # inline-script check.
+      - name: Build
+        working-directory: apps/chrome-wallet
+        run: npm run build
