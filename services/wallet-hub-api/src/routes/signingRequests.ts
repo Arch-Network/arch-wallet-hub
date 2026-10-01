@@ -8,7 +8,7 @@ import { auditEvent } from "../audit/audit.js";
 import { computeDisplayHash } from "../signingRequests/displayHash.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
 import { createArchRpcClient, submitArchTransaction, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
-import { buildSwapAction, rebuildSwapInstructions, buildAddLiquidityAction, rebuildAddLiquidityInstructions } from "../arch/ammInstructions.js";
+import { buildSwapAction, rebuildSwapInstructions, buildAddLiquidityAction, rebuildAddLiquidityInstructions, MAX_FEE_RATE_SAT_VB } from "../arch/ammInstructions.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
@@ -22,6 +22,8 @@ import type { IndexerClient } from "../indexer/client.js";
 
 const U64_DECIMAL_PATTERN = "^[0-9]{1,20}$";
 const U64_MAX = (1n << 64n) - 1n;
+// Outpoint vouts and the AMM's confirmation count are Borsh u32.
+const U32_MAX = 0xffff_ffff;
 
 // The user's own input outpoint for an AMM swap. `txid` is 32-byte internal
 // byte-order hex. Amounts are intentionally absent: the on-chain program
@@ -29,7 +31,7 @@ const U64_MAX = (1n << 64n) - 1n;
 // (or lie about) them.
 const AmmOutpointSchema = Type.Object({
   txid: Type.String({ minLength: 64, maxLength: 64 }),
-  vout: Type.Integer({ minimum: 0 })
+  vout: Type.Integer({ minimum: 0, maximum: U32_MAX })
 });
 
 const CreateSigningRequestBody = Type.Object({
@@ -80,17 +82,17 @@ const CreateSigningRequestBody = Type.Object({
       type: Type.Literal("swap.rune_native"),
       programId: Type.String({ minLength: 1 }),
       poolAddress: Type.String({ minLength: 1 }),
-      runeId: Type.Object({ block: Type.String({ minLength: 1 }), tx: Type.Integer({ minimum: 0 }) }),
+      runeId: Type.Object({ block: Type.String({ minLength: 1 }), tx: Type.Integer({ minimum: 0, maximum: U32_MAX }) }),
       baseToQuote: Type.Boolean(),
-      amountIn: Type.String({ minLength: 1 }),
-      minOut: Type.String({ minLength: 1 }),
-      nonce: Type.String({ minLength: 1 }),
+      amountIn: Type.String({ pattern: U64_DECIMAL_PATTERN }),
+      minOut: Type.String({ pattern: U64_DECIMAL_PATTERN }),
+      nonce: Type.String({ pattern: U64_DECIMAL_PATTERN }),
       // Reserve inputs are no longer caller-supplied: the program selects which
       // of its OWN tracked reserve UTXOs to spend. The caller only names its own
       // input outpoint (amounts verified on-chain).
       userInput: AmmOutpointSchema,
       recipientScriptHex: Type.String({ minLength: 2, pattern: "^[0-9a-fA-F]+$" }),
-      feeRateSatVb: Type.String({ minLength: 1 })
+      feeRateSatVb: Type.String({ pattern: U64_DECIMAL_PATTERN })
     }),
     Type.Object({
       type: Type.Literal("pool.add_liquidity"),
@@ -98,10 +100,10 @@ const CreateSigningRequestBody = Type.Object({
       poolAddress: Type.String({ minLength: 1 }),
       positionAddress: Type.String({ minLength: 1 }),
       baseTxid: Type.String({ minLength: 64, maxLength: 64 }),
-      baseVout: Type.Integer({ minimum: 0 }),
+      baseVout: Type.Integer({ minimum: 0, maximum: U32_MAX }),
       quoteTxid: Type.String({ minLength: 64, maxLength: 64 }),
-      quoteVout: Type.Integer({ minimum: 0 }),
-      minConfirmations: Type.Integer({ minimum: 0 })
+      quoteVout: Type.Integer({ minimum: 0, maximum: U32_MAX }),
+      minConfirmations: Type.Integer({ minimum: 0, maximum: U32_MAX })
     })
   ])
 });
@@ -572,16 +574,26 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       const db = getDbPool();
       const body = request.body as any;
-      const rawAmount =
-        body.action.type === "arch.transfer" ? body.action.lamports
-        : body.action.type === "arch.token_transfer" ? body.action.amount
-        : null;
-      if (rawAmount !== null) {
-        try {
-          parseU64Decimal(rawAmount, "amount");
-        } catch (err: any) {
-          return reply.badRequest(err.message);
-        }
+      const rawAmounts: Array<[string, unknown]> =
+        body.action.type === "arch.transfer" ? [["amount", body.action.lamports]]
+        : body.action.type === "arch.token_transfer" ? [["amount", body.action.amount]]
+        : body.action.type === "swap.rune_native"
+          ? [
+              ["amountIn", body.action.amountIn],
+              ["minOut", body.action.minOut],
+              ["nonce", body.action.nonce],
+              ["feeRateSatVb", body.action.feeRateSatVb]
+            ]
+        : [];
+      try {
+        for (const [label, raw] of rawAmounts) parseU64Decimal(String(raw), label);
+      } catch (err: any) {
+        return reply.badRequest(err.message);
+      }
+      // Rejected rather than clamped: the encoder would otherwise sign a lower
+      // fee rate than the one displayed.
+      if (body.action.type === "swap.rune_native" && BigInt(body.action.feeRateSatVb) > MAX_FEE_RATE_SAT_VB) {
+        return reply.badRequest(`feeRateSatVb exceeds ${MAX_FEE_RATE_SAT_VB} sat/vB`);
       }
       const user = await withDbTransaction(db, (client) =>
         getOrCreateUserByExternalId(client, { appId, externalUserId: body.externalUserId })

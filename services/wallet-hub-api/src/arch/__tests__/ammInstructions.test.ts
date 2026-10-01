@@ -9,7 +9,9 @@
  */
 import { describe, it, expect } from "vitest";
 import type { Pubkey } from "@arch-network/arch-sdk";
+import bs58 from "bs58";
 import {
+  buildSwapAction,
   buildAmmSwapInstruction,
   buildAmmAddLiquidityInstruction,
   MAX_FEE_RATE_SAT_VB,
@@ -26,6 +28,43 @@ function u64le(data: Uint8Array, off: number): bigint {
   for (let i = 0; i < 8; i++) v |= BigInt(data[off + i]) << (8n * BigInt(i));
   return v;
 }
+
+describe("buildSwapAction boundary values", () => {
+  const U64_MAX = (1n << 64n) - 1n;
+  const b58 = (n: number) => bs58.encode(new Uint8Array(32).fill(n));
+  const action = (amountIn: string, minOut: string, nonce: string, feeRateSatVb: string) => ({
+    type: "swap.rune_native" as const,
+    programId: b58(1),
+    poolAddress: b58(2),
+    runeId: { block: "840000", tx: 1 },
+    baseToQuote: true,
+    amountIn,
+    minOut,
+    nonce,
+    userInput: { txid: "09".repeat(32), vout: 0xffffffff },
+    recipientScriptHex: "51" + "20" + "07".repeat(32),
+    feeRateSatVb,
+  });
+  // disc(8) bool(1) amountIn(16) minOut(16) nonce(8) txid(32) vout(4) script(4+34) fee(8)
+  const AMOUNT_IN = 9, MIN_OUT = 25, NONCE = 41, VOUT = 81, FEE = 123;
+
+  it("encodes u64 max and the fee ceiling exactly", () => {
+    const { data } = buildSwapAction(action(U64_MAX.toString(), U64_MAX.toString(), U64_MAX.toString(), "1000"), pk(3))
+      .instructions[0];
+    expect(u64le(data, AMOUNT_IN)).toBe(U64_MAX);
+    expect(u64le(data, AMOUNT_IN + 8)).toBe(0n);
+    expect(u64le(data, MIN_OUT)).toBe(U64_MAX);
+    expect(u64le(data, MIN_OUT + 8)).toBe(0n);
+    expect(u64le(data, NONCE)).toBe(U64_MAX);
+    expect(u32le(data, VOUT) >>> 0).toBe(0xffffffff);
+    expect(u64le(data, FEE)).toBe(MAX_FEE_RATE_SAT_VB);
+  });
+
+  it("encodes zeros exactly", () => {
+    const { data } = buildSwapAction(action("0", "0", "0", "0"), pk(3)).instructions[0];
+    for (const off of [AMOUNT_IN, AMOUNT_IN + 8, MIN_OUT, MIN_OUT + 8, NONCE, FEE]) expect(u64le(data, off)).toBe(0n);
+  });
+});
 
 describe("buildAmmSwapInstruction", () => {
   const recipientScript = new Uint8Array([0x51, 0x20, ...new Uint8Array(32).fill(7)]);
