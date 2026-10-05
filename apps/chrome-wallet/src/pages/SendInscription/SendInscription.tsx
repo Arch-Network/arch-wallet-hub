@@ -38,7 +38,11 @@ import {
 } from "../../utils/inscription-psbt";
 import { finalizeSignedPsbt } from "../../utils/btc-psbt";
 import { isExternalAccount } from "../../state/types";
+import { identityAddress } from "../../state/account-addresses";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { signerInfo } from "../../wallets/capabilities";
+import { reopenForExternalSigning } from "../../utils/runtime-context";
+import { broadcastOrReconcile } from "../../utils/btc-broadcast";
 import { buildExplorerUrl, notifyTxBroadcast } from "../../utils/notifications";
 import { formatBtc } from "../../utils/format";
 import BackBar from "../../components/BackBar";
@@ -144,14 +148,20 @@ export default function SendInscription() {
 
   // ── Step transitions ───────────────────────────────────────────
   const handleContinue = useCallback(async () => {
-    if (!activeAccount?.btcAddress || !summary) return;
+    if (!activeAccount || !summary) return;
+    // Inscription sends spend from the Taproot identity address on this network.
+    const fromAddress = identityAddress(activeAccount, state.network);
+    if (!fromAddress) {
+      setError("This account has no Bitcoin address on this network. Switch networks to send from it.");
+      return;
+    }
     setPreparing(true);
     setError("");
     try {
       const ix = await getIndexer();
       const result = await buildUnsignedInscriptionPsbt({
         indexer: ix,
-        fromAddress: activeAccount.btcAddress,
+        fromAddress,
         toAddress: recipient.trim(),
         inscriptionId,
         satpoint: summary.satpoint,
@@ -169,10 +179,16 @@ export default function SendInscription() {
     } finally {
       setPreparing(false);
     }
-  }, [activeAccount?.btcAddress, summary, recipient, inscriptionId]);
+  }, [activeAccount, state.network, summary, recipient, inscriptionId]);
 
   const handleSign = useCallback(async () => {
     if (!activeAccount || !prepared) return;
+    if (
+      isExternalAccount(activeAccount) &&
+      (await reopenForExternalSigning(`/send-inscription/${encodeURIComponent(inscriptionId)}`))
+    ) {
+      return;
+    }
     setSigning(true);
     setError("");
     setSignStatus("Signing transaction\u2026");
@@ -201,7 +217,7 @@ export default function SendInscription() {
       setSignStatus("Broadcasting transaction\u2026");
       const rawTxHex = finalizeSignedPsbt(signedPsbtBase64, prepared.network);
       const ix = await getIndexer();
-      const txid = await ix.broadcastBtc(rawTxHex);
+      const txid = await broadcastOrReconcile(ix, rawTxHex);
       setSentTxid(txid);
       setStep("sent");
 
@@ -216,7 +232,7 @@ export default function SendInscription() {
       setSigning(false);
       setSignStatus("");
     }
-  }, [activeAccount, prepared, summary, state.network]);
+  }, [activeAccount, prepared, summary, state.network, inscriptionId]);
 
   // ── Derived UI values ──────────────────────────────────────────
   const networkPlaceholder = state.network === "mainnet" ? "bc1p\u2026" : "tb1p\u2026";
@@ -370,7 +386,11 @@ export default function SendInscription() {
           onClick={handleSign}
           disabled={signing}
         >
-          {signing ? (signStatus || "Signing\u2026") : "Sign & Send"}
+          {signing
+            ? (signStatus || "Signing\u2026")
+            : activeAccount && signerInfo(activeAccount).external
+              ? signerInfo(activeAccount).approveLabel
+              : "Sign & Send"}
         </button>
       </div>
     );

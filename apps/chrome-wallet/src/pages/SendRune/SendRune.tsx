@@ -37,7 +37,11 @@ import { buildUnsignedRunePsbt, type BuildRunePsbtResult } from "../../utils/run
 import { finalizeSignedPsbt } from "../../utils/btc-psbt";
 import { formatRuneAmount, labelForRune, parseRuneAmount } from "../../utils/runes-format";
 import { isExternalAccount } from "../../state/types";
+import { identityAddress } from "../../state/account-addresses";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { signerInfo } from "../../wallets/capabilities";
+import { reopenForExternalSigning } from "../../utils/runtime-context";
+import { broadcastOrReconcile } from "../../utils/btc-broadcast";
 import { buildExplorerUrl, notifyTxBroadcast } from "../../utils/notifications";
 import { formatBtc } from "../../utils/format";
 import BackBar from "../../components/BackBar";
@@ -55,6 +59,8 @@ export default function SendRune() {
   const { state, activeAccount } = useWallet();
 
   const runeId = decodeURIComponent(runeIdParam ?? "");
+  // Rune sends spend from the Taproot identity address on this network.
+  const fromAddress = activeAccount ? identityAddress(activeAccount, state.network) : null;
 
   // Balance for THIS rune from the active address. We refetch on
   // mount; the dashboard's cached value would be stale on a
@@ -77,11 +83,15 @@ export default function SendRune() {
     let cancelled = false;
     setBalance(null);
     setBalanceError("");
-    if (!activeAccount?.btcAddress || !runeId) return;
+    if (!runeId) return;
+    if (!fromAddress) {
+      if (activeAccount) setBalanceError("This account has no Bitcoin address on this network.");
+      return;
+    }
     (async () => {
       try {
         const indexer = await getIndexer();
-        const r = await indexer.getBtcAddressRunes(activeAccount.btcAddress);
+        const r = await indexer.getBtcAddressRunes(fromAddress);
         if (cancelled) return;
         const match = (r?.balances ?? []).find((b) => b.rune_id === runeId);
         if (!match) {
@@ -97,7 +107,7 @@ export default function SendRune() {
     return () => {
       cancelled = true;
     };
-  }, [activeAccount?.btcAddress, runeId]);
+  }, [activeAccount, fromAddress, runeId]);
 
   // ── Form-state persistence (chrome.storage.session) ───────────
   //
@@ -174,14 +184,14 @@ export default function SendRune() {
 
   // ── Step transitions ───────────────────────────────────────────
   const handleContinue = useCallback(async () => {
-    if (!activeAccount?.btcAddress || !balance || amountMinor === null) return;
+    if (!fromAddress || !balance || amountMinor === null) return;
     setPreparing(true);
     setError("");
     try {
       const indexer = await getIndexer();
       const result = await buildUnsignedRunePsbt({
         indexer,
-        fromAddress: activeAccount.btcAddress,
+        fromAddress,
         toAddress: recipient.trim(),
         runeId,
         amount: amountMinor,
@@ -199,10 +209,16 @@ export default function SendRune() {
     } finally {
       setPreparing(false);
     }
-  }, [activeAccount?.btcAddress, balance, amountMinor, recipient, runeId]);
+  }, [fromAddress, balance, amountMinor, recipient, runeId]);
 
   const handleSign = useCallback(async () => {
     if (!activeAccount || !prepared) return;
+    if (
+      isExternalAccount(activeAccount) &&
+      (await reopenForExternalSigning(`/send-rune/${encodeURIComponent(runeId)}`))
+    ) {
+      return;
+    }
     setSigning(true);
     setError("");
     setSignStatus("Signing transaction\u2026");
@@ -231,7 +247,7 @@ export default function SendRune() {
       setSignStatus("Broadcasting transaction\u2026");
       const rawTxHex = finalizeSignedPsbt(signedPsbtBase64, prepared.network);
       const indexer = await getIndexer();
-      const txid = await indexer.broadcastBtc(rawTxHex);
+      const txid = await broadcastOrReconcile(indexer, rawTxHex);
       setSentTxid(txid);
       setStep("sent");
 
@@ -249,7 +265,7 @@ export default function SendRune() {
       setSigning(false);
       setSignStatus("");
     }
-  }, [activeAccount, prepared, balance, state.network]);
+  }, [activeAccount, prepared, balance, state.network, runeId]);
 
   // ── Derived UI values ──────────────────────────────────────────
   const balanceHuman = balance ? formatRuneAmount(balance.amount, balance.divisibility) : "";
@@ -426,7 +442,11 @@ export default function SendRune() {
           onClick={handleSign}
           disabled={signing}
         >
-          {signing ? (signStatus || "Signing\u2026") : "Sign & Send"}
+          {signing
+            ? (signStatus || "Signing\u2026")
+            : activeAccount && signerInfo(activeAccount).external
+              ? signerInfo(activeAccount).approveLabel
+              : "Sign & Send"}
         </button>
       </div>
     );

@@ -52,6 +52,31 @@ export type WalletAccountKind = "turnkey" | "external" | "watch";
  */
 export type ExternalWalletProvider = "xverse" | "unisat";
 
+/** What a linked Bitcoin address is used for. Xverse separates them; UniSat exposes one. */
+export type AddressPurpose = "payment" | "ordinals";
+export type BtcAddressType = "p2tr" | "p2wpkh" | "p2sh" | "p2pkh" | "unknown";
+
+/**
+ * A Bitcoin address an external wallet returned for a linked account,
+ * stored exactly as returned. Never re-encode these for another
+ * network: a rewritten prefix is not proof the provider controls (or
+ * tracks) that address there.
+ */
+export interface AccountAddress {
+  address: string;
+  publicKeyHex?: string;
+  /** One record per address; an address serving several purposes lists all of them. */
+  purposes: AddressPurpose[];
+  network: NetworkId;
+  addressType: BtcAddressType;
+  /**
+   * True only when the provider itself reported the exact chain at
+   * link time (UniSat `getChain`, Xverse `wallet_getNetwork`). False
+   * means the network was requested but not independently confirmed.
+   */
+  chainVerified: boolean;
+}
+
 /**
  * A recipient address the user has previously sent to. Surfaced on the Send
  * form as a "Recent" picker so common addresses don't need to be re-pasted.
@@ -102,6 +127,13 @@ export interface WalletAccount {
   externalProvider?: ExternalWalletProvider;
   linkedWalletId?: string;
   verificationScheme?: string;
+  /**
+   * External accounts only: every address the provider returned, by
+   * purpose and network. `btcAddress` stays the Taproot identity address
+   * (Arch identity + Arch signing). Accounts linked before this field
+   * existed have none; see `resolveAccountAddresses`.
+   */
+  addresses?: AccountAddress[];
   /**
    * Previous (wrong) Arch address preserved when the canonical-identity
    * migration rewrote `archAddress`. External wallets linked before the

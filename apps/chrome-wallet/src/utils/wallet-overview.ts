@@ -99,7 +99,9 @@ export async function fetchWalletOverview(
 
   const [archAccount, btcSummary] = await Promise.all([
     raceWithTimeout(client.getAccountSummary(params.archAccountAddress), FAST_TIMEOUT_MS),
-    raceWithTimeout(client.getBtcAddressSummary(params.btcAddress), FAST_TIMEOUT_MS)
+    params.btcAddress
+      ? raceWithTimeout(client.getBtcAddressSummary(params.btcAddress), FAST_TIMEOUT_MS)
+      : Promise.resolve({ value: null, timedOut: false as const, error: null })
   ]);
 
   const archAccountData = archAccount.timedOut ? null : archAccount.value;

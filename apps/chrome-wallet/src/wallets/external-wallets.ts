@@ -4,17 +4,20 @@ import {
   extractTapKeySigFromPsbtHex,
   hexToBytes,
 } from "../utils/psbt-signature";
+import { BridgeError } from "./bridge/errors";
+import type { BridgeConnectResult, BridgeRequest, BridgeResponse } from "./bridge/protocol";
 
-export interface ExternalWalletConnection {
-  provider: ExternalWalletProvider;
-  address: string;
-  publicKeyHex: string;
-}
+export type ExternalWalletConnection = BridgeConnectResult;
 
 export interface ExternalWalletAdapter {
   provider: ExternalWalletProvider;
   label: string;
-  isInstalled(): boolean;
+  /** Where to get the wallet when the connector page can't find it. */
+  installUrl: string;
+  /**
+   * Connect and return every payment/ordinals address the wallet gave,
+   * after the bridge checked the provider is present and on `network`.
+   */
   connect(network: NetworkId): Promise<ExternalWalletConnection>;
   signMessage(args: {
     address: string;
@@ -58,90 +61,51 @@ function hexToBase64(hex: string): string {
   return bytesToBase64(hexToBytes(hex));
 }
 
-async function requestExternalWallet<T>(
-  provider: ExternalWalletProvider,
-  method: "connect" | "signMessage" | "signPsbt" | "signBtcPsbt",
-  args: Record<string, unknown>,
-): Promise<T> {
-  console.log("[ArchWallet] external request →", { provider, method, args });
-  const response = await chrome.runtime.sendMessage({
+/** Throws `BridgeError` carrying the bridge's code, so callers can tell a rejection from a wrong network. */
+async function requestExternalWallet<T>(request: BridgeRequest): Promise<T> {
+  const response: BridgeResponse<T> | undefined = await chrome.runtime.sendMessage({
     type: "EXTERNAL_WALLET_REQUEST",
-    request: { provider, method, args },
+    request,
   });
-  console.log("[ArchWallet] external response ←", { provider, method, response });
-  if (!response?.success) {
-    throw new Error(
-      response?.error ||
-        "External wallet request failed. Open a normal web page tab where the wallet is injected, then retry.",
-    );
-  }
-  return response.data as T;
+  if (!response) throw new BridgeError("PROVIDER_ERROR", "The wallet connection didn't respond. Try again.");
+  if (!response.success) throw new BridgeError(response.code ?? "PROVIDER_ERROR", response.error);
+  return response.data;
+}
+
+function makeAdapter(
+  provider: ExternalWalletProvider,
+  label: string,
+  installUrl: string,
+  /** How the signed PSBT comes back: Xverse returns base64, UniSat hex. */
+  signedPsbtField: "signedPsbtBase64" | "signedPsbtHex",
+): ExternalWalletAdapter {
+  const signedPsbt = (res: Record<string, string | undefined>): string => {
+    const value = res[signedPsbtField];
+    if (!value) throw new BridgeError("PROVIDER_ERROR", `${label} didn't return a signed transaction.`);
+    return value;
+  };
+  return {
+    provider,
+    label,
+    installUrl,
+    connect: (network) => requestExternalWallet({ provider, method: "connect", args: { network } }),
+    signMessage: (args) => requestExternalWallet({ provider, method: "signMessage", args }),
+    signPsbt: async (args) => {
+      const signed = signedPsbt(await requestExternalWallet({ provider, method: "signPsbt", args }));
+      return signedPsbtField === "signedPsbtHex"
+        ? extractTapKeySigFromPsbtHex(signed)
+        : extractTapKeySigFromPsbtBase64(signed);
+    },
+    signBtcPsbt: async (args) => {
+      const signed = signedPsbt(await requestExternalWallet({ provider, method: "signBtcPsbt", args }));
+      return { signedPsbtBase64: signedPsbtField === "signedPsbtHex" ? hexToBase64(signed) : signed };
+    },
+  };
 }
 
 export const externalWalletAdapters: Record<ExternalWalletProvider, ExternalWalletAdapter> = {
-  xverse: {
-    provider: "xverse",
-    label: "Xverse",
-    isInstalled: () => true,
-    connect: (network) => requestExternalWallet("xverse", "connect", { network }),
-    signMessage: async ({ address, message, network }) => ({
-      ...(await requestExternalWallet<{ signature: string; schemeHint: "bip322" }>(
-        "xverse",
-        "signMessage",
-        { address, message, network },
-      )),
-    }),
-    signPsbt: async ({ address, psbtBase64, network }) => {
-      const res = await requestExternalWallet<{ signedPsbtBase64?: string }>("xverse", "signPsbt", {
-        address,
-        psbtBase64,
-        network,
-      });
-      if (!res.signedPsbtBase64) throw new Error("No signed PSBT returned from Xverse");
-      return extractTapKeySigFromPsbtBase64(res.signedPsbtBase64);
-    },
-    signBtcPsbt: async ({ address, psbtBase64, network, inputIndexes }) => {
-      const res = await requestExternalWallet<{ signedPsbtBase64?: string }>(
-        "xverse",
-        "signBtcPsbt",
-        { address, psbtBase64, network, inputIndexes },
-      );
-      if (!res.signedPsbtBase64) throw new Error("No signed PSBT returned from Xverse");
-      return { signedPsbtBase64: res.signedPsbtBase64 };
-    },
-  },
-  unisat: {
-    provider: "unisat",
-    label: "UniSat",
-    isInstalled: () => true,
-    connect: (network) => requestExternalWallet("unisat", "connect", { network }),
-    signMessage: async ({ message, network }) => ({
-      ...(await requestExternalWallet<{ signature: string; schemeHint: "bip322" }>(
-        "unisat",
-        "signMessage",
-        { message, network },
-      )),
-    }),
-    signPsbt: async ({ psbtBase64, network }) => {
-      const res = await requestExternalWallet<{ signedPsbtHex?: string }>("unisat", "signPsbt", {
-        psbtBase64,
-        network,
-      });
-      if (!res.signedPsbtHex) throw new Error("No signed PSBT returned from UniSat");
-      return extractTapKeySigFromPsbtHex(res.signedPsbtHex);
-    },
-    signBtcPsbt: async ({ address, psbtBase64, network, inputIndexes }) => {
-      const res = await requestExternalWallet<{ signedPsbtHex?: string }>(
-        "unisat",
-        "signBtcPsbt",
-        { address, psbtBase64, network, inputIndexes },
-      );
-      if (!res.signedPsbtHex) throw new Error("No signed PSBT returned from UniSat");
-      // UniSat returns the signed PSBT in hex; normalize to base64 so
-      // every adapter has the same return shape regardless of provider.
-      return { signedPsbtBase64: hexToBase64(res.signedPsbtHex) };
-    },
-  },
+  xverse: makeAdapter("xverse", "Xverse", "https://www.xverse.app/download", "signedPsbtBase64"),
+  unisat: makeAdapter("unisat", "UniSat", "https://unisat.io/download", "signedPsbtHex"),
 };
 
 export function getExternalWalletAdapter(provider: ExternalWalletProvider): ExternalWalletAdapter {

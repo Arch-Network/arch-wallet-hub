@@ -36,12 +36,13 @@ import {
 
 import { useWallet } from "../../hooks/useWallet";
 import { useArchOnboarding } from "../../hooks/useArchOnboarding";
-import { isWatchAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount } from "../../state/types";
+import { signerInfo } from "../../wallets/capabilities";
 import { getIndexer } from "../../utils/indexer";
 import { formatSwapAmount } from "../../utils/format";
 import { applyDisplayOverridesByMintHex, lookupKnownToken } from "../../utils/known-tokens";
 import { usdPerUnitForSymbol } from "../../utils/token-usd";
-import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
+import { isInSidePanel, openWalletPopup, survivesFocusLoss } from "../../utils/runtime-context";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import {
@@ -488,7 +489,9 @@ export default function Swap() {
     // Side panel → defer signing to a fresh popup window where
     // WebAuthn actually works. We hand off the current intent via URL
     // params so the popup reconstructs the form the user just confirmed.
-    if (sidePanelMode) {
+    // A linked wallet in the toolbar popup hands off too: its signing
+    // window takes focus, which closes the toolbar popup.
+    if (sidePanelMode || (isExternalAccount(activeAccount) && !(await survivesFocusLoss()))) {
       setError(null);
       setSuccessTxid(null);
       try {
@@ -640,9 +643,9 @@ export default function Swap() {
 
         {resumedFromSidePanel && (
           <div className="swap-resume-notice" role="status">
-            Resumed from the side panel. Review the quote below and confirm
-            to sign — the popup window can show the passkey prompt that the
-            side panel can't.
+            {activeAccount && isExternalAccount(activeAccount)
+              ? `Review the quote below and confirm. This window stays open while you approve in ${signerInfo(activeAccount).label}.`
+              : "Resumed from the side panel. Review the quote below and confirm to sign — the popup window can show the passkey prompt that the side panel can't."}
           </div>
         )}
 

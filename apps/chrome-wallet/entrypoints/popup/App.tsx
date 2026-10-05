@@ -293,7 +293,18 @@ function AppRoutes() {
       <SideNav network={state.network} />
       <div className="app-main">
         <SidePanelDefaultNotice openAs={state.openAs} onChanged={refresh} />
-        <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} onNetworkChange={setNetwork} />
+        <Header
+          account={activeAccount}
+          accounts={state.accounts}
+          network={state.network}
+          networkStatus={networkStatus}
+          onLock={lock}
+          onNetworkChange={setNetwork}
+          onSelectAccount={async (id) => {
+            await walletStore.setActiveAccount(id);
+            await refresh();
+          }}
+        />
         <ConnectionBanner status={networkStatus} onRetry={retryApi} showHubWarning={showHubWarning} />
         <div className={bodyClass}>
           <RouteRestorer />

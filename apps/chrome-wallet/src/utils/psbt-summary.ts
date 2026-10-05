@@ -53,16 +53,26 @@ function safeAddressFromScript(script: Uint8Array, network: bitcoin.Network): st
   }
 }
 
+export type PsbtEncoding = "hex" | "base64";
+
+/**
+ * Heuristic: PSBTs start with the magic bytes 0x70736274ff which
+ * hex-encodes to "70736274ff". Base64 PSBTs start with "cHNidP" because
+ * the magic encodes to "cHNidP8".
+ */
+export function psbtEncoding(payload: string): PsbtEncoding {
+  return /^[0-9a-fA-F]+$/.test(payload.trim()) ? "hex" : "base64";
+}
+
 export function parsePsbt(payload: string): bitcoin.Psbt {
   ensureEccLib();
   const trimmed = payload.trim();
-  // Heuristic: PSBTs start with the magic bytes 0x70736274ff which
-  // hex-encodes to "70736274ff". Base64 PSBTs start with "cHNidP" because
-  // the magic encodes to "cHNidP8".
-  if (/^[0-9a-fA-F]+$/.test(trimmed)) {
-    return bitcoin.Psbt.fromHex(trimmed);
-  }
-  return bitcoin.Psbt.fromBase64(trimmed);
+  return psbtEncoding(trimmed) === "hex" ? bitcoin.Psbt.fromHex(trimmed) : bitcoin.Psbt.fromBase64(trimmed);
+}
+
+/** A signed PSBT (hex) in the encoding the dapp sent its request in. */
+export function encodePsbtAs(signedHex: string, encoding: PsbtEncoding): string {
+  return encoding === "hex" ? signedHex : bitcoin.Psbt.fromHex(signedHex).toBase64();
 }
 
 /**

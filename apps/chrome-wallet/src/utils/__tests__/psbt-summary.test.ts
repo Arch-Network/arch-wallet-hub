@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import * as bitcoin from "bitcoinjs-lib";
 import * as ecc from "@bitcoinerlab/secp256k1";
 import { Buffer } from "buffer";
-import { summarizePsbt } from "../psbt-summary";
+import { encodePsbtAs, parsePsbt, psbtEncoding, summarizePsbt } from "../psbt-summary";
 
 bitcoin.initEccLib(ecc as any);
 
@@ -36,5 +36,24 @@ describe("summarizePsbt", () => {
     const summary = summarizePsbt(psbtHex(), [testnetAddress], "mainnet");
     expect(summary.network).toBe("mainnet");
     expect(summary.outputs[0]!.address).toBe(mainnet.address);
+  });
+});
+
+describe("PSBT encoding", () => {
+  const hex = psbtHex();
+  const base64 = Buffer.from(hex, "hex").toString("base64");
+
+  it("detects hex and base64 payloads", () => {
+    expect(psbtEncoding(hex)).toBe("hex");
+    expect(psbtEncoding(` ${base64}\n`)).toBe("base64");
+  });
+
+  it("normalizes a base64 request to the hex the signer takes", () => {
+    expect(parsePsbt(base64).toHex()).toBe(hex);
+  });
+
+  it("answers in the encoding the request used", () => {
+    expect(encodePsbtAs(hex, "hex")).toBe(hex);
+    expect(encodePsbtAs(hex, "base64")).toBe(base64);
   });
 });
