@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { truncateAddress } from "../utils/format";
 import { hasConfirmedMainnet, markMainnetConfirmed } from "../utils/mainnet-confirm";
-import { openAnsManager, resolvePrimaryName } from "../utils/name-service";
-import { useWideMode } from "../hooks/useWideMode";
-import CopyButton from "./CopyButton";
+import { resolvePrimaryName } from "../utils/name-service";
+import AccountSwitcher from "./AccountSwitcher";
 import type { WalletAccount, NetworkId } from "../state/types";
 import type { NetworkStatus } from "../hooks/useApiStatus";
 
 interface HeaderProps {
   account: WalletAccount | null;
+  accounts: WalletAccount[];
   network: NetworkId;
   networkStatus: NetworkStatus;
   onLock: () => void;
   onNetworkChange?: (network: NetworkId) => void | Promise<void>;
+  onSelectAccount: (accountId: string) => void | Promise<void>;
 }
 
 function LockIcon() {
@@ -176,12 +176,16 @@ function NetworkSwitcher({ network, networkStatus, onChange }: NetworkSwitcherPr
   );
 }
 
-export default function Header({ account, network, networkStatus, onLock, onNetworkChange }: HeaderProps) {
-  const displayAddress = account?.archAddress ?? "";
+export default function Header({
+  account,
+  accounts,
+  network,
+  networkStatus,
+  onLock,
+  onNetworkChange,
+  onSelectAccount,
+}: HeaderProps) {
   const [primaryName, setPrimaryName] = useState<string | null>(null);
-  const wide = useWideMode(720);
-  const veryWide = useWideMode(1000);
-  const addrChars = veryWide ? 16 : wide ? 10 : 5;
 
   useEffect(() => {
     let cancelled = false;
@@ -213,22 +217,14 @@ export default function Header({ account, network, networkStatus, onLock, onNetw
             </span>
           )}
 
-          {account && primaryName && (
-            <button
-              type="button"
-              className="address-chip address-chip-link"
-              title={`View ${primaryName} on ANS`}
-              onClick={() => void openAnsManager({ view: primaryName })}
-            >
-              {primaryName}
-            </button>
-          )}
-
-          {account && displayAddress && (
-            <span className="address-chip" title={displayAddress}>
-              {truncateAddress(displayAddress, addrChars)}
-              <CopyButton text={displayAddress} />
-            </span>
+          {account && (
+            <AccountSwitcher
+              account={account}
+              accounts={accounts}
+              network={network}
+              primaryName={primaryName}
+              onSelect={onSelectAccount}
+            />
           )}
 
           <button className="header-lock-btn" onClick={onLock} title="Lock wallet" aria-label="Lock wallet">

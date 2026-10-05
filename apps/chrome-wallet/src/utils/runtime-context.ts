@@ -58,6 +58,33 @@ export async function isInStandalonePopupWindow(): Promise<boolean> {
 }
 
 /**
+ * Whether this surface survives another window taking focus. The toolbar
+ * popup doesn't: Chrome closes it, and `chrome.tabs.getCurrent()` is
+ * undefined there. Standalone popup windows and full-page tabs are tabs;
+ * the side panel isn't a tab but stays open.
+ */
+export async function survivesFocusLoss(): Promise<boolean> {
+  if (isInSidePanel()) return true;
+  try {
+    return Boolean(await chrome.tabs?.getCurrent?.());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * External signers (Xverse, UniSat) take focus and would close the
+ * toolbar popup mid-signature. Reopen `path` in a standalone window
+ * instead; send forms restore their saved fields there. Returns true
+ * when it reopened, so the caller stops.
+ */
+export async function reopenForExternalSigning(path: string): Promise<boolean> {
+  if (await survivesFocusLoss()) return false;
+  await openWalletPopup({ path });
+  return true;
+}
+
+/**
  * Default size for the popup window we spawn from the side panel. Kept
  * in sync with the standalone approve window dimensions used by
  * `background.ts::openApprovalPopup` so the user gets a familiar

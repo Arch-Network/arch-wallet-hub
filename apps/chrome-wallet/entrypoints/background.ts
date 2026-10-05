@@ -8,8 +8,11 @@ import { pendingRequestsStore } from "../src/messaging/pending-requests";
 import { keystore } from "../src/crypto/keystore";
 import type { PendingRequest } from "../src/messaging/types";
 import type { OpenAsMode } from "../src/state/types";
+import type { BridgeConnectResult, BridgeResponse } from "../src/wallets/bridge/protocol";
+import { BridgeError } from "../src/wallets/bridge/errors";
+import { relinkedAddresses } from "../src/wallets/relink";
 import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
-import { reEncodeTaprootAddress } from "../src/utils/addressNetwork";
+import { identityAddress } from "../src/state/account-addresses";
 import { parseU64DecimalString } from "../src/utils/u64-amount";
 import {
   applyDiagnosticsRuntime,
@@ -187,13 +190,21 @@ function deliverResponseToTab(
 //   - opened lazily on first bridge call
 //   - reused across subsequent calls in the same flow
 //   - closed when the popup signals CLOSE_EXTERNAL_CONNECTOR
-//   - closed on idle (no bridge call for CONNECTOR_IDLE_MS)
-//   - cleared if the user closes the window manually
+//   - closed on idle (no bridge call for CONNECTOR_IDLE_MS after the last one settles)
+//   - cleared if the user closes the window manually, failing any
+//     request still waiting on it
 
 type ConnectorTab = { windowId: number; tabId: number };
 let connectorTab: ConnectorTab | null = null;
 let connectorIdleAlarmName = "arch-wallet-external-connector-idle";
 const CONNECTOR_IDLE_MS = 90_000;
+/** Bridge calls awaiting the connector page, keyed by request id. */
+const connectorInFlight = new Map<string, (response: BridgeResponse) => void>();
+const CONNECTOR_CLOSED: BridgeResponse = {
+  success: false,
+  code: "WINDOW_CLOSED",
+  error: "The wallet connection window was closed before the request finished.",
+};
 
 async function getConnectorUrl(): Promise<string> {
   let base = DEFAULT_HUB_BASE_URL;
@@ -266,6 +277,7 @@ async function ensureConnectorTab(): Promise<ConnectorTab> {
 async function closeConnectorTab(): Promise<void> {
   const tab = connectorTab;
   connectorTab = null;
+  failConnectorInFlight(CONNECTOR_CLOSED);
   if (!tab) return;
   try {
     await chrome.windows.remove(tab.windowId);
@@ -275,35 +287,20 @@ async function closeConnectorTab(): Promise<void> {
 }
 
 function scheduleConnectorIdleClose(): void {
-  // Single rolling alarm. Each bridge call resets it; we close the
-  // window if no activity for CONNECTOR_IDLE_MS. Guards against the
-  // popup crashing / being dismissed without the explicit close
-  // signal.
+  // Single rolling alarm, armed when the last in-flight bridge call
+  // settles. Guards against the popup crashing / being dismissed
+  // without the explicit close signal.
   chrome.alarms.create(connectorIdleAlarmName, {
     delayInMinutes: CONNECTOR_IDLE_MS / 60_000,
   });
 }
 
-async function requestExternalWalletViaConnector(message: any): Promise<any> {
-  const target = await ensureConnectorTab();
-  const payload = {
-    type: "EXTERNAL_WALLET_PAGE_REQUEST",
-    requestId:
-      globalThis.crypto?.randomUUID?.() ??
-      `external-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    request: message.request,
-  };
-  scheduleConnectorIdleClose();
-  // Refocus the connector window before each bridge call. The
-  // external wallet's confirmation UI (Xverse / UniSat)
-  // mounts inside the connector page; if the window is in the
-  // background the prompt is invisible to the user, which presents
-  // as a silent hang while we wait for a response.
-  try {
-    await chrome.windows.update(target.windowId, { focused: true, drawAttention: true });
-  } catch {
-    /* window may have been closed between ensureConnectorTab and now */
-  }
+function failConnectorInFlight(response: BridgeResponse): void {
+  for (const settle of connectorInFlight.values()) settle(response);
+  connectorInFlight.clear();
+}
+
+async function sendToConnector(target: ConnectorTab, payload: unknown): Promise<BridgeResponse> {
   try {
     return await chrome.tabs.sendMessage(target.tabId, payload);
   } catch (err: any) {
@@ -318,6 +315,56 @@ async function requestExternalWalletViaConnector(message: any): Promise<any> {
     });
     return await chrome.tabs.sendMessage(target.tabId, payload);
   }
+}
+
+async function requestExternalWalletViaConnector(message: any): Promise<BridgeResponse> {
+  const target = await ensureConnectorTab();
+  const requestId =
+    globalThis.crypto?.randomUUID?.() ??
+    `external-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const payload = { type: "EXTERNAL_WALLET_PAGE_REQUEST", requestId, request: message.request };
+  await chrome.alarms.clear(connectorIdleAlarmName);
+  // Refocus the connector window before each bridge call. The
+  // external wallet's confirmation UI (Xverse / UniSat)
+  // mounts inside the connector page; if the window is in the
+  // background the prompt is invisible to the user, which presents
+  // as a silent hang while we wait for a response.
+  try {
+    await chrome.windows.update(target.windowId, { focused: true, drawAttention: true });
+  } catch {
+    /* window may have been closed between ensureConnectorTab and now */
+  }
+  const closed = new Promise<BridgeResponse>((resolve) => connectorInFlight.set(requestId, resolve));
+  try {
+    return await Promise.race([
+      sendToConnector(target, payload).catch((err): BridgeResponse => {
+        // Closing the window tears down the message port; report that, not the port error.
+        if (connectorTab?.windowId !== target.windowId) return CONNECTOR_CLOSED;
+        throw err;
+      }),
+      closed,
+    ]);
+  } finally {
+    connectorInFlight.delete(requestId);
+    if (connectorInFlight.size === 0) scheduleConnectorIdleClose();
+  }
+}
+
+/** Re-run connect for a linked account and store the addresses its wallet reports on the current network. */
+async function relinkExternalAddresses(accountId: string): Promise<BridgeResponse<null>> {
+  const state = await walletStore.getState();
+  const account = state.accounts.find((a) => a.id === accountId);
+  if (!account || account.kind !== "external" || !account.externalProvider) {
+    return { success: false, code: "UNSUPPORTED", error: "Only linked Xverse or UniSat accounts can be reconnected." };
+  }
+  const response = await requestExternalWalletViaConnector({
+    request: { provider: account.externalProvider, method: "connect", args: { network: state.network } },
+  });
+  if (!response.success) return response;
+  const addresses = relinkedAddresses(account, response.data as BridgeConnectResult, state.network);
+  await walletStore.updateAccount(account.id, { addresses });
+  await closeConnectorTab();
+  return { success: true, data: null };
 }
 
 /**
@@ -379,7 +426,7 @@ export default defineBackground(() => {
         }
       }
     }
-    if (alarm.name === connectorIdleAlarmName) {
+    if (alarm.name === connectorIdleAlarmName && connectorInFlight.size === 0) {
       await closeConnectorTab();
     }
   });
@@ -398,6 +445,7 @@ export default defineBackground(() => {
     chrome.windows.onRemoved.addListener(async (windowId) => {
       if (connectorTab && connectorTab.windowId === windowId) {
         connectorTab = null;
+        failConnectorInFlight(CONNECTOR_CLOSED);
       }
       const all = await pendingRequestsStore.list();
       for (const req of all) {
@@ -455,7 +503,30 @@ export default defineBackground(() => {
         requestExternalWalletViaConnector(message)
           .then(sendResponse)
           .catch((err) => {
-            sendResponse({ success: false, error: err?.message || "External wallet request failed" });
+            sendResponse({
+              success: false,
+              code: "PROVIDER_ERROR",
+              error: err?.message || "External wallet request failed",
+            } satisfies BridgeResponse);
+          });
+        return true;
+      }
+
+      // Runs here rather than in the page: opening the connector
+      // focuses another window, which closes the toolbar popup.
+      if (message?.type === "RELINK_EXTERNAL_ADDRESSES") {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ success: false, error: "Not authorized" });
+          return false;
+        }
+        relinkExternalAddresses(String(message.accountId ?? ""))
+          .then(sendResponse)
+          .catch((err) => {
+            sendResponse({
+              success: false,
+              code: err instanceof BridgeError ? err.code : "PROVIDER_ERROR",
+              error: err?.message || "Couldn't reconnect the wallet",
+            } satisfies BridgeResponse);
           });
         return true;
       }
@@ -622,17 +693,19 @@ export default defineBackground(() => {
         }
         const account = await walletStore.getAccountForOrigin(origin);
         if (!account) return { id: msg.id, success: false, error: "No active account" };
-        // Return the address encoded for the active network. The stored
-        // `btcAddress` is a single fixed encoding; without this a mainnet
-        // wallet hands the dapp a testnet-form address (and vice versa),
-        // which network-guarded dapps reject even though the wallet is on
-        // the right network. Mirrors what every display screen already does.
+        // Return the address for the active network: re-encoded for an
+        // Arch-held key, and for a linked wallet only an address that
+        // wallet itself returned on this network.
         const { network } = await walletStore.getState();
+        const address = identityAddress(account, network);
+        if (!address) {
+          return { id: msg.id, success: false, error: "This account has no address on the current network" };
+        }
         return {
           id: msg.id,
           success: true,
           data: {
-            address: reEncodeTaprootAddress(account.btcAddress, network),
+            address,
             publicKey: account.publicKeyHex,
             archAddress: account.archAddress,
             kind: account.kind,

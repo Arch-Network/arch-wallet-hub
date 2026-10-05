@@ -15,7 +15,8 @@ import {
 } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
-import { reEncodeTaprootAddress, isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
+import { isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
+import { identityAddress } from "../../state/account-addresses";
 import QrScanner from "../../components/QrScanner";
 import BackBar from "../../components/BackBar";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
@@ -44,7 +45,12 @@ import {
 } from "../../state/send-form-session";
 import { isExternalAccount, isWatchAccount, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { isUserRejection } from "../../wallets/bridge/errors";
+import { signerInfo } from "../../wallets/capabilities";
+import { reopenForExternalSigning } from "../../utils/runtime-context";
+import { broadcastOrReconcile } from "../../utils/btc-broadcast";
 import ArchIcon from "../../components/ArchIcon";
+import { SignerBadge } from "../../components/AccountSwitcher";
 import { TokenIcon } from "../../components/TokenIcon";
 import { buildSessionSigner } from "../../utils/hub-session";
 import { hubIntentFee, verifyHubSigningRequest } from "../../utils/hub-signing-request-verify";
@@ -230,6 +236,10 @@ export default function Send({ networkStatus }: SendProps) {
     };
   }, [asset, recipient, state.network]);
 
+  // BTC sends spend from the Taproot identity address only, so that's
+  // the balance shown here (an Xverse payment balance is not).
+  const btcIdentity = activeAccount ? identityAddress(activeAccount, state.network) ?? "" : "";
+
   useEffect(() => {
     if (!activeAccount) return;
     const timeout = setTimeout(() => {
@@ -242,7 +252,7 @@ export default function Send({ networkStatus }: SendProps) {
       const archAddr =
         activeAccount.archAddress ||
         (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
-      const btcAddr = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
+      const btcAddr = btcIdentity;
 
       try {
         const o = await fetchWalletOverview(indexer, {
@@ -320,6 +330,7 @@ export default function Send({ networkStatus }: SendProps) {
     activeAccount?.btcAddress,
     activeAccount?.archAddress,
     activeAccount?.publicKeyHex,
+    btcIdentity,
     state.network,
   ]);
 
@@ -507,7 +518,10 @@ export default function Send({ networkStatus }: SendProps) {
           throw new Error(`Amount too small (minimum ${recipientDust} sats for this address type)`);
         }
 
-        const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
+        const fromAddress = identityAddress(activeAccount, state.network);
+        if (!fromAddress) {
+          throw new Error("This account has no Bitcoin address on this network. Switch networks to send from it.");
+        }
 
         const indexer = await getIndexer();
 
@@ -611,7 +625,7 @@ export default function Send({ networkStatus }: SendProps) {
       const rawTxHex = finalizeSignedPsbt(signedPsbtBase64, network);
 
       const indexer = await getIndexer();
-      const txid = await indexer.broadcastBtc(rawTxHex);
+      const txid = await broadcastOrReconcile(indexer, rawTxHex);
       setTxResult({ txid, rawTxid: txid });
       void addRecentRecipient({ address: recipient.trim(), asset: "btc", network: state.network });
 
@@ -627,10 +641,12 @@ export default function Send({ networkStatus }: SendProps) {
       setStep(4);
     } catch (err: any) {
       setError(err.message || "Transaction signing failed");
-      void notifyTxFailed({
-        title: "Bitcoin transfer failed",
-        message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
-      });
+      if (!isUserRejection(err)) {
+        void notifyTxFailed({
+          title: "Bitcoin transfer failed",
+          message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
+        });
+      }
     } finally {
       setLoading(false);
       setSignStatus(null);
@@ -639,6 +655,7 @@ export default function Send({ networkStatus }: SendProps) {
 
   const handleSubmit = useCallback(async () => {
     if (!activeAccount) return;
+    if (isExternalAccount(activeAccount) && (await reopenForExternalSigning("/send"))) return;
 
     if (asset === "btc") {
       return handleBtcSign();
@@ -793,10 +810,12 @@ export default function Send({ networkStatus }: SendProps) {
         return;
       }
       setError(formatWalletHubError(err, "Transaction failed"));
-      void notifyTxFailed({
-        title: asset === "apl" ? "Token transfer failed" : "ARCH transfer failed",
-        message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
-      });
+      if (!isUserRejection(err)) {
+        void notifyTxFailed({
+          title: asset === "apl" ? "Token transfer failed" : "ARCH transfer failed",
+          message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
+        });
+      }
     } finally {
       setLoading(false);
       setSignStatus(null);
@@ -1365,6 +1384,23 @@ export default function Send({ networkStatus }: SendProps) {
             </div>
           </div>
           <div className="review-row">
+            <div className="review-row-label">Network</div>
+            <div className="review-row-value">
+              <span className="review-row-primary">
+                {asset === "btc" ? "Bitcoin" : "Arch"} {isTestnet ? (asset === "btc" ? "Testnet4" : "Testnet") : "Mainnet"}
+              </span>
+            </div>
+          </div>
+          {activeAccount && (
+            <div className="review-row">
+              <div className="review-row-label">Signed by</div>
+              <div className="review-row-value">
+                <span className="review-row-primary">{activeAccount.label}</span>
+                <span className="review-row-sub"><SignerBadge account={activeAccount} /></span>
+              </div>
+            </div>
+          )}
+          <div className="review-row">
             <div className="review-row-label">To</div>
             <div className="review-row-value">
               <span className="review-row-mono">
@@ -1444,7 +1480,11 @@ export default function Send({ networkStatus }: SendProps) {
           onClick={handleSubmit}
           disabled={loading}
         >
-          {loading ? (signStatus || "Signing…") : "Confirm & Sign"}
+          {loading
+            ? (signStatus || "Signing…")
+            : activeAccount && signerInfo(activeAccount).external
+              ? signerInfo(activeAccount).approveLabel
+              : "Confirm & Sign"}
         </button>
       </div>
     );

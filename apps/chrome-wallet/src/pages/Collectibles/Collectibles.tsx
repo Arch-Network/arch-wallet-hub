@@ -26,7 +26,7 @@ import {
   type BtcInscriptionSummary,
   type IndexerClient,
 } from "../../utils/indexer";
-import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { resolveAccountAddresses } from "../../state/account-addresses";
 import { InscriptionThumb } from "../../components/InscriptionThumb";
 import BackBar from "../../components/BackBar";
 import CopyButton from "../../components/CopyButton";
@@ -148,6 +148,10 @@ export default function Collectibles() {
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<CollectibleSelection | null>(null);
   const [visibleNftCount, setVisibleNftCount] = useState(NFT_BATCH_SIZE);
+  // Inscriptions are held at the ordinals address.
+  const ordinalsAddress = activeAccount
+    ? resolveAccountAddresses(activeAccount, state.network).ordinals
+    : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -167,10 +171,9 @@ export default function Collectibles() {
         if (cancelled) return;
         setIndexer(ix);
 
-        const btcAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
         const archAddress = activeAccount.archAddress || activeAccount.btcAddress;
         const [inscriptionsResult, tokensResult] = await Promise.allSettled([
-          ix.getBtcAddressInscriptions(btcAddress),
+          ordinalsAddress ? ix.getBtcAddressInscriptions(ordinalsAddress) : { inscriptions: [] },
           ix.getAccountTokens(archAddress),
         ]);
         if (cancelled) return;
@@ -230,7 +233,7 @@ export default function Collectibles() {
     return () => {
       cancelled = true;
     };
-  }, [activeAccount?.id, activeAccount?.btcAddress, state.network]);
+  }, [activeAccount?.id, ordinalsAddress, state.network]);
 
   const btcExplorerBase =
     state.network === "testnet4"

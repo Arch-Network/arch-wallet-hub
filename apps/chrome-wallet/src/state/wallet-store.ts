@@ -1,4 +1,5 @@
 import {
+  AccountAddress,
   AppState,
   DEFAULT_STATE,
   WalletAccount,
@@ -207,6 +208,19 @@ export function migrateApiConfig(state: any): boolean {
   return migrated;
 }
 
+function isAccountAddressRecord(r: any): r is AccountAddress {
+  return (
+    typeof r?.address === "string" &&
+    r.address.length > 0 &&
+    (r.network === "mainnet" || r.network === "testnet4") &&
+    Array.isArray(r.purposes) &&
+    r.purposes.length > 0 &&
+    r.purposes.every((p: unknown) => p === "payment" || p === "ordinals") &&
+    typeof r.addressType === "string" &&
+    typeof r.chainVerified === "boolean"
+  );
+}
+
 /**
  * Run all account- and config-shape migrations once on read. Called
  * both from getState (for legacy installs) and from the seal/unlock
@@ -301,6 +315,21 @@ export function migrateState(stateInput: any): { state: AppState; migrated: bool
       if (acct.archAddress && acct.archAddress !== canonicalArchAddress) {
         if (!acct.legacyArchAddress) acct.legacyArchAddress = acct.archAddress;
         acct.archAddress = canonicalArchAddress;
+        migrated = true;
+      }
+    }
+    // Provider address records are only meaningful for external accounts,
+    // and a malformed record must not be read as a verified address.
+    if (acct.addresses !== undefined) {
+      const kept =
+        acct.kind === "external" && Array.isArray(acct.addresses)
+          ? acct.addresses.filter(isAccountAddressRecord)
+          : [];
+      if (kept.length === 0) {
+        delete acct.addresses;
+        migrated = true;
+      } else if (kept.length !== acct.addresses.length) {
+        acct.addresses = kept;
         migrated = true;
       }
     }

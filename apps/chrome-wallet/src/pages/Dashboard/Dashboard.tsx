@@ -16,8 +16,9 @@ import {
 import { formatRuneAmount, labelForRune } from "../../utils/runes-format";
 import { InscriptionThumb } from "../../components/InscriptionThumb";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
+import { fetchBtcHoldings, type AddressSats } from "../../utils/btc-holdings";
+import { resolveAccountAddresses } from "../../state/account-addresses";
 import { hubRetryAfterMs } from "../../utils/hub-rate-limit";
-import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd, formatUsd } from "../../utils/format";
 import { tokenUsdValue, usdPerUnitForMint } from "../../utils/token-usd";
@@ -32,6 +33,9 @@ import {
 import { isAnsEnabledForNetwork, openAnsManager } from "../../utils/name-service";
 import ArchIcon from "../../components/ArchIcon";
 import PortfolioHero from "../../components/PortfolioHero";
+import { AddressGapNotice } from "../../components/AddressGapNotice";
+import { signerInfo } from "../../wallets/capabilities";
+import { BtcAddressBreakdown } from "./BtcAddressBreakdown";
 import { TokenIcon } from "../../components/TokenIcon";
 import { ActivityRow, type ActivityRowTx } from "../../components/ActivityRow";
 
@@ -63,7 +67,7 @@ function SkeletonBalance() {
 function SkeletonActions() {
   return (
     <div className="action-bar">
-      {[1, 2, 3, 4].map((i) => (
+      {[1, 2, 3].map((i) => (
         <div key={i} className="skeleton skeleton-action" />
       ))}
     </div>
@@ -162,6 +166,88 @@ function isBtcTxConfirmed(tx: any): boolean {
   return Boolean(tx?.block_height || tx?.blockHeight || tx?.confirmed);
 }
 
+/** The latest five Bitcoin transactions for one address, as activity rows. Empty on failure. */
+async function recentBtcTxsFor(
+  indexer: IndexerClient,
+  address: string,
+  btcExplorerBase: string,
+  onError: (e: unknown) => void,
+): Promise<RecentTx[]> {
+  const items: RecentTx[] = [];
+  try {
+    const btcTxs = await indexer.getBtcAddressTxs(address);
+    const rawList = (btcTxs ?? []).slice(0, 5);
+    const fullTxs = await Promise.all(
+      rawList.map(async (entry) => {
+        // Mempool listings return minimal `{txid}` objects with
+        // no `vin`/`vout`/`input`/`output`; the unconditional
+        // "has txid -> use as-is" short-circuit left those rows
+        // un-classifiable. Re-fetch when input/output arrays
+        // are missing so rune detection + direction parsing
+        // have something to work with.
+        if (typeof entry === "object" && entry !== null && (entry as any).txid) {
+          const obj = entry as any;
+          const hasIO =
+            Array.isArray(obj.vin) ||
+            Array.isArray(obj.vout) ||
+            Array.isArray(obj.input) ||
+            Array.isArray(obj.output);
+          if (hasIO) return obj;
+          try {
+            return await indexer.getBtcTransaction(obj.txid);
+          } catch {
+            return obj;
+          }
+        }
+        const txid = typeof entry === "string" ? entry : null;
+        if (!txid) return null;
+        try {
+          return await indexer.getBtcTransaction(txid);
+        } catch {
+          return { txid };
+        }
+      })
+    );
+
+    for (const tx of fullTxs) {
+      const txid = tx?.txid as string | undefined;
+      if (!txid) continue;
+      const rawTimeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
+      // Clamp future timestamps. Same rationale as History.tsx:
+      // a tx that has happened cannot legitimately display a
+      // moment in the future, but indexer mempool views and
+      // Bitcoin's loose block-time anti-malleability rules can
+      // surface +N-minute drift.
+      const nowMs = Date.now();
+      const timeMs = rawTimeMs != null && rawTimeMs > nowMs ? nowMs : rawTimeMs;
+      const { direction, sats } = parseRecentBtcTx(tx, address);
+      // Detect rune transfers locally (OP_RETURN OP_13). Avoids
+      // the misleading "BTC Transaction" label and suppresses
+      // the ~dust+fee net debit, which would otherwise show as
+      // an irrelevant "BTC moved" amount on a rune row.
+      const isRune = txHasRunestone(tx);
+      const showAmount = !isRune;
+      items.push({
+        txid,
+        type: "btc",
+        direction,
+        sats: showAmount ? sats : 0,
+        label: btcLabel(direction, isRune),
+        amountLabel: showAmount ? buildBtcAmountLabel(direction, sats) : undefined,
+        timestamp: timeMs != null ? String(timeMs) : undefined,
+        status: isBtcTxConfirmed(tx) ? "confirmed" : "unconfirmed",
+        explorerUrl: `${btcExplorerBase}${txid}`,
+      });
+    }
+  } catch (e: any) {
+    if (!isIndexerAuthError(e) && !isIndexerNotFoundError(e)) {
+      console.warn("[Dashboard] getBtcAddressTxs failed:", e?.message);
+      onError(e);
+    }
+  }
+  return items;
+}
+
 export default function Dashboard() {
   const { activeAccount, state, loading: walletLoading } = useWallet();
   const navigate = useNavigate();
@@ -182,6 +268,9 @@ export default function Dashboard() {
   // mainnet during sync because the indexer omits protection fields
   // until it has the data.
   const [btcProtected, setBtcProtected] = useState<number>(0);
+  // Per-address sats (null = couldn't be read) for accounts with more
+  // than one Bitcoin address.
+  const [btcByAddress, setBtcByAddress] = useState<Record<string, AddressSats | null>>({});
   // Aggregated rune balances for the active BTC address. Populated
   // by a best-effort fetch that runs alongside the wallet overview;
   // null = still loading, [] = no runes (hides the section).
@@ -237,6 +326,11 @@ export default function Dashboard() {
     };
   }, []);
 
+  // A relink can add addresses without changing any other account field.
+  const btcAddressKey = activeAccount
+    ? resolveAccountAddresses(activeAccount, state.network).all.join(",")
+    : "";
+
   const fetchAll = useCallback(async (opts?: { noCache?: boolean }) => {
     if (!activeAccount) {
       // Not loaded yet is not "no account": zeros here would be kept as
@@ -257,7 +351,8 @@ export default function Dashboard() {
     const archAddr =
       activeAccount.archAddress ||
       (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
-    const fetchKey = `${state.network}:${activeAccount.id}:${inputAddr}:${archAddr}`;
+    const addresses = resolveAccountAddresses(activeAccount, state.network);
+    const fetchKey = `${state.network}:${activeAccount.id}:${inputAddr}:${archAddr}:${btcAddressKey}`;
     const now = Date.now();
     if (!opts?.noCache) {
       if (inFlightFetchKeyRef.current === fetchKey) return;
@@ -274,6 +369,7 @@ export default function Dashboard() {
       setBtcBalance(null);
       setBtcPending(0);
       setBtcProtected(0);
+      setBtcByAddress({});
       setArchLamports(null);
       setTokens(null);
       setRunes(null);
@@ -293,7 +389,9 @@ export default function Dashboard() {
     };
     try {
       const indexer = await getIndexer();
-      const btcAddrForNetwork = reEncodeTaprootAddress(inputAddr, state.network);
+      const btcIdentity = addresses.identity ?? addresses.all[0] ?? "";
+      // Inscriptions and runes live at the ordinals address.
+      const ordinalsAddress = addresses.ordinals;
 
     const isTestnetNetwork = state.network === "testnet4";
     const archExplorerBase = isTestnetNetwork
@@ -321,13 +419,19 @@ export default function Dashboard() {
     const overviewPromise = fetchWalletOverview(indexer, {
       inputAddress: inputAddr,
       archAccountAddress: archAddr,
-      btcAddress: btcAddrForNetwork,
+      btcAddress: btcIdentity,
       noCache: opts?.noCache
     }).then(async (overview) => {
-      const btcSummary = overview?.btc?.summary;
+      // The overview already read the identity address; read the
+      // account's other addresses (an Xverse payment address) too.
+      const holdings = await fetchBtcHoldings(
+        indexer,
+        addresses.all,
+        btcIdentity ? { [btcIdentity]: overview?.btc?.summary ?? null } : {},
+      );
       // A failed or timed-out read is an unknown balance, not zero: keep
-      // whatever was last shown (null renders a skeleton).
-      const btcUnknown = !btcSummary && (overview.btc.summaryTimedOut || !!overview.btc.summaryError);
+      // whatever was last shown (null renders as "Unavailable").
+      const btcUnknown = addresses.all.length === 0 || holdings.unavailable.length === addresses.all.length;
       const archUnknown =
         !overview.arch.account && (overview.arch.accountTimedOut || !!overview.arch.accountError);
       const rateLimited = [
@@ -338,41 +442,14 @@ export default function Dashboard() {
       if ((btcUnknown || archUnknown) && !rateLimited) {
         setError("Couldn't load your balances. Try again in a moment.");
       }
-      let confirmedSats = 0;
-      let pendingSats = 0;
-      // `protected_value` is only present when the indexer has
-      // enriched UTXOs (testnet today, mainnet post-sync). Keep
-      // separate from confirmed so the asset row can render an
-      // explicit "locked" line when > 0 without affecting the
-      // primary balance number.
-      const protectedSats =
-        typeof btcSummary?.protected_value === "number"
-          ? btcSummary.protected_value
-          : 0;
-
-      if (btcSummary?.chain_stats) {
-        confirmedSats = (btcSummary.chain_stats.funded_txo_sum ?? 0) - (btcSummary.chain_stats.spent_txo_sum ?? 0);
-        pendingSats = (btcSummary.mempool_stats?.funded_txo_sum ?? 0) - (btcSummary.mempool_stats?.spent_txo_sum ?? 0);
-      } else if (Array.isArray(btcSummary?.outputs)) {
-        for (const utxo of btcSummary.outputs as any[]) {
-          const val = Number(utxo.value ?? 0);
-          if (utxo.spent?.spent) continue;
-          if (utxo.status?.confirmed) {
-            confirmedSats += val;
-          } else {
-            pendingSats += val;
-          }
-        }
-      } else if (typeof btcSummary?.value === "number") {
-        confirmedSats = btcSummary.value;
-      }
 
       const lamports = overview?.arch?.account?.lamports_balance ?? 0;
       const archAddr = activeAccount.archAddress ?? overview?.archAccountAddress ?? "";
       if (!btcUnknown) {
-        setBtcBalance(confirmedSats);
-        setBtcPending(pendingSats);
-        setBtcProtected(protectedSats);
+        setBtcBalance(holdings.confirmed);
+        setBtcPending(holdings.pending);
+        setBtcProtected(holdings.protected);
+        setBtcByAddress(holdings.byAddress);
       }
       if (!archUnknown) setArchLamports(lamports);
       setArchAddress(archAddr);
@@ -383,10 +460,14 @@ export default function Dashboard() {
       // because rune balances are an additive display surface -- if the
       // indexer hiccups, the user still sees BTC/Arch/tokens correctly.
       // The dashboard refresh interval will retry naturally.
-      indexer
-        .getBtcAddressRunes(btcAddrForNetwork)
-        .then((r) => setRunes(Array.isArray(r?.balances) ? r.balances : []))
-        .catch(() => setRunes((prev) => prev ?? []));
+      if (ordinalsAddress) {
+        indexer
+          .getBtcAddressRunes(ordinalsAddress)
+          .then((r) => setRunes(Array.isArray(r?.balances) ? r.balances : []))
+          .catch(() => setRunes((prev) => prev ?? []));
+      } else {
+        setRunes([]);
+      }
 
       // Fetch the first page of inscriptions held at this address.
       // Same best-effort pattern: silent fallback to empty on error,
@@ -394,83 +475,26 @@ export default function Dashboard() {
       // alongside the data so InscriptionThumb has a stable
       // reference for its content-fetch effect.
       setThumbIndexer(indexer);
-      indexer
-        .getBtcAddressInscriptions(btcAddrForNetwork)
-        .then((r) =>
-          setInscriptions(Array.isArray(r?.inscriptions) ? r.inscriptions : [])
-        )
-        .catch(() => setInscriptions((prev) => prev ?? []));
+      if (ordinalsAddress) {
+        indexer
+          .getBtcAddressInscriptions(ordinalsAddress)
+          .then((r) =>
+            setInscriptions(Array.isArray(r?.inscriptions) ? r.inscriptions : [])
+          )
+          .catch(() => setInscriptions((prev) => prev ?? []));
+      } else {
+        setInscriptions([]);
+      }
 
+      // A transfer between the account's own addresses appears under
+      // both; keep the first.
       const btcTxItems: RecentTx[] = [];
-      try {
-        const btcTxs = await indexer.getBtcAddressTxs(btcAddrForNetwork);
-        const rawList = (btcTxs ?? []).slice(0, 5);
-        const fullTxs = await Promise.all(
-          rawList.map(async (entry) => {
-            // Mempool listings return minimal `{txid}` objects with
-            // no `vin`/`vout`/`input`/`output`; the unconditional
-            // "has txid -> use as-is" short-circuit left those rows
-            // un-classifiable. Re-fetch when input/output arrays
-            // are missing so rune detection + direction parsing
-            // have something to work with.
-            if (typeof entry === "object" && entry !== null && (entry as any).txid) {
-              const obj = entry as any;
-              const hasIO =
-                Array.isArray(obj.vin) ||
-                Array.isArray(obj.vout) ||
-                Array.isArray(obj.input) ||
-                Array.isArray(obj.output);
-              if (hasIO) return obj;
-              try {
-                return await indexer.getBtcTransaction(obj.txid);
-              } catch {
-                return obj;
-              }
-            }
-            const txid = typeof entry === "string" ? entry : null;
-            if (!txid) return null;
-            try {
-              return await indexer.getBtcTransaction(txid);
-            } catch {
-              return { txid };
-            }
-          })
-        );
-
-        for (const tx of fullTxs) {
-          const txid = tx?.txid as string | undefined;
-          if (!txid) continue;
-          const rawTimeMs = await resolveBtcTxTimestampMs(indexer, tx as Record<string, unknown>);
-          // Clamp future timestamps. Same rationale as History.tsx:
-          // a tx that has happened cannot legitimately display a
-          // moment in the future, but indexer mempool views and
-          // Bitcoin's loose block-time anti-malleability rules can
-          // surface +N-minute drift.
-          const nowMs = Date.now();
-          const timeMs = rawTimeMs != null && rawTimeMs > nowMs ? nowMs : rawTimeMs;
-          const { direction, sats } = parseRecentBtcTx(tx, btcAddrForNetwork);
-          // Detect rune transfers locally (OP_RETURN OP_13). Avoids
-          // the misleading "BTC Transaction" label and suppresses
-          // the ~dust+fee net debit, which would otherwise show as
-          // an irrelevant "BTC moved" amount on a rune row.
-          const isRune = txHasRunestone(tx);
-          const showAmount = !isRune;
-          btcTxItems.push({
-            txid,
-            type: "btc",
-            direction,
-            sats: showAmount ? sats : 0,
-            label: btcLabel(direction, isRune),
-            amountLabel: showAmount ? buildBtcAmountLabel(direction, sats) : undefined,
-            timestamp: timeMs != null ? String(timeMs) : undefined,
-            status: isBtcTxConfirmed(tx) ? "confirmed" : "unconfirmed",
-            explorerUrl: `${btcExplorerBase}${txid}`,
-          });
-        }
-      } catch (e: any) {
-        if (!isIndexerAuthError(e) && !isIndexerNotFoundError(e)) {
-          console.warn("[Dashboard] getBtcAddressTxs failed:", e?.message);
-          noteRateLimit(e);
+      const seenBtcTxids = new Set<string>();
+      for (const address of addresses.all) {
+        for (const item of await recentBtcTxsFor(indexer, address, btcExplorerBase, noteRateLimit)) {
+          if (seenBtcTxids.has(item.txid)) continue;
+          seenBtcTxids.add(item.txid);
+          btcTxItems.push(item);
         }
       }
 
@@ -577,6 +601,7 @@ export default function Dashboard() {
     activeAccount?.btcAddress,
     activeAccount?.archAddress,
     activeAccount?.publicKeyHex,
+    btcAddressKey,
     markDashboardLoaded,
     state.network,
     walletLoading,
@@ -634,9 +659,16 @@ export default function Dashboard() {
 
   const isTestnet = state.network === "testnet4";
   const ansEnabled = isAnsEnabledForNetwork(state.network);
-  // A balance that failed to load stays null; it renders as a skeleton,
-  // never as zero.
-  const balancesReady = overviewLoaded && btcBalance !== null && archLamports !== null;
+  // A balance that failed to load stays null; it renders as
+  // "Unavailable", never as zero. While a rate-limit retry is pending
+  // it is still loading, so it keeps the skeleton instead.
+  const retryPending = busyRetryAt !== null && (btcBalance === null || archLamports === null);
+  const balancesReady = overviewLoaded && !retryPending;
+  const archUnavailable = archLamports === null;
+  const canSign = activeAccount ? signerInfo(activeAccount).canSign : false;
+  const btcAddresses = activeAccount
+    ? resolveAccountAddresses(activeAccount, state.network)
+    : { records: [], identity: null };
 
   // The swap engine has its own NetworkConfig (token mints, program ids,
   // PropAMM deployment metadata). It needs the same network-id mapping
@@ -653,12 +685,14 @@ export default function Dashboard() {
           constrained by the inner max-width. */}
       {balancesReady ? (
         <PortfolioHero
-          btcSats={btcBalance ?? 0}
-          archLamports={archLamports ?? 0}
+          snapshot={{
+            network: state.network,
+            btcSats: btcBalance === null ? null : btcBalance + btcPending,
+            btcPartial: Object.values(btcByAddress).some((s) => s === null),
+            archLamports,
+            tokenCount: tokens?.length ?? 0,
+          }}
           tokens={tokens ?? []}
-          network={state.network}
-          btcUsd={btcUsd}
-          archUsdFallback={null}
           refreshing={refreshing}
           onRefresh={handleRefresh}
         />
@@ -673,71 +707,52 @@ export default function Dashboard() {
           {busySeconds > 0 ? `Busy right now. Retrying in ${busySeconds}s…` : "Busy right now. Retrying…"}
         </div>
       )}
+      {activeAccount && <AddressGapNotice account={activeAccount} network={state.network} />}
 
-      {/* Action bar */}
       {balancesReady ? (
-        <div className="action-bar">
-          <button className="action-btn" onClick={() => navigate("/send")}>
-            <span className="action-btn-icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 2L11 13" /><path d="M22 2L15 22l-4-9-9-4 20-7z" />
-              </svg>
-            </span>
-            Send
-          </button>
-          <button className="action-btn" onClick={() => navigate("/receive")}>
-            <span className="action-btn-icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 3v13" /><path d="M5 12l7 7 7-7" /><path d="M3 21h18" />
-              </svg>
-            </span>
-            Receive
-          </button>
-          {isTestnet && (
-            <button className="action-btn" onClick={handleAirdrop} disabled={airdropLoading}>
-              <span className="action-btn-icon">
-                {airdropLoading ? (
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="refresh-icon spinning">
-                    <path d="M21 12a9 9 0 1 1-6.2-8.6" />
-                  </svg>
-                ) : (
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2v6" /><path d="M8 6l4 4 4-4" />
-                    <path d="M4 14c0 4.4 3.6 8 8 8s8-3.6 8-8" />
-                    <path d="M7 13.5C7 11 9.2 9 12 9s5 2 5 4.5" />
-                  </svg>
-                )}
-              </span>
-              Airdrop
-            </button>
-          )}
-          {ansEnabled && (
-            <button
-              className="action-btn"
-              onClick={() => void openAnsManager("explore")}
-              title="Browse .arch names on testnet"
-            >
+        <>
+          <div className="action-bar">
+            <button className="action-btn" onClick={() => navigate("/send")} disabled={!canSign} title={canSign ? undefined : "Watch-only wallet"}>
               <span className="action-btn-icon">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="9" />
-                  <path d="M3 12h18" />
-                  <path d="M12 3a14 14 0 0 1 0 18" />
-                  <path d="M12 3a14 14 0 0 0 0 18" />
+                  <path d="M22 2L11 13" /><path d="M22 2L15 22l-4-9-9-4 20-7z" />
                 </svg>
               </span>
-              Names
+              Send
             </button>
-          )}
-          <button className="action-btn" onClick={() => navigate("/tokens")}>
-            <span className="action-btn-icon">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-                <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-              </svg>
-            </span>
-            Tokens
-          </button>
-        </div>
+            <button className="action-btn" onClick={() => navigate("/receive")}>
+              <span className="action-btn-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 3v13" /><path d="M5 12l7 7 7-7" /><path d="M3 21h18" />
+                </svg>
+              </span>
+              Receive
+            </button>
+            <button className="action-btn" onClick={() => navigate("/swap")} disabled={!canSign} title={canSign ? undefined : "Watch-only wallet"}>
+              <span className="action-btn-icon">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M7 4v16" /><path d="M3 8l4-4 4 4" /><path d="M17 20V4" /><path d="M21 16l-4 4-4-4" />
+                </svg>
+              </span>
+              Swap
+            </button>
+          </div>
+          <div className="dashboard-links">
+            {isTestnet && (
+              <button className="link-btn" onClick={handleAirdrop} disabled={airdropLoading || !archAddress}>
+                {airdropLoading ? "Requesting test ARCH…" : "Get test ARCH"}
+              </button>
+            )}
+            {ansEnabled && (
+              <button className="link-btn" onClick={() => void openAnsManager("explore")}>
+                .arch names
+              </button>
+            )}
+            <button className="link-btn" onClick={() => navigate("/tokens")}>
+              All tokens
+            </button>
+          </div>
+        </>
       ) : (
         <SkeletonActions />
       )}
@@ -768,16 +783,30 @@ export default function Dashboard() {
                   <div className="asset-sub">BTC</div>
                 </div>
                 <div className="asset-balance-group">
-                  <div className="asset-balance">{formatBtcAmount((btcBalance ?? 0) + btcPending)}</div>
-                  {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd) && (
-                    <div className="asset-balance-usd">
-                      {formatBtcUsd((btcBalance ?? 0) + btcPending, btcUsd)}
-                    </div>
+                  {btcBalance === null ? (
+                    <div className="asset-balance is-unavailable">Unavailable</div>
+                  ) : (
+                    <>
+                      <div className="asset-balance">{formatBtcAmount(btcBalance + btcPending)}</div>
+                      {formatBtcUsd(btcBalance + btcPending, btcUsd) && (
+                        <div className="asset-balance-usd">
+                          {formatBtcUsd(btcBalance + btcPending, btcUsd)}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
-              {(btcPending !== 0 || btcProtected > 0) && (
+              {(btcPending !== 0 || btcProtected > 0 || btcAddresses.records.length > 1) && (
                 <div className="btc-breakdown">
+                  {activeAccount && (
+                    <BtcAddressBreakdown
+                      records={btcAddresses.records}
+                      byAddress={btcByAddress}
+                      identity={btcAddresses.identity}
+                      signerLabel={signerInfo(activeAccount).label}
+                    />
+                  )}
                   {btcPending !== 0 && (
                     <>
                       <div className="btc-breakdown-row">
@@ -816,7 +845,11 @@ export default function Dashboard() {
                 <div className="asset-name">Arch</div>
                 <div className="asset-sub">ARCH</div>
               </div>
-              <div className="asset-balance">{formatArchAmount(archLamports ?? 0)}</div>
+              {archUnavailable ? (
+                <div className="asset-balance is-unavailable">Unavailable</div>
+              ) : (
+                <div className="asset-balance">{formatArchAmount(archLamports ?? 0)}</div>
+              )}
             </div>
           ) : (
             <SkeletonAssetRow />

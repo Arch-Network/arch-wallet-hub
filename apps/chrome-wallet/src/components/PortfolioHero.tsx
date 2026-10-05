@@ -1,110 +1,56 @@
 /**
- * Phase 2.1 - Unified fiat portfolio hero.
- *
- * Replaces the "Total ARCH Balance" hero with a single fiat figure
- * (`$X,XXX.XX`) plus a 24h delta. Falls back gracefully when prices
- * are unavailable (e.g. fresh dev install before CoinGecko caches
- * populate). When fiat is unknown we render the ARCH balance as the
- * primary value with a "USD price unavailable" sub-line, so the user
- * still sees something useful.
+ * Home-screen headline. The wording comes from `describePortfolio`:
+ * test assets are shown in BTC with no dollar value, an unreadable
+ * balance says so (with Retry) instead of showing zero, and priced
+ * totals name what they leave out. No 24h change is shown.
  */
 
 import { useEffect, useState } from "react";
 import { valuatePortfolio, type PortfolioValuation } from "../utils/prices";
-import { formatArch } from "../utils/format";
-import type { NetworkId } from "../state/types";
+import { describePortfolio, type HoldingsSnapshot } from "../utils/portfolio-summary";
 
 interface PortfolioHeroProps {
-  btcSats: number;
-  archLamports: string | number;
+  snapshot: HoldingsSnapshot;
   tokens: { mint: string; balance: number; decimals: number }[];
-  /** Which network the balances came from; APL mints are resolved
-   *  per-network before they can be priced. */
-  network: NetworkId;
-  /** BTC/USD rate already loaded by `useBtcUsdPrice`. We use it as a
-   *  cheap shortcut to compute USD when CoinGecko also failed to load
-   *  prices via the prices module. */
-  btcUsd: number | null;
-  /** Reserved for an out-of-band ARCH fallback price. */
-  archUsdFallback: number | null;
   refreshing: boolean;
   onRefresh: () => void;
 }
 
-function formatUsd(n: number): string {
-  if (!Number.isFinite(n)) return "$0.00";
-  return n.toLocaleString(undefined, { style: "currency", currency: "USD" });
-}
-
-function formatDelta(pct: number | null): { text: string; positive: boolean } | null {
-  if (pct === null || !Number.isFinite(pct)) return null;
-  const positive = pct >= 0;
-  return {
-    text: `${positive ? "+" : ""}${pct.toFixed(2)}% (24h)`,
-    positive,
-  };
-}
-
-export default function PortfolioHero({
-  btcSats,
-  archLamports,
-  tokens,
-  network,
-  btcUsd,
-  refreshing,
-  onRefresh,
-}: PortfolioHeroProps) {
+export default function PortfolioHero({ snapshot, tokens, refreshing, onRefresh }: PortfolioHeroProps) {
   const [valuation, setValuation] = useState<PortfolioValuation | null>(null);
+  const { network, btcSats, archLamports } = snapshot;
 
   useEffect(() => {
+    if (network !== "mainnet") {
+      setValuation(null);
+      return;
+    }
     let cancelled = false;
-    (async () => {
-      try {
-        const v = await valuatePortfolio({
-          btcSats,
-          archLamports,
-          tokens: tokens.map((t) => ({ mint: t.mint, rawAmount: t.balance, decimals: t.decimals })),
-          network,
-        });
-        if (!cancelled) setValuation(v);
-      } catch {
-        if (!cancelled) setValuation(null);
-      }
-    })();
+    valuatePortfolio({
+      btcSats: btcSats ?? 0,
+      archLamports: archLamports ?? 0,
+      tokens: tokens.map((t) => ({ mint: t.mint, rawAmount: t.balance, decimals: t.decimals })),
+      network,
+    }).then(
+      (v) => !cancelled && setValuation(v),
+      () => !cancelled && setValuation(null),
+    );
     return () => {
       cancelled = true;
     };
   }, [btcSats, archLamports, tokens, network]);
 
-  // Fall back to the legacy BTC-only USD shortcut when our prices
-  // module produced 0 for BTC (e.g. CoinGecko offline) but we have a
-  // local cached price already.
-  let totalUsd = valuation?.totalUsd ?? 0;
-  if (!totalUsd && btcUsd && btcSats > 0) {
-    totalUsd = (btcSats / 1e8) * btcUsd;
-  }
-
-  const delta = valuation ? formatDelta(valuation.change24hPct) : null;
-  const hasFiat = totalUsd > 0;
+  const headline = describePortfolio(snapshot, valuation);
 
   return (
-    <div className="balance-hero">
-      <div className="balance-amount">
-        {hasFiat ? formatUsd(totalUsd) : formatArch(archLamports ?? 0)}
-      </div>
-      <div className="balance-label" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-        {hasFiat ? "Portfolio value" : "Total ARCH Balance"}
-        {delta && (
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 600,
-              color: delta.positive ? "var(--success)" : "var(--danger)",
-            }}
-          >
-            {delta.text}
-          </span>
-        )}
+    <div
+      className="balance-hero"
+      data-tone={headline.tone}
+      data-unit={headline.primary.startsWith("$") ? "usd" : "text"}
+    >
+      <div className="balance-amount">{headline.primary}</div>
+      <div className="balance-label">
+        <span>{headline.secondary}</span>
         <button
           className="refresh-btn"
           onClick={onRefresh}
@@ -131,6 +77,18 @@ export default function PortfolioHero({
           </span>
         </button>
       </div>
+      {headline.notes.length > 0 && (
+        <ul className="balance-notes">
+          {headline.notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      )}
+      {headline.tone === "unavailable" && (
+        <button className="btn btn-secondary btn-sm balance-retry" onClick={onRefresh} disabled={refreshing}>
+          {refreshing ? "Retrying…" : "Retry"}
+        </button>
+      )}
     </div>
   );
 }

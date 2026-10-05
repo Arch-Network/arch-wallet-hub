@@ -15,19 +15,6 @@ const IV_BYTES = 12;
 const KEYSTORE_PASSWORD = "screenshot-harness";
 const SESSION_KEY_KEY = "arch_wallet_session_key";
 
-const SCREENSHOT_ACCOUNT = {
-  id: "screenshot-account",
-  label: "Arch Wallet",
-  btcAddress: "tb1prmkx3hvhttcga8z0n28jalzca0wemn8fp5gaj5lncw6cy4lcrnnszpve2m",
-  publicKeyHex: "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-  archAddress: "11111111111111111111111111111111",
-  kind: "turnkey",
-  turnkeyResourceId: "screenshot-resource",
-  organizationId: "screenshot-org",
-  authMethod: "email",
-  createdAt: 0,
-};
-
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64");
 }
@@ -98,18 +85,22 @@ export async function makeLockedKeystoreSeed(): Promise<StorageSeed> {
 }
 
 /**
- * Produce an unlocked, synthetic wallet. The matching capture fixture
- * intercepts every request to its private host, so no credentials, wallet,
- * network, or live service are used.
+ * Produce an unlocked, synthetic wallet holding `accounts`, with
+ * `activeAccountId` selected. The matching capture fixture intercepts
+ * every request to its private host, so no credentials, wallet, network,
+ * or live service are used.
  */
-export async function makeDeterministicWalletSeed(): Promise<StorageSeed> {
+export async function makeDeterministicWalletSeed(
+  accounts: Array<Record<string, unknown>>,
+  activeAccountId: string,
+): Promise<StorageSeed> {
   const { keystore, sessionKey } = await sealState({
     schemaVersion: 5,
     initialized: true,
     locked: false,
     network: "testnet4",
-    activeAccountId: SCREENSHOT_ACCOUNT.id,
-    accounts: [SCREENSHOT_ACCOUNT],
+    activeAccountId,
+    accounts,
     connectedSites: {},
     hubBaseUrl: "https://screenshots.arch.network",
     hubApiKey: "screenshot-key",

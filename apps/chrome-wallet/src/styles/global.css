@@ -741,6 +741,131 @@ a {
   border-color: var(--border-field);
 }
 
+/* Header account switcher: names the active wallet and its signer. */
+.account-switcher {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.account-switcher-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 4px 8px 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.account-switcher-btn:hover,
+.account-switcher-btn[aria-expanded="true"] {
+  border-color: var(--border-field);
+}
+
+.account-switcher-label {
+  min-width: 0;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-mode="sidepanel"] .account-switcher-label {
+  max-width: 200px;
+}
+
+/* Below the 400px popup width only the side panel renders, and Chrome's
+   side panel header already names the extension. Give the room to the
+   network and account controls. */
+@media (max-width: 380px) {
+  .header-brand {
+    display: none;
+  }
+}
+
+.account-switcher-caret {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.signer-badge {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: color-mix(in srgb, var(--color-positive) 15%, transparent);
+  color: var(--color-positive);
+}
+
+.signer-badge[data-kind="email"] {
+  background: color-mix(in srgb, var(--color-usd) 15%, transparent);
+  color: var(--color-usd);
+}
+
+.signer-badge[data-kind="xverse"],
+.signer-badge[data-kind="unisat"] {
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  color: var(--color-warning-text);
+}
+
+.signer-badge[data-kind="watch"] {
+  background: color-mix(in srgb, var(--text-muted) 16%, transparent);
+  color: var(--text-muted);
+}
+
+.account-menu {
+  min-width: 280px;
+  max-height: 440px;
+  overflow-y: auto;
+}
+
+.account-menu-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 10px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border-divider);
+}
+
+.account-menu-current-label {
+  width: 100%;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.account-menu-current-value {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.account-menu-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.account-menu-actions {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 10px 2px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border-divider);
+}
+
 .app-body {
   flex: 1;
   overflow-y: auto;
@@ -1005,6 +1130,32 @@ a {
   letter-spacing: 0.02em;
 }
 
+/* BTC amounts and status text run longer than a dollar figure. */
+.balance-hero[data-unit="text"] .balance-amount {
+  font-size: 30px;
+}
+
+.balance-hero[data-tone="unavailable"] .balance-amount {
+  font-size: 22px;
+  color: var(--text-secondary);
+}
+
+.balance-hero[data-tone="test"] .balance-label {
+  color: var(--color-warning);
+}
+
+.balance-notes {
+  list-style: none;
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.balance-retry {
+  margin-top: 10px;
+}
+
 .refresh-btn {
   background: none;
   border: none;
@@ -1083,6 +1234,61 @@ a {
 
 .action-btn-icon svg {
   stroke: var(--accent);
+}
+
+/* Secondary destinations (test funding, names, token list) kept out of
+   the primary Send / Receive / Swap row. */
+.dashboard-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: -4px 0 14px;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 6px 0;
+  min-height: 32px;
+  color: var(--color-primary-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.link-btn:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.link-btn:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.gap-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.gap-notice-error {
+  color: var(--color-negative-text);
+}
+
+.gap-notice-action {
+  padding: 6px 12px;
+  min-height: 32px;
+  border-radius: var(--radius-sm);
+  border: 1px solid currentColor;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gap-notice-action:disabled {
+  opacity: 0.7;
+  cursor: progress;
 }
 
 /* ═══════════════════ Asset Rows ═══════════════════ */
@@ -1540,6 +1746,18 @@ a {
 .btc-breakdown-row.is-locked .btc-breakdown-value {
   color: var(--text-muted);
   font-weight: 400;
+}
+
+.btc-breakdown-note {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.asset-balance.is-unavailable {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
 }
 
 /* ═══════════════════ Send Asset Picker ═══════════════════ */
@@ -3055,6 +3273,46 @@ a {
   padding: 0 4px;
 }
 
+.receive-card > .receive-address-text {
+  flex: none;
+  width: 100%;
+  text-align: center;
+}
+
+.copy-btn.receive-copy-full {
+  width: 100%;
+  min-height: 44px;
+  justify-content: center;
+  gap: 8px;
+  border-radius: var(--radius-input);
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.copy-btn.receive-copy-full:hover {
+  color: #fff;
+  filter: brightness(1.05);
+}
+
+.receive-accepts {
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--color-warning-text);
+}
+
+.receive-accepts strong {
+  color: var(--text-primary);
+}
+
+.receive-missing {
+  width: 100%;
+}
+
+.receive-missing .warning-banner {
+  margin-bottom: 0;
+}
+
 /* Wide-mode polish: larger title + a touch more breathing room on the card */
 @media (min-width: 720px) {
   html[data-mode="sidepanel"] .receive-title {
@@ -3614,34 +3872,14 @@ button.address-chip-link:hover {
   text-align: center;
 }
 
-/* "Already have a wallet?" -> Recover link on the first wizard
-   step. Sits below the create CTAs as an inline secondary path
-   so users coming back to a fresh install (or after a
-   forget-this-wallet flow) don't have to scroll or hunt. */
-.onboarding-recover-row {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 8px;
-  font-size: 12px;
-  color: var(--text-muted);
+.onboarding-intent-back {
+  align-self: center;
+  margin-top: 4px;
 }
 
-.onboarding-recover-link {
-  background: none;
-  border: none;
-  padding: 0;
-  color: var(--color-primary-text);
-  text-decoration: underline;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.onboarding-recover-link:hover {
-  opacity: 0.85;
+.onboarding-install-link {
+  align-self: center;
+  margin-top: -4px;
 }
 
 /* ═══════════════════ Onboarding wizard ═══════════════════

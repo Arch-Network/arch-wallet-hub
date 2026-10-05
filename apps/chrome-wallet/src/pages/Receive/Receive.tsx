@@ -1,34 +1,35 @@
 import { useState, useEffect, useMemo } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { useWallet } from "../../hooks/useWallet";
-import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { useWideMode } from "../../hooks/useWideMode";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
-import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
-import { formatUsd } from "../../utils/format";
+import { resolveAccountAddresses } from "../../state/account-addresses";
+import { signerInfo } from "../../wallets/capabilities";
 import { isAnsEnabledForNetwork, openAnsManager, resolvePrimaryName } from "../../utils/name-service";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
-
-type Tab = "btc" | "arch";
-
-const ASSETS: Record<Tab, { label: string; symbol: string; chain: string }> = {
-  btc: { label: "Bitcoin", symbol: "BTC", chain: "Bitcoin" },
-  arch: { label: "Arch", symbol: "ARCH", chain: "Arch Network" },
-};
+import { AddressGapNotice } from "../../components/AddressGapNotice";
+import { receiveDestinations, type ReceiveTab } from "./receive-destinations";
 
 export default function Receive() {
   const { activeAccount, state } = useWallet();
-  const { price: btcUsd } = useBtcUsdPrice();
   const wide = useWideMode(720);
-  const [tab, setTab] = useState<Tab>("btc");
+  const [tab, setTab] = useState<ReceiveTab>("btc");
   const [archAddress, setArchAddress] = useState<string>("");
   const [primaryName, setPrimaryName] = useState<string | null>(null);
 
-  const btcAddress = useMemo(
-    () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
-    [activeAccount?.btcAddress, state.network]
+  const destinations = useMemo(
+    () =>
+      activeAccount
+        ? receiveDestinations(
+            resolveAccountAddresses(activeAccount, state.network),
+            archAddress,
+            state.network,
+            signerInfo(activeAccount).label,
+          )
+        : [],
+    [activeAccount, state.network, archAddress]
   );
 
   useEffect(() => {
@@ -68,49 +69,45 @@ export default function Receive() {
 
   if (!activeAccount) return null;
 
-  const address = tab === "btc" ? btcAddress : archAddress;
-  const meta = ASSETS[tab];
-  const networkLabel = tab === "btc"
-    ? (state.network === "testnet4" ? "Bitcoin Testnet4" : "Bitcoin Mainnet")
-    : (state.network === "testnet4" ? "Arch Testnet" : "Arch Mainnet");
+  const current = destinations.find((d) => d.id === tab) ?? destinations[0];
+  if (!current) return null;
+  const { address } = current;
 
   return (
     <div className="receive-page">
       <div className="receive-header">
         <h2 className="receive-title">Receive</h2>
-        <div className="receive-subtitle">
-          Share this address or QR code to receive {meta.label.toLowerCase()}.
-        </div>
+        <div className="receive-subtitle">Choose what you're receiving to get the right address.</div>
       </div>
 
       <div className="receive-segmented" role="tablist">
-        <button
-          role="tab"
-          aria-selected={tab === "btc"}
-          className={`receive-segment ${tab === "btc" ? "active" : ""}`}
-          onClick={() => setTab("btc")}
-        >
-          <span className="receive-segment-icon" aria-hidden>₿</span>
-          <span>Bitcoin</span>
-        </button>
-        <button
-          role="tab"
-          aria-selected={tab === "arch"}
-          className={`receive-segment ${tab === "arch" ? "active" : ""}`}
-          onClick={() => setTab("arch")}
-        >
-          <span className="receive-segment-icon" aria-hidden>
-            <ArchIcon size={12} color={tab === "arch" ? "var(--color-primary)" : "var(--text-muted)"} />
-          </span>
-          <span>Arch</span>
-        </button>
+        {destinations.map((d) => (
+          <button
+            key={d.id}
+            role="tab"
+            aria-selected={current.id === d.id}
+            className={`receive-segment ${current.id === d.id ? "active" : ""}`}
+            onClick={() => setTab(d.id)}
+          >
+            <span className="receive-segment-icon" aria-hidden>
+              {d.id === "arch" ? (
+                <ArchIcon size={12} color={current.id === "arch" ? "var(--color-primary)" : "var(--text-muted)"} />
+              ) : d.id === "ordinals" ? (
+                "◈"
+              ) : (
+                "₿"
+              )}
+            </span>
+            <span>{d.tabLabel}</span>
+          </button>
+        ))}
       </div>
 
       <div className="receive-card">
         <div className="receive-meta">
-          <div className="receive-meta-label">{meta.label} address</div>
-          <div className="receive-meta-network">{networkLabel}</div>
-          {tab === "arch" && primaryName && (
+          <div className="receive-meta-label">{current.title}</div>
+          <div className="receive-meta-network">{current.network}</div>
+          {current.id === "arch" && primaryName && (
             <button
               type="button"
               className="receive-meta-network receive-meta-link"
@@ -120,7 +117,7 @@ export default function Receive() {
               {primaryName}
             </button>
           )}
-          {tab === "arch" && isAnsEnabledForNetwork(state.network) && !primaryName && (
+          {current.id === "arch" && isAnsEnabledForNetwork(state.network) && !primaryName && (
             <button
               type="button"
               className="receive-meta-network receive-meta-link"
@@ -132,55 +129,35 @@ export default function Receive() {
         </div>
 
         {address ? (
-          <div className="receive-address-card" title={address}>
-            <code className="receive-address-text mono">{address}</code>
-            <CopyButton text={address} className="receive-address-copy" />
+          <>
+            <div className="receive-qr-frame">
+              <QRCodeSVG
+                value={address}
+                size={wide ? 176 : 148}
+                bgColor="#ffffff"
+                fgColor="#0d0f17"
+                level="M"
+                marginSize={2}
+              />
+            </div>
+            <code className="receive-address-text mono" title={address}>{address}</code>
+            <CopyButton text={address} className="receive-copy-full" label="Copy address" />
+            <div className="receive-accepts">
+              Only send <strong>{current.accepts}</strong> on <strong>{current.network}</strong>.
+            </div>
+          </>
+        ) : current.id === "arch" ? (
+          <div className="receive-empty">Resolving Arch address…</div>
+        ) : resolveAccountAddresses(activeAccount, state.network).gap ? (
+          <div className="receive-missing">
+            <AddressGapNotice account={activeAccount} network={state.network} />
           </div>
         ) : (
-          <div className="receive-empty">
-            {tab === "arch" ? "Resolving Arch address..." : "No address available"}
-          </div>
-        )}
-
-        <div className="receive-qr-frame">
-          {address ? (
-            <QRCodeSVG
-              value={address}
-              size={wide ? 176 : 156}
-              bgColor="#ffffff"
-              fgColor="#0d0f17"
-              level="M"
-              marginSize={2}
-            />
-          ) : (
-            <div className="receive-qr-skeleton" aria-hidden>
-              <div className="spinner" />
-            </div>
-          )}
-        </div>
-
-        {tab === "btc" && btcUsd && (
-          <div className="receive-price">
-            <span className="receive-price-label">1 BTC</span>
-            <span className="receive-price-sep">{"\u2248"}</span>
-            <span className="receive-price-value">{formatUsd(btcUsd)}</span>
-          </div>
+          <div className="receive-empty">This account has no verified address for this on {current.network}.</div>
         )}
       </div>
 
-      <div className={`receive-warning ${tab === "btc" ? "warning-btc" : "warning-arch"}`}>
-        <span className="receive-warning-icon" aria-hidden>!</span>
-        <span>
-          Only send <strong>{meta.symbol}</strong> on <strong>{networkLabel}</strong> to this address.
-          Sending any other asset may result in lost funds.
-        </span>
-      </div>
-
-      {tab === "arch" && !archAddress && (
-        <div className="receive-hint">
-          Fund this account with an airdrop from the Dashboard to initialize your Arch address.
-        </div>
-      )}
+      {current.note && <div className="receive-hint">{current.note}</div>}
     </div>
   );
 }

@@ -50,7 +50,7 @@ describe("APL token pricing", () => {
       vi.fn(async () => ({
         ok: true,
         json: async () => ({
-          bitcoin: { usd: BTC_USD, usd_24h_change: -2.79 },
+          bitcoin: { usd: BTC_USD },
         }),
       })),
     );
@@ -116,15 +116,39 @@ describe("APL token pricing", () => {
       });
     });
 
-    it("carries the BTC 24h change through wrapped BTC holdings", async () => {
+    it("reports ARCH as unpriced when the feed has no ARCH entry", async () => {
       const v = await valuatePortfolio({
-        btcSats: 0,
-        archLamports: 0,
+        btcSats: 100_000_000,
+        archLamports: 5_000_000_000,
         network: "mainnet",
-        tokens: [{ mint: ABTC_MINT, rawAmount: 15891, decimals: 8 }],
+        tokens: [],
       });
 
-      expect(v.change24hPct).toBeCloseTo(-2.79, 2);
+      expect(v.btcPriced).toBe(true);
+      expect(v.archPriced).toBe(false);
+      expect(v.archUsd).toBe(0);
+      expect(v.totalUsd).toBe(BTC_USD);
+      expect(v.stale).toBe(false);
+      expect(v.pricedAt).not.toBeNull();
+    });
+
+    it("values ARCH at 9 decimals", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({
+          ok: true,
+          json: async () => ({ bitcoin: { usd: BTC_USD }, "arch-network": { usd: 2 } }),
+        })),
+      );
+      const v = await valuatePortfolio({
+        btcSats: 0,
+        archLamports: 5_000_000_000,
+        network: "mainnet",
+        tokens: [],
+      });
+
+      expect(v.archPriced).toBe(true);
+      expect(v.archUsd).toBe(10);
     });
   });
 });

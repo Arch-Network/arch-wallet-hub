@@ -23,6 +23,10 @@ import { PASSKEY_RP_ID } from "../../session/constants";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 import ArchLogoAnimated from "../../components/ArchLogoAnimated";
 import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { BridgeError } from "../../wallets/bridge/errors";
+import { BRIDGE_TIMEOUT_MS } from "../../wallets/bridge/protocol";
+import { connectionAddresses } from "../../wallets/relink";
+import { CreateMethodStep, IntentStep } from "./IntentStep";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -185,6 +189,10 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   const [wizardStep, setWizardStep] = useState<WizardStep>(0);
   const [wizardMethod, setWizardMethod] = useState<WizardMethod>(null);
   const [externalProvider, setExternalProvider] = useState<ExternalWalletProvider | null>(null);
+  // Step 0 asks intent first; "Create" then asks passkey vs email.
+  const [createChoice, setCreateChoice] = useState(false);
+  // Set when the chosen wallet isn't installed; rendered beside the error.
+  const [installLink, setInstallLink] = useState<{ label: string; url: string } | null>(null);
 
   // `lastWizardStep` collapses the password screen out of the
   // flow when we're adding a wallet to an already-unlocked
@@ -556,6 +564,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
     setStep("creating");
     setError(null);
+    setInstallLink(null);
     setStatusMessage("Connecting to your wallet...");
     let phase: string = "init";
     try {
@@ -570,9 +579,10 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       phase = "adapter.connect";
       console.log("[ArchWallet] external onboarding:", phase);
+      // The bridge reports its own typed timeout first; this only catches a dead background.
       const connected = await withTimeout(
         adapter.connect(network),
-        30_000,
+        BRIDGE_TIMEOUT_MS.connect + 15_000,
         `Connecting ${adapter.label}`,
       );
 
@@ -608,7 +618,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
           message: challenge.message,
           network,
         }),
-        60_000,
+        BRIDGE_TIMEOUT_MS.signMessage + 15_000,
         `Signing with ${adapter.label}`,
       );
 
@@ -647,6 +657,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         externalProvider: connected.provider,
         linkedWalletId: verified.linkedWalletId,
         verificationScheme: verified.verificationScheme,
+        addresses: connectionAddresses(connected, network),
         createdAt: Date.now(),
       };
 
@@ -660,7 +671,15 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       finishOnboarding();
     } catch (e: any) {
       console.error("[ArchWallet] external onboarding failed at phase:", phase, e);
-      setError(`[${phase}] ${e?.message || "Failed to connect external wallet"}`);
+      if (e instanceof BridgeError && e.code === "PROVIDER_MISSING") {
+        const missing = getExternalWalletAdapter(externalProvider);
+        setInstallLink({ label: missing.label, url: missing.installUrl });
+      }
+      setError(
+        e instanceof BridgeError
+          ? e.message
+          : `[${phase}] ${e?.message || "Failed to connect external wallet"}`,
+      );
       setStep("welcome");
     } finally {
       // Tear down the background-managed connector popup regardless of
@@ -831,6 +850,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   // decision is being asked of them right now.
   const stepHeading = (() => {
     if (wizardStep === 0) {
+      if (createChoice) return "Create a wallet";
       return addMode ? "Add a wallet" : "Welcome to Arch Wallet";
     }
     if (wizardStep === 1) return "Wallet details";
@@ -839,17 +859,18 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
   const stepSubhead = (() => {
     if (wizardStep === 0) {
+      if (createChoice) return "Choose how you'll approve transactions from this wallet.";
       return addMode
-        ? "Pick how this new wallet will sign in."
-        : "Pick how you want to sign in. You can add another wallet later.";
+        ? "Create a new wallet or connect one you already use."
+        : "Use Arch with the Bitcoin wallet you already trust, or create a new one.";
     }
     if (wizardStep === 1) {
       if (wizardMethod === "external") return "Pick the wallet you already use.";
       return wizardMethod === "email"
-        ? "We'll email a one-time code to this address whenever you unlock."
+        ? "We'll email codes here to approve signing and to recover this wallet."
         : "Give the wallet a name and recovery email.";
     }
-    return "You'll use this every time you open the wallet on this device.";
+    return "This unlocks Arch Wallet on this device. Transactions still need your approval.";
   })();
 
   return (
@@ -873,9 +894,24 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       <p className="onboarding-sub">{stepSubhead}</p>
 
       {error && <div className="error-banner">{error}</div>}
+      {error && installLink && (
+        <a className="link-btn onboarding-install-link" href={installLink.url} target="_blank" rel="noreferrer">
+          Install {installLink.label}
+        </a>
+      )}
 
-      {wizardStep === 0 && (
-        <MethodChoiceStep onPick={chooseMethod} onSignIn={() => navigate("/recover")} />
+      {wizardStep === 0 && !createChoice && (
+        <IntentStep
+          onCreate={() => {
+            setError(null);
+            setCreateChoice(true);
+          }}
+          onConnect={() => chooseMethod("external")}
+          onRestore={() => navigate("/recover")}
+        />
+      )}
+      {wizardStep === 0 && createChoice && (
+        <CreateMethodStep onPick={chooseMethod} onBack={() => setCreateChoice(false)} />
       )}
 
       {/* Steps 1 and 2 wrap their inputs + nav in a <form> so the
@@ -943,31 +979,12 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       {wizardStep === 0 && (
         <p className="onboarding-fineprint">
-          Signing keys are non-extractable and stored only on this
-          device. The server never sees them.
+          Arch Wallet never asks for a seed phrase. Arch's servers hold
+          no signing keys.
         </p>
       )}
 
-      {/* Recover-existing exit: someone who already has a wallet
-          (e.g. just forgot the local copy on this device, or
-          re-installed the extension) should not have to scroll
-          past the create-wallet wizard. Show it on step 0 only --
-          once they've committed to a method/details we don't want
-          to suggest abandoning the in-progress wizard. */}
-      {wizardStep === 0 && !addMode && !secureLegacyState && (
-        <div className="onboarding-recover-row">
-          <span>Already have a wallet?</span>
-          <button
-            type="button"
-            className="btn btn-link onboarding-recover-link"
-            onClick={() => navigate("/recover")}
-          >
-            Recover via email
-          </button>
-        </div>
-      )}
-
-      {wizardStep === 0 && <RecoveryDisclosure />}
+      {wizardStep === 0 && createChoice && <RecoveryDisclosure />}
     </div>
   );
 }
@@ -977,121 +994,6 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 // Kept inline in this file because they share state with the
 // parent's controlled inputs and lifting them out would just
 // add prop-drilling without re-use elsewhere.
-
-interface MethodChoiceStepProps {
-  onPick: (method: "passkey" | "email" | "external") => void;
-  /** Cross-device sign-in: route to the existing /recover flow, which for
-      passkey wallets verifies email then attaches this device to the
-      already-existing sub-org. Separate from onPick because it doesn't
-      start the create-new-wallet wizard. */
-  onSignIn: () => void;
-}
-
-function MethodChoiceStep({ onPick, onSignIn }: MethodChoiceStepProps) {
-  return (
-    <div className="onboarding-choice">
-      <button
-        type="button"
-        className="onboarding-choice-card"
-        onClick={() => onPick("passkey")}
-      >
-        <span className="onboarding-choice-card-icon" aria-hidden="true">
-          {/* fingerprint glyph kept as SVG so it scales / themes
-              with currentColor instead of needing a font asset. */}
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 11v4a3 3 0 0 0 3 3" />
-            <path d="M8 8a4 4 0 0 1 8 0v5" />
-            <path d="M4 12a8 8 0 0 1 16 0v3" />
-            <path d="M9 21a8 8 0 0 0 3-6" />
-          </svg>
-        </span>
-        <div className="onboarding-choice-card-body">
-          <p className="onboarding-choice-card-title">
-            Passkey
-            <span className="onboarding-choice-card-badge">Recommended</span>
-          </p>
-          <p className="onboarding-choice-card-sub">
-            One tap to unlock. Best on devices with Face ID, Touch ID,
-            or a password manager.
-          </p>
-        </div>
-      </button>
-
-      <button
-        type="button"
-        className="onboarding-choice-card"
-        onClick={() => onPick("email")}
-      >
-        <span className="onboarding-choice-card-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <path d="m3 7 9 6 9-6" />
-          </svg>
-        </span>
-        <div className="onboarding-choice-card-body">
-          <p className="onboarding-choice-card-title">Email</p>
-          <p className="onboarding-choice-card-sub">
-            One-time code at every unlock. Use if you don't have a
-            passkey-capable device.
-          </p>
-        </div>
-      </button>
-
-      <button
-        type="button"
-        className="onboarding-choice-card"
-        onClick={() => onPick("external")}
-      >
-        <span className="onboarding-choice-card-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <path d="M7 9h10" />
-            <path d="M7 13h6" />
-            <path d="M17 16l2 2 3-4" />
-          </svg>
-        </span>
-        <div className="onboarding-choice-card-body">
-          <p className="onboarding-choice-card-title">Connect existing wallet</p>
-          <p className="onboarding-choice-card-sub">
-            Keep funds in Xverse or UniSat while using Arch balances
-            and supported signing flows.
-          </p>
-        </div>
-      </button>
-
-      <button
-        type="button"
-        className="onboarding-choice-card"
-        onClick={onSignIn}
-      >
-        <span className="onboarding-choice-card-icon" aria-hidden="true">
-          {/* arrow-into-door glyph: signals signing in to something that
-              already exists, distinct from the create-new method icons. */}
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-            <path d="M10 17l5-5-5-5" />
-            <path d="M15 12H3" />
-          </svg>
-        </span>
-        <div className="onboarding-choice-card-body">
-          <p className="onboarding-choice-card-title">Sign in to an existing wallet</p>
-          <p className="onboarding-choice-card-sub">
-            Already set up Arch on your phone or another device? Verify
-            your email to add this device.
-          </p>
-        </div>
-      </button>
-    </div>
-  );
-}
 
 interface ExternalProviderStepProps {
   selected: ExternalWalletProvider | null;
@@ -1128,7 +1030,6 @@ function ExternalProviderStep({
       <div className="onboarding-choice">
         {(Object.keys(externalWalletAdapters) as ExternalWalletProvider[]).map((provider) => {
           const adapter = externalWalletAdapters[provider];
-          const installed = adapter.isInstalled();
           return (
             <button
               key={provider}
@@ -1142,12 +1043,7 @@ function ExternalProviderStep({
                 {adapter.label.slice(0, 1)}
               </span>
               <div className="onboarding-choice-card-body">
-                <p className="onboarding-choice-card-title">
-                  {adapter.label}
-                  {!installed && (
-                    <span className="onboarding-choice-card-badge">Not detected</span>
-                  )}
-                </p>
+                <p className="onboarding-choice-card-title">{adapter.label}</p>
                 <p className="onboarding-choice-card-sub">
                   You'll sign a message to prove ownership. Funds stay in your
                   existing wallet.
@@ -1210,7 +1106,7 @@ function DetailsStep({
         />
         <p className="onboarding-field-hint">
           {method === "email"
-            ? "Required - we'll send a verification code here at every unlock."
+            ? "Required - codes sent here approve signing and recover this wallet."
             : "Required - this is how you recover the wallet if you lose your passkey."}
         </p>
       </div>

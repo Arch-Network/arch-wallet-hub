@@ -15,7 +15,7 @@ import { useParams } from "react-router-dom";
 import { computeDisplayHash } from "@arch-network/wallet-hub-sdk";
 import { useWallet } from "../../hooks/useWallet";
 import { walletStore } from "../../state/wallet-store";
-import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { identityAddress, resolveAccountAddresses } from "../../state/account-addresses";
 import { hasConfirmedMainnet, markMainnetConfirmed } from "../../utils/mainnet-confirm";
 import { getClient, getExternalUserId, formatWalletHubError } from "../../utils/sdk";
 import { truncateAddress, formatArch } from "../../utils/format";
@@ -40,6 +40,8 @@ import { lookupKnownToken, type KnownTokenMeta } from "../../utils/known-tokens"
 import { interpretMessage } from "../../utils/sign-message";
 import {
   parsePsbt,
+  psbtEncoding,
+  encodePsbtAs,
   summarizePsbt,
   formatSats,
   evaluatePsbtGate,
@@ -55,6 +57,7 @@ import {
 import { signerForAccount } from "../../signers/Signer";
 import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { signerInfo, supports } from "../../wallets/capabilities";
 import { signArchMessageHashWithExternalWallet } from "../../utils/external-arch-message-hash";
 import { buildSessionSigner } from "../../utils/hub-session";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
@@ -735,7 +738,7 @@ function AccountPicker({
       >
         {accounts.map((a) => (
           <option key={a.id} value={a.id}>
-            {a.label} ({truncateAddress(reEncodeTaprootAddress(a.btcAddress, network), 8)})
+            {a.label} ({identityAddressLabel(a, network)})
           </option>
         ))}
       </select>
@@ -743,9 +746,14 @@ function AccountPicker({
   );
 }
 
+function identityAddressLabel(account: WalletAccount, network: NetworkId): string {
+  const address = identityAddress(account, network);
+  return address ? truncateAddress(address, 8) : "not linked on this network";
+}
+
 function ConnectNetworkCard({
   network,
-  btcAddress,
+  account,
   switching,
   confirmingMainnet,
   onRequestSwitch,
@@ -753,7 +761,7 @@ function ConnectNetworkCard({
   onCancelMainnetConfirm,
 }: {
   network: NetworkId;
-  btcAddress: string | undefined;
+  account: WalletAccount | null;
   switching: boolean;
   confirmingMainnet: boolean;
   onRequestSwitch: () => void;
@@ -762,9 +770,7 @@ function ConnectNetworkCard({
 }) {
   const networkLabel = network === "testnet4" ? "Testnet" : "Mainnet";
   const otherLabel = network === "testnet4" ? "Mainnet" : "Testnet";
-  const previewAddress = btcAddress
-    ? reEncodeTaprootAddress(btcAddress, network)
-    : "";
+  const previewAddress = account ? identityAddress(account, network) : null;
 
   return (
     <div className="card" style={{ marginBottom: 10 }}>
@@ -790,6 +796,12 @@ function ConnectNetworkCard({
           <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
             {previewAddress}
           </div>
+        </div>
+      )}
+      {account && !previewAddress && (
+        <div className="approve-risk approve-risk-warn" style={{ marginTop: 10 }}>
+          {account.label} has no address on {networkLabel}. Switch networks, or reconnect it
+          while its wallet is on {networkLabel}.
         </div>
       )}
       <p style={{ marginTop: 10, marginBottom: 0, fontSize: 12, color: "var(--text-muted)" }}>
@@ -908,7 +920,7 @@ export default function Approve() {
       return {
         summary: summarizePsbt(
           psbtPayload,
-          selectedAccount?.btcAddress ? [reEncodeTaprootAddress(selectedAccount.btcAddress, state.network)] : [],
+          selectedAccount ? resolveAccountAddresses(selectedAccount, state.network).all : [],
           state.network === "mainnet" ? "mainnet" : "testnet",
         ),
         error: null,
@@ -916,7 +928,7 @@ export default function Approve() {
     } catch (e: any) {
       return { summary: null, error: e?.message || "Could not decode PSBT" };
     }
-  }, [request, selectedAccount?.btcAddress, state.network]);
+  }, [request, selectedAccount, state.network]);
 
   const psbtGate = useMemo<PsbtGate | null>(
     () => (psbtDecode.summary ? evaluatePsbtGate(psbtDecode.summary) : null),
@@ -950,8 +962,9 @@ export default function Approve() {
     }
     let cancelled = false;
     setPsbtPrevouts({ state: "loading" });
-    const address = reEncodeTaprootAddress(selectedAccount.btcAddress, state.network);
+    const address = identityAddress(selectedAccount, state.network);
     (async () => {
+      if (!address) throw new Error("This account has no address on the selected network.");
       const utxos = await (await getIndexer()).getBtcAddressUtxos(address);
       assertSignedInputsAreNetworkUtxos(parsePsbt((request.payload as any).psbt), psbtPolicy.inputsToSign, utxos);
     })().then(
@@ -1398,16 +1411,14 @@ export default function Approve() {
       }
 
       if (request.type === "CONNECT") {
-        // Hand the dapp the address encoded for the active network. The
-        // stored `btcAddress` is a single fixed encoding, so a mainnet
-        // wallet would otherwise deliver a testnet-form address (and vice
-        // versa) — which network-guarded dapps reject even though the
-        // wallet is on the right network. archAddress/publicKey are
-        // network-independent. Mirrors the display screens' re-encoding.
-        const connectAddress = reEncodeTaprootAddress(
-          selectedAccount.btcAddress,
-          state.network,
-        );
+        // Hand the dapp the address for the active network: re-encoded
+        // for an Arch-held key; for a linked wallet, only an address it
+        // returned on this network. archAddress/publicKey are
+        // network-independent.
+        const connectAddress = identityAddress(selectedAccount, state.network);
+        if (!connectAddress) {
+          throw new Error(`${selectedAccount.label} has no address on this network. Switch networks or reconnect it.`);
+        }
         await chrome.runtime.sendMessage({
           type: "APPROVE_CONNECT",
           requestId,
@@ -1588,8 +1599,10 @@ export default function Approve() {
         // Same path for both auth methods now: the session-stamped
         // signer signs locally regardless of how the session was
         // bootstrapped. No more server-side PSBT signing.
-        const signedHex = await signPsbtLocally(psbtPayload, psbtPolicy.inputsToSign);
-        sendApproved({ psbt: signedHex });
+        // The signer takes hex; review and policy accepted hex or base64,
+        // so sign the same PSBT and answer in the dapp's encoding.
+        const signedHex = await signPsbtLocally(parsePsbt(psbtPayload).toHex(), psbtPolicy.inputsToSign);
+        sendApproved({ psbt: encodePsbtAs(signedHex, psbtEncoding(psbtPayload)) });
         if (deterministicPsbtSpend !== null) {
           void recordSpend({
             origin: request.origin,
@@ -1709,8 +1722,12 @@ export default function Approve() {
           label: "Watch-only wallet — cannot sign or send transactions. Switch accounts to approve.",
         }
       : undefined;
+  const psbtSupport =
+    selectedAccount && request.type === "SIGN_PSBT" ? supports(selectedAccount, "dapp.signPsbt") : null;
+  const signerRefusal = psbtSupport && !psbtSupport.ok ? psbtSupport.reason : null;
   const risk =
     watchOnlyRisk ??
+    (signerRefusal ? { level: "warn" as const, label: signerRefusal } : undefined) ??
     (phishingRisk.reason !== "ok"
       ? { level: phishingRisk.level, label: phishingRisk.label }
       : request.type !== "CONNECT" && !isReturning
@@ -1750,7 +1767,7 @@ export default function Approve() {
             <div className="input-label">Signing with</div>
             <div style={{ fontWeight: 600 }}>{originAccount.account.label}</div>
             <div className="mono" style={{ fontSize: 11, wordBreak: "break-all" }}>
-              {reEncodeTaprootAddress(originAccount.account.btcAddress, state.network)}
+              {identityAddress(originAccount.account, state.network) ?? "No address on this network"}
             </div>
           </div>
         )}
@@ -1765,7 +1782,7 @@ export default function Approve() {
             />
             <ConnectNetworkCard
               network={state.network}
-              btcAddress={selectedAccount?.btcAddress}
+              account={selectedAccount ?? null}
               switching={switchingNetwork}
               confirmingMainnet={confirmingMainnet}
               onRequestSwitch={handleConnectNetworkSwitch}
@@ -1953,6 +1970,7 @@ export default function Approve() {
             // Approve outright; the in-card "Watch-only wallet" risk
             // banner (rendered above) tells the user why.
             isWatchAccount(selectedAccount) ||
+            !!signerRefusal ||
             // Phishing: a `danger` verdict (blocklist hit or close
             // lookalike of a trusted host) hard-blocks Approve. The
             // risk banner above explains why; the user must navigate to
@@ -1991,8 +2009,8 @@ export default function Approve() {
         >
           {loading
             ? "Processing..."
-            : isWatchAccount(selectedAccount)
-              ? "Watch-only"
+            : selectedAccount && (isWatchAccount(selectedAccount) || request.type !== "CONNECT")
+              ? signerInfo(selectedAccount).approveLabel
               : "Approve"}
         </button>
       </div>
