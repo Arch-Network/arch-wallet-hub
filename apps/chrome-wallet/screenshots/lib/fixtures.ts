@@ -5,7 +5,7 @@
 export type FixtureAccountId = "native-email" | "native-passkey" | "xverse" | "unisat" | "watch";
 
 const NATIVE_EMAIL_TAPROOT = "tb1prmkx3hvhttcga8z0n28jalzca0wemn8fp5gaj5lncw6cy4lcrnnszpve2m";
-const NATIVE_PASSKEY_TAPROOT = "tb1pet7ep3czdu9k4wvdlz2fp5p8x2yp7t6ttyqg2c6cmh0lgeuu9lasvfnc28";
+const NATIVE_FIDO_TAPROOT = "tb1pet7ep3czdu9k4wvdlz2fp5p8x2yp7t6ttyqg2c6cmh0lgeuu9lasvfnc28";
 const XVERSE_ORDINALS = "tb1pgxxyvcmdncdxs06cudd5yvmwwahaesaj6n3eu7st7x4sw9hrchaq9v87jl";
 const XVERSE_PAYMENT = "2N2uFi5LbDQQwTqAVd5veF6qE9hWww2DVzF";
 const UNISAT_TAPROOT = "tb1pjvtc2mkj9vmfneuj7w9dsqle70a040ms5tyfswhhz4vjyskznj5qgazr9a";
@@ -30,7 +30,7 @@ export const FIXTURE_ACCOUNTS: Record<FixtureAccountId, Record<string, unknown>>
     ...base,
     id: "fixture-native-passkey",
     label: "Passkey wallet",
-    btcAddress: NATIVE_PASSKEY_TAPROOT,
+    btcAddress: NATIVE_FIDO_TAPROOT,
     publicKeyHex: "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
     archAddress: "EKyhkJAh3gQHWTxrJrQ9ttpA9bTMYEoqYPx8vBz6ckwv",
     kind: "turnkey",
@@ -112,7 +112,7 @@ interface BtcFixture {
 
 const BTC_BY_ADDRESS: Record<string, BtcFixture> = {
   [NATIVE_EMAIL_TAPROOT]: { confirmed: 250_000 },
-  [NATIVE_PASSKEY_TAPROOT]: { confirmed: 0 },
+  [NATIVE_FIDO_TAPROOT]: { confirmed: 0 },
   [XVERSE_PAYMENT]: { confirmed: 120_000, pending: 15_000 },
   [XVERSE_ORDINALS]: { confirmed: 30_000, protectedSats: 10_000 },
   [UNISAT_TAPROOT]: { confirmed: 64_000 },
