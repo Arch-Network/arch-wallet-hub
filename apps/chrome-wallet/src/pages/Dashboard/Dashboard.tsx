@@ -22,7 +22,7 @@ import { hubRetryAfterMs } from "../../utils/hub-rate-limit";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd, formatUsd } from "../../utils/format";
 import { tokenUsdValue, usdPerUnitForMint } from "../../utils/token-usd";
-import { enrichIndexerTokens } from "../../utils/enrich-token";
+import { enrichIndexerTokens, type EnrichedToken } from "../../utils/enrich-token";
 import { resolveBtcTxTimestampMs } from "../../utils/btc-timestamps";
 import { txHasRunestone } from "../../utils/btc-tx-classify";
 import { summarizeArchTx, type ArchTxSummary } from "../../utils/arch-tx-summary";
@@ -415,6 +415,9 @@ export default function Dashboard() {
       }
       return null;
     });
+    const enrichedTokensPromise = rawTokensPromise.then((res) =>
+      enrichIndexerTokens(res?.tokens ?? [], state.network, indexer)
+    );
 
     const overviewPromise = fetchWalletOverview(indexer, {
       inputAddress: inputAddr,
@@ -516,6 +519,7 @@ export default function Dashboard() {
         const acct = (t as any)?.token_account_address;
         if (typeof acct === "string" && acct) tokenAccountAddresses.push(acct);
       }
+      const tokenInfo = await enrichedTokensPromise.catch((): EnrichedToken[] => []);
 
       const detailedArchTxs = await Promise.all(
         rawArchTxs.slice(0, 5).map(async (tx: any) => {
@@ -536,7 +540,7 @@ export default function Dashboard() {
           const summary: ArchTxSummary = summarizeArchTx(
             { ...tx, status },
             archAddr,
-            { tree, tokenAccounts: tokenAccountAddresses },
+            { tree, tokenAccounts: tokenAccountAddresses, tokens: tokenInfo },
           );
           return {
             txid: tx.txid,
@@ -567,15 +571,13 @@ export default function Dashboard() {
       setTxsLoaded(true);
     });
 
-    // Reuses the same response the arch-tx classifier already kicked off
-    // above (rawTokensPromise). Avoids a duplicate /accounts/:addr/tokens
+    // Reuses the same enrichment the arch-tx classifier awaits above
+    // (enrichedTokensPromise). Avoids a duplicate /accounts/:addr/tokens
     // round-trip on every dashboard render.
-    const tokensPromise = rawTokensPromise.then(async (res) => {
+    const tokensPromise = rawTokensPromise.then(async () => {
       try {
         if (tokensFailed) return;
-        const rawTokens = res?.tokens ?? [];
-        const enriched = await enrichIndexerTokens(rawTokens, state.network, indexer);
-        setTokens(enriched);
+        setTokens(await enrichedTokensPromise);
       } catch (e: any) {
         console.warn("[Dashboard] enrichIndexerTokens failed:", e?.message);
         setTokens([]);
