@@ -1,8 +1,5 @@
 import type { RuntimeTransaction } from "@/lib/arch/types";
-import { createDebugLogger } from "@/lib/utils/debug-logger";
 import { getToken, type NetworkConfig } from "@/lib/network/config";
-import { getBtcUsdPrice } from "@/lib/wallet/btc-price";
-import { getEngineConfig } from "@/engine-config";
 import {
   MAX_PRICE_IMPACT_WARN,
   PRICE_IMPACT_FACTOR,
@@ -10,17 +7,31 @@ import {
 } from "@/lib/swap/constants";
 import type { Quote, Token } from "@/lib/swap/types";
 
-const quoteLogger = createDebugLogger("QuoteSwap");
+/**
+ * `POST /rfq/quote` response from the prop-amm server. The transaction is
+ * flattened into the top level and arrives with no signatures: the user signs
+ * it and hands it back to `/rfq/swap` with `quote_id`, and the server adds
+ * the quote signer's signature before submitting.
+ */
+export type RfqQuoteResponse = RuntimeTransaction & {
+  quote_id: string;
+  estimated_quote: { base_amount: number; quote_amount: number };
+};
+
+export function propAmmBaseUrl(config: NetworkConfig): string {
+  const url = config.propAmmUpstreamUrl.replace(/\/+$/, "");
+  if (!url) throw new Error("PropAMM is not available on this network");
+  return url;
+}
 
 async function fetchPropAmmQuote(
   config: NetworkConfig,
   side: "sell" | "buy",
   amount: number,
   userPubkey: string,
-): Promise<RuntimeTransaction> {
+): Promise<RfqQuoteResponse> {
   const { base, quote } = config.tradingPair;
-  const propAmmQuoteUrl = getEngineConfig().transport.propAmmQuoteUrl;
-  const res = await fetch(propAmmQuoteUrl, {
+  const res = await fetch(`${propAmmBaseUrl(config)}/rfq/quote`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -40,31 +51,38 @@ async function fetchPropAmmQuote(
   return res.json();
 }
 
-function parsePropAmmQuoteAmounts(
+/**
+ * Turn an RFQ response into the canonical `Quote`. Amounts come from the
+ * server's `estimated_quote` in base units of each side of the pair.
+ */
+export function quoteFromRfqResponse(
   config: NetworkConfig,
-  runtimeTx: RuntimeTransaction,
-  sellIsBtc: boolean,
-): { amountIn: number; amountOut: number } | null {
-  const ix = runtimeTx.message.instructions[0];
-  if (!ix || ix.data.length < 82) return null;
-
-  function readU64LE(arr: number[], off: number): number {
-    let v = 0;
-    for (let i = 7; i >= 0; i -= 1) v = v * 256 + arr[off + i];
-    return v;
-  }
-
-  const baseAmount = readU64LE(ix.data, 66);
-  const quoteAmount = readU64LE(ix.data, 74);
-
+  response: RfqQuoteResponse,
+  sellToken: Token,
+  buyToken: Token,
+  amount: number,
+): Quote {
   const { base, quote } = config.tradingPair;
-  const baseScale = Math.pow(10, getToken(base, config).decimals);
-  const quoteScale = Math.pow(10, getToken(quote, config).decimals);
+  const baseAmount = response.estimated_quote.base_amount / 10 ** getToken(base, config).decimals;
+  const quoteAmount = response.estimated_quote.quote_amount / 10 ** getToken(quote, config).decimals;
+  const buyAmount = sellToken.symbol === base ? quoteAmount : baseAmount;
 
-  if (sellIsBtc) {
-    return { amountIn: baseAmount / baseScale, amountOut: quoteAmount / quoteScale };
-  }
-  return { amountIn: quoteAmount / quoteScale, amountOut: baseAmount / baseScale };
+  return {
+    sellSymbol: sellToken.symbol,
+    buySymbol: buyToken.symbol,
+    sellAmount: amount,
+    buyAmount: Math.max(0, buyAmount),
+    rate: amount > 0 ? buyAmount / amount : 0,
+    priceImpactPct: Math.min(amount * PRICE_IMPACT_FACTOR, MAX_PRICE_IMPACT_WARN),
+    expiresAt: Date.now() + QUOTE_TTL_MS,
+    runtimeTx: {
+      version: response.version,
+      signatures: response.signatures,
+      message: response.message,
+    },
+    source: "propamm",
+    rfqQuoteId: response.quote_id,
+  };
 }
 
 /**
@@ -77,50 +95,9 @@ export async function quoteSwap(
   sellToken: Token,
   buyToken: Token,
   amount: number,
-  options?: { btcPrice?: number },
 ): Promise<Quote> {
-  const side = sellToken.symbol === "BTC" ? "sell" : "buy";
+  const side = sellToken.symbol === config.tradingPair.base ? "sell" : "buy";
   const scaledAmount = Math.round(amount * Math.pow(10, sellToken.decimals));
-  const runtimeTx = await fetchPropAmmQuote(
-    config,
-    side,
-    scaledAmount,
-    pubkeyXCoord,
-  );
-  const parsed = parsePropAmmQuoteAmounts(
-    config,
-    runtimeTx,
-    sellToken.symbol === "BTC",
-  );
-
-  let buyAmount: number;
-  let rate: number;
-
-  if (parsed && parsed.amountIn > 0) {
-    buyAmount = parsed.amountOut;
-    rate = amount > 0 ? buyAmount / amount : 0;
-  } else {
-    let btcPrice = options?.btcPrice ?? 95_000;
-    if (!options?.btcPrice) {
-      try {
-        btcPrice = await getBtcUsdPrice(config);
-      } catch {
-        quoteLogger.warn("Failed BTC price fetch; using fallback");
-      }
-    }
-    buyAmount = sellToken.symbol === "BTC" ? amount * btcPrice : amount / btcPrice;
-    rate = amount > 0 ? buyAmount / amount : (sellToken.symbol === "BTC" ? btcPrice : 1 / btcPrice);
-  }
-
-  return {
-    sellSymbol: sellToken.symbol,
-    buySymbol: buyToken.symbol,
-    sellAmount: amount,
-    buyAmount: Math.max(0, buyAmount),
-    rate,
-    priceImpactPct: Math.min(amount * PRICE_IMPACT_FACTOR, MAX_PRICE_IMPACT_WARN),
-    expiresAt: Date.now() + QUOTE_TTL_MS,
-    runtimeTx,
-    source: "propamm",
-  };
+  const response = await fetchPropAmmQuote(config, side, scaledAmount, pubkeyXCoord);
+  return quoteFromRfqResponse(config, response, sellToken, buyToken, amount);
 }

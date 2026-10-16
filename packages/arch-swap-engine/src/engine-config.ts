@@ -38,12 +38,6 @@ export interface EngineTransportConfig {
    */
   indexerApiKey?: string;
   /**
-   * Full URL of the PropAMM quote endpoint, e.g.
-   * `https://arch-swap-nine.vercel.app/api/propamm/quote`. Use the upstream's
-   * CORS-* deployment so the popup can call it directly with no proxy.
-   */
-  propAmmQuoteUrl: string;
-  /**
    * Optional full URL of the arch-swap faucet endpoint, e.g.
    * `https://arch-swap-nine.vercel.app/api/faucet`. Only meaningful on
    * testnet -- omit / leave undefined for mainnet. When unset, callers of
@@ -54,9 +48,8 @@ export interface EngineTransportConfig {
 
 export interface EnginePriceProvider {
   /**
-   * Returns BTC price in USD as a finite number. Called from `quote-client`
-   * when the PropAMM response can't be parsed for exact amounts. The wallet
-   * already has a unified price feed (`src/utils/prices.ts`), so pass that.
+   * Returns BTC price in USD as a finite number. The wallet already has a
+   * unified price feed (`src/utils/prices.ts`), so pass that.
    */
   getBtcUsdPrice(): Promise<number>;
 }
@@ -76,9 +69,6 @@ let currentConfig: EngineConfig | null = null;
 export function configureEngine(config: EngineConfig): void {
   if (!config.transport?.indexerBaseUrl) {
     throw new Error("configureEngine: transport.indexerBaseUrl is required");
-  }
-  if (!config.transport?.propAmmQuoteUrl) {
-    throw new Error("configureEngine: transport.propAmmQuoteUrl is required");
   }
   if (!config.prices?.getBtcUsdPrice) {
     throw new Error("configureEngine: prices.getBtcUsdPrice is required");

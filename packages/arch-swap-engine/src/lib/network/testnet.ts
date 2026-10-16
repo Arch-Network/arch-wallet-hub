@@ -14,9 +14,9 @@ const TESTNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
     name: "Bitcoin",
     icon: "/btc.png",
     decimals: 8,
-    // Live Autara / CLAMM aBTC (2yHWVNYyjnsxZqpnvTbPzWiHwpNQ2zBQU6BC4Lnbu7sW)
-    mint: "1d46e0dd87393236e4e01252439f46dcbaec7c2255d1fd734e61771a00e8f4e9",
-    mintAuthority: "2a533fae6d2aab9ca336f2bf5f07fc8048f5f4300337852a1d2a816d6ce25bda",
+    // Live CLAMM aBTC (BsScw2NUzyPjZpWyPqHqvQpvNLspYUkZryi8YSvoxtc5)
+    mint: "a180e0b6a44745fdf44537e8c76836301122b719a19dfa4d21f7169f234f9276",
+    mintAuthority: "08fc8d9068228fe8b9848b139dcdd61ae7ff78cc14d57dcbca7faba110da7a00",
     pythHistorySymbol: "Crypto.BTC/USD",
   },
   USDC: {
@@ -24,9 +24,9 @@ const TESTNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
     name: "USD Coin",
     icon: "/usdc.png",
     decimals: 6,
-    // Live Autara / CLAMM aUSD (6mqUuwPYehXei6mGBY4bQ6XK1z7e6rrFAZRzYKdH8qkp)
-    mint: "55c6cee38a31732e2dad821ab1c38f902a7c51efaefb3641d51f3485c4617a45",
-    mintAuthority: "d0208cfc6086e663140b134b852d48564c22b57949ae4ceea9245006fd90b804",
+    // Live CLAMM aUSD (J6Kc9nCCAqfLeQPmm6TAXQ8mNNSt2qk8EwwZ2kLJC76i)
+    mint: "fdf39ea6a422926dbb7b133b0d98669197f171bc3fda7dedf867578ee1ecec0b",
+    mintAuthority: "71bfa4d241940888cacc2851219f4458425a755288ceb7b4f6e38fc2c1f2cbcd",
     pythHistorySymbol: "Crypto.USDC/USD",
   },
 };
@@ -51,9 +51,9 @@ export const TESTNET_CONFIG: NetworkConfig = {
   tokens: TESTNET_TOKENS,
   tradingPair: { base: "BTC", quote: "USDC" },
   clammProgramId:
-    "0a0129c4d864d1728c4b6e8f6e0e473197cb111153e379a59b9d93c038efe918",
+    "9f516db987d50ed44bb440a4687df74779d9ec5c42c404974262b788f7d5cccc",
   clammPoolAddress:
-    "06db06761eb1f114167ea2bbc4cf98cf8f98fbfc0ad18d1821e724cfeeb03461",
+    "40714362135db22393900842d545aedc0d352b7099ec89418140c42bdfafb9d6",
   lendingProgramId:
     "53def2dc8516302842b10e356914d2a5f6b33425ba42aec684f706aa1cf64192",
   oracleProgramId:
@@ -93,12 +93,12 @@ export const TESTNET_CONFIG: NetworkConfig = {
   indexerApiBaseUrl: "https://explorer.arch.network/api/v1/testnet",
   propAmmUpstreamUrl: "http://64.34.82.201:3000",
   propAmm: {
-    programId: "63595891819a6b05db69185f6b13510d4287cb75bfb5271a1921bc2591fb3e13",
-    configPubkey: "c4a57786a0e5525338fc0cf71d1e3c0a59c415aa97c8c2aa5385f0a4568d2eca",
-    quoteSignerPubkey: "dc7d9c01e0d90b25a75917740da2f8da87c1ba63ea0fb40631a3d2bc4ac5f22a",
+    programId: "7a68831501d3a9806feff162e82815a36e1732964a2edd2b461faf69575c3628",
+    configPubkey: "60dcc900483420626bf2194b10ad963eade440993fae3afc911e44f0ff6c2269",
+    quoteSignerPubkey: "dc051dab62c61634c2fe962e633b09a86127c988ca65911f47ce9d407de1445f",
     vaults: {
-      BTC:  "67c6d2aa63f8dc54c4e6c330e57ac762f090c383c14f46643e7f0b55e9665d55",
-      USDC: "f28e03b4ce13ba3e066d225edb77f6a71ac21f0f588f1a2f9dc7d3fc091c2dff",
+      BTC:  "8970e70a31be695e87ddfa421178fb3d1ab3662398f68d2ed16d371eda9621f7",
+      USDC: "26fc3bbcee019feb656887390951b483c094de519f92f62af325d6183e33c5d3",
     },
   },
 

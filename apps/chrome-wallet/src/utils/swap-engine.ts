@@ -39,24 +39,6 @@ import { getBtcUsdPrice } from "./btc-price";
 import { signerForAccount, type Signer } from "../signers/Signer";
 import { signArchMessageHashWithExternalWallet } from "./external-arch-message-hash";
 
-/**
- * The wallet ships its PropAMM quote URL alongside the build for now.
- * In a follow-up we'll vendor PropAMM behind our own indexer (or move
- * to a multi-quoter), but for the initial in-wallet swap we just hit
- * the same endpoint the public arch-swap deployment uses.
- */
-const PROPAMM_QUOTE_URL =
-  "https://arch-swap-nine.vercel.app/api/propamm/quote";
-
-/**
- * Testnet-only faucet URL. The upstream deployment is pinned to testnet
- * via its server-side cookie, so we leave this undefined on mainnet to
- * make `requestFaucet` throw a clean `FaucetUnavailableError` (the UI
- * uses that error to hide the "Get test funds" button entirely).
- */
-const ARCH_SWAP_FAUCET_URL =
-  "https://arch-swap-nine.vercel.app/api/faucet";
-
 function toEngineNetworkId(network: NetworkId): EngineNetworkId {
   return network === "mainnet" ? "mainnet" : "testnet";
 }
@@ -70,12 +52,13 @@ function indexerBaseUrlForNetwork(baseUrl: string, networkId: EngineNetworkId): 
 }
 
 /**
- * Whether the configured engine for this wallet network has a faucet
- * endpoint. Today: testnet only. Used by the UI to gate the
- * "Get test funds" affordance without touching the engine's internals.
+ * Whether the configured engine for this wallet network has a token faucet
+ * endpoint. Used by the UI to gate the "Get test funds" affordance without
+ * touching the engine's internals. Currently none: the arch-swap faucet the
+ * wallet used is password-protected, and no replacement exists yet.
  */
-export function isFaucetConfiguredForNetwork(network: NetworkId): boolean {
-  return toEngineNetworkId(network) === "testnet";
+export function isFaucetConfiguredForNetwork(_network: NetworkId): boolean {
+  return false;
 }
 
 /**
@@ -113,10 +96,6 @@ export function buildEngineConfig(state: AppState): EngineConfig {
       // The indexer exposes separate RPC routes per network.
       indexerBaseUrl,
       indexerApiKey: indexerApiKey || undefined,
-      propAmmQuoteUrl: PROPAMM_QUOTE_URL,
-      // Mainnet has no faucet -- gate the URL on network so the engine's
-      // `requestFaucet` throws cleanly there and the UI hides the affordance.
-      faucetUrl: networkId === "testnet" ? ARCH_SWAP_FAUCET_URL : undefined,
     },
     prices: buildPriceProvider(),
     debugLogsEnabled: state.debugMode,
@@ -197,7 +176,7 @@ export function digestSignerForAccount(
 /**
  * Convenience that yields the swap engine's
  * `TransactionSigner` (the BIP-322 witness-wrapped callback). Use this
- * directly with `signAndSendTransaction(quote.runtimeTx, signer, ...)`.
+ * directly with `executeSwapQuote(config, quote, signer, ...)`.
  */
 export function swapTransactionSignerForAccount(
   account: WalletAccount,
