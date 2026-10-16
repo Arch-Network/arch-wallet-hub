@@ -6,7 +6,7 @@
  *
  * Wiring overview (for the wallet popup):
  *
- *     import { configureEngine, getAggregatedQuote, signAndSendTransaction,
+ *     import { configureEngine, getAggregatedQuote, executeSwapQuote,
  *              makeSwapSigner, TESTNET_CONFIG } from "@arch/swap-engine";
  *
  *     // Once, at app start (or whenever network changes):
@@ -15,7 +15,6 @@
  *       transport: {
  *         indexerBaseUrl: "https://explorer.arch.network/api/v1/testnet",
  *         indexerApiKey: BUILD_TIME_INDEXER_KEY,
- *         propAmmQuoteUrl: "https://arch-swap-nine.vercel.app/api/propamm/quote",
  *       },
  *       prices: { getBtcUsdPrice: () => walletPrices.getBtcUsd() },
  *     });
@@ -24,7 +23,7 @@
  *     const quote = await getAggregatedQuote(TESTNET_CONFIG, "aggregator",
  *       wallet, sellToken, buyToken, amount);
  *     const signer = makeSwapSigner(walletSigner);
- *     const txHash = await signAndSendTransaction(quote.runtimeTx, signer,
+ *     const txHash = await executeSwapQuote(TESTNET_CONFIG, quote, signer,
  *       { label: "Swap" });
  */
 
@@ -66,7 +65,12 @@ export { MAINNET_CONFIG } from "./lib/network/mainnet";
 
 // Swap surface
 export { getAggregatedQuote, getClammQuote } from "./lib/swap/router";
-export { quoteSwap as quotePropAmmSwap } from "./lib/swap/quote-client";
+export {
+  quoteSwap as quotePropAmmSwap,
+  quoteFromRfqResponse,
+  type RfqQuoteResponse,
+} from "./lib/swap/quote-client";
+export { executeSwapQuote, submitRfqSwap } from "./lib/swap/execute";
 export {
   QUOTE_TTL_MS,
   QUOTE_ONLY_PUBKEY,

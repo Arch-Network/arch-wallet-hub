@@ -17,9 +17,8 @@
  *
  *   4. On Confirm, build a `WalletDigestSigner` from the active
  *      account, wrap with `makeSwapSigner`, and hand to
- *      `signAndSendTransaction` with `signaturePlacement: "prepend"`
- *      (PropAMM transactions ship with the program's signature
- *      pre-populated; the user's signature has to land in slot 0).
+ *      `executeSwapQuote` (CLAMM submits to the chain; PropAMM hands the
+ *      user-signed transaction back to the RFQ server, which countersigns).
  *
  *   5. On success, link to the explorer; on failure surface a clean
  *      error banner without unrendering the form.
@@ -29,7 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   applySlippage,
-  signAndSendTransaction,
+  executeSwapQuote,
   type TokenInfo,
   type TokenSymbol,
 } from "@arch/swap-engine";
@@ -514,12 +513,8 @@ export default function Swap() {
     try {
       await ensureSwapSigningSession(activeAccount);
       const signer = swapTransactionSignerForAccount(activeAccount, state.network);
-      const txHash = await signAndSendTransaction(quote.runtimeTx, signer, {
+      const txHash = await executeSwapQuote(config, quote, signer, {
         label: SWAP_LABEL,
-        // PropAMM/CLAMM transactions arrive with the program's
-        // signatures pre-populated. The user's signature has to land
-        // in slot 0 and the rest must be preserved.
-        signaturePlacement: "prepend",
         onStatus: (s) => setStatusMsg(s),
       });
       setSuccessTxid(txHash);
@@ -534,6 +529,7 @@ export default function Swap() {
   }, [
     validation,
     activeAccount,
+    config,
     quote,
     refreshQuote,
     sidePanelMode,

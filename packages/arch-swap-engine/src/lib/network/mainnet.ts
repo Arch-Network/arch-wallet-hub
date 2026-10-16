@@ -17,8 +17,8 @@ const MAINNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
     name: "Arch Bitcoin",
     icon: "/btc.png",
     decimals: 8,
-    mint: "225b03d6f9e05fd834cd18906b019fb46372544b0eeb9f6f8b615472467d46b0",
-    mintAuthority: "36ba400747066a8fd2dfa87c152037347532b3405a0f6d7f2fa32bdf7d7845e0",
+    mint: "5b29d2ff08829791698237a6d056ec9fab29187072819b7bf7a43e431f027f18",
+    mintAuthority: "1d80ef4da77f450b989f85e084cc53e98de065deaabc7cd210166b1a068e0650",
     pythHistorySymbol: "Crypto.BTC/USD",
   },
   USDT: {
@@ -26,8 +26,8 @@ const MAINNET_TOKENS: Partial<Record<TokenSymbol, TokenInfo>> = {
     name: "Arch USD",
     icon: "",
     decimals: 6,
-    mint: "aec8ca1598d74bc27721536f1a88b5648740bc6a856546a0a47817ff7fe7437c",
-    mintAuthority: "30cb47b0c98099ffd5f6d3011924cdff232169f6dcebf28d10ca57f473a4aec4",
+    mint: "b8586267326264db356ca4c92b61dee74b4510cb95488897191d18520b3b18a4",
+    mintAuthority: "00549845429d160aaad99fb42e5ac97c662bd174d554f8dee6e0cd03fc564318",
     pythHistorySymbol: "Crypto.USDT/USD",
   },
 };
@@ -37,9 +37,9 @@ export const MAINNET_CONFIG: NetworkConfig = {
   tokens: MAINNET_TOKENS,
   tradingPair: { base: "BTC", quote: "USDT" },
   clammProgramId:
-    "96feb7352aa992398e76a99d8e1801057eac114ee8458d3668847287353bcfb7",
+    "948fc4f4794c9fff7d249114f90176178c483f219b9f42a5d42ab3eb21d23b05",
   clammPoolAddress:
-    "7caf3541b5d2d9bf06453480acbed988c1c9ebe9ff0edf6deb2f17e0e2e9cb32",
+    "98562c44288c3f2e4f5ee0fb8db34070907f79b1c42a86e1223dafa6e6cad58d",
   lendingProgramId: "TODO_MAINNET_LENDING_PROGRAM_ID",
   oracleProgramId: "TODO_MAINNET_ORACLE_PROGRAM_ID",
   oracleSignerPubkey: "TODO_MAINNET_ORACLE_SIGNER",
@@ -58,14 +58,16 @@ export const MAINNET_CONFIG: NetworkConfig = {
   lendingMarkets: [],
 
   indexerApiBaseUrl: "https://explorer.arch.network/api/v1/mainnet",
-  propAmmUpstreamUrl: "http://64.34.82.201:3001",
+  // No RFQ server is deployed for the mainnet-v2 prop-amm program yet; empty
+  // makes PropAMM quoting fail so the aggregator routes to CLAMM.
+  propAmmUpstreamUrl: "",
   propAmm: {
-    programId: "d31a682e813c641f40fefe1c906c052063fcff6d628556e01344fd4660636aec",
-    configPubkey: "f1651efa9f9ecbd6cda417854e2acd976fd0469268dff3a07c39e07e643bf3a3",
-    quoteSignerPubkey: "8094dceb67a73510db62b9d519fff4ed59a7493695dc3458a6204c0b7ec33e97",
+    programId: "4022dec7e57f757682712b45ddf13a8f324710f4637cefc0ebacc6343caab24c",
+    configPubkey: "45c0e785edb21a9a064146a891a44c4b37594e481a61d1cc586bf8edcbc5144e",
+    quoteSignerPubkey: "a4e7f563813ce2d93ca73740333ac2a742d58101f7a0a482f467c05324fcc5a6",
     vaults: {
-      BTC:  "9de22416e3343655461f0da1c3a9b6eff3853882337d608ee106967fc9cfb7bf",
-      USDT: "f061a743352bfd12a3351b1b787d79456c9876c4e61cb04df16b5e18a9302b37",
+      BTC:  "28c4296bfecbd76f1c22fc46e68a541fb3e7c867e6351553202e849b08a3fc11",
+      USDT: "a74685b0df892001a8cfb05e50cedcadf3c6f3c71c93606161209b0720c7e183",
     },
   },
 

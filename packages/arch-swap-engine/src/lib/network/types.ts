@@ -62,11 +62,10 @@ export type LendingMarket = {
 };
 
 /**
- * Operator-controlled PropAMM deployment addresses. The frontend talks to the
- * AMM through the `/api/propamm` proxy, so these are not used to build
- * transactions client-side — they live here so `/config` can surface them for
- * runbook verification after a redeploy. Update in lockstep with the deployed
- * backend.
+ * Operator-controlled PropAMM deployment addresses. The RFQ server at
+ * `propAmmUpstreamUrl` builds the transactions, so these are not used
+ * client-side — they live here so `/config` can surface them for runbook
+ * verification after a redeploy. Update in lockstep with the deployed backend.
  */
 export type PropAmmDeployment = {
   programId: string;
@@ -109,7 +108,7 @@ export type NetworkConfig = {
   // Indexer
   indexerApiBaseUrl: string;
 
-  // PropAMM upstream
+  // PropAMM RFQ server (`/rfq/quote`, `/rfq/swap`). Empty = PropAMM unavailable.
   propAmmUpstreamUrl: string;
   propAmm: PropAmmDeployment;
 
