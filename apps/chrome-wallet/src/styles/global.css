@@ -1241,8 +1241,24 @@ html[data-mode="sidepanel"] .account-switcher-label {
 .dashboard-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 16px;
-  margin: -4px 0 14px;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+
+.dashboard-links .link-btn {
+  min-height: 28px;
+  padding: 0 12px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-card);
+  border-radius: 999px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dashboard-links .link-btn:hover:not(:disabled) {
+  text-decoration: none;
+  border-color: var(--border-field);
+  background: var(--surface-subtle);
 }
 
 .link-btn {

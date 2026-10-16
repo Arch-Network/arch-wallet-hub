@@ -15,6 +15,7 @@ import { resolveAccountAddresses } from "../../state/account-addresses";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatArchId, truncateAddress, timestampToMs } from "../../utils/format";
 import { summarizeArchTx } from "../../utils/arch-tx-summary";
+import { enrichIndexerTokens, type EnrichedToken } from "../../utils/enrich-token";
 import { normalizeArchStatus } from "../../utils/tx-status";
 import ArchIcon from "../../components/ArchIcon";
 import { ActivityRow, type ActivityRowTx } from "../../components/ActivityRow";
@@ -98,12 +99,15 @@ export default function History() {
       // raw per-ATA transactions (deduped by txid) so we can merge them in as
       // their own rows below, mirroring TokenDetail's ATA-based history.
       const ataTxById = new Map<string, any>();
+      let tokens: EnrichedToken[] = [];
       try {
         const tokensRes = await indexer.getAccountTokens(archAddr);
         for (const t of tokensRes?.tokens ?? []) {
           const acct = t.token_account_address as string | undefined;
           if (acct) tokenAccounts.push(acct);
         }
+        const tokensPromise = enrichIndexerTokens(tokensRes?.tokens ?? [], state.network, indexer)
+          .catch((): EnrichedToken[] => []);
 
         // Prefer v2 (inline chip labels + token_transfer summaries) with the
         // same fallback-to-v1 pattern used for archAddr.
@@ -127,6 +131,7 @@ export default function History() {
             }
           }
         }
+        tokens = await tokensPromise;
       } catch {
         // token enrichment is best-effort
       }
@@ -175,7 +180,7 @@ export default function History() {
           const summary = summarizeArchTx(
             { ...tx, status },
             archAddr,
-            { tree, tokenAccounts },
+            { tree, tokenAccounts, tokens },
           );
           items.push({
             txid: tx.txid,
@@ -227,7 +232,7 @@ export default function History() {
             const summary = summarizeArchTx(
               { ...tx, status },
               archAddr,
-              { tree, tokenAccounts },
+              { tree, tokenAccounts, tokens },
             );
             items.push({
               txid: tx.txid,
