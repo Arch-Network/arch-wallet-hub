@@ -956,37 +956,11 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         };
 
       } else if (body.action.type === "arch.anchor") {
-        if (!isHex64(body.action.btcTxid)) {
-          return reply.badRequest("btcTxid must be a 64-char hex string");
-        }
-
-        actionType = "arch.anchor";
-        instructions = [SystemInstructionUtil.anchor(payerPubkey, body.action.btcTxid, body.action.vout)];
-
-        // This is the BTC Taproot address that should receive a UTXO (via Titan/bitcoind),
-        // which will then be referenced by (txid, vout) in the anchor instruction.
-        // Add timeout to prevent hanging on slow/unresponsive Arch RPC.
-        let btcAccountAddress: string;
-        try {
-          const addressPromise = archRpc.getAccountAddress(payerPubkey);
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error("getAccountAddress timeout")), 5000); // 5 second timeout
-          });
-          btcAccountAddress = await Promise.race([addressPromise, timeoutPromise]);
-        } catch (err: any) {
-          server.log.warn({ err: String(err?.message ?? err) }, "Failed to get BTC account address, using placeholder");
-          btcAccountAddress = "unknown"; // Fallback - client can retry later
-        }
-
-        display = {
-          kind: "arch.anchor",
-          account: {
-            taprootAddress: signerTaprootAddress,
-            archAccountAddress: signerArchAccountAddress,
-            btcAccountAddress
-          },
-          utxo: { txid: body.action.btcTxid, vout: body.action.vout }
-        };
+        // SystemInstruction::Anchor was removed in arch-network v0.12 (chain
+        // reset): accounts are no longer anchored to Bitcoin UTXOs.
+        return reply.badRequest(
+          "arch.anchor is no longer supported: SystemInstruction::Anchor was removed in arch-network v0.12"
+        );
       } else {
         return reply.badRequest("Unsupported action type");
       }
@@ -1212,10 +1186,9 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
           buildTokenTransferInstruction(sourceAta, destAta, payerPubkey, parseU64Decimal(amountStr, "amount"))
         ];
       } else if (row.action_type === "arch.anchor") {
-        const txid = String(display?.utxo?.txid ?? "");
-        const vout = Number(display?.utxo?.vout);
-        if (!txid || Number.isNaN(vout)) return reply.badRequest("Signing request display missing anchor fields");
-        instructions = [SystemInstructionUtil.anchor(payerPubkey, txid, vout)];
+        return reply.badRequest(
+          "arch.anchor is no longer supported: SystemInstruction::Anchor was removed in arch-network v0.12"
+        );
       } else if (row.action_type === "arch.sign_message") {
         // sign_message produces a standalone BIP-322 signature; no Arch instructions.
         instructions = [];

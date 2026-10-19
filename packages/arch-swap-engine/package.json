@@ -11,7 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@arch-network/arch-sdk": "^0.0.28",
+    "@arch-network/arch-sdk": "^0.0.30",
     "@bitcoinerlab/secp256k1": "^1.2.0",
     "@saturnbtcio/bip322-js": "^3.0.1",
     "bitcoinjs-lib": "^7.0.1"

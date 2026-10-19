@@ -166,9 +166,11 @@ function extractArchTransferInfo(
     const ixData = ix.data;
     if (!ixData || ixData.length < 12) continue;
 
-    // Transfer discriminant = 5 (little-endian u32)
+    // Transfer discriminant: 3 after the v0.12 chain reset (was 5 with the
+    // CreateAccountWithAnchor / Anchor placeholders). Accept both so history
+    // still decodes pre-reset ledger entries if any remain indexed.
     const disc = ixData[0] | (ixData[1] << 8) | (ixData[2] << 16) | (ixData[3] << 24);
-    if (disc !== 5) continue;
+    if (disc !== 3 && disc !== 5) continue;
 
     // Lamports: u64 little-endian (read lower 32 bits + upper 32 bits)
     const lo = (ixData[4] | (ixData[5] << 8) | (ixData[6] << 16) | ((ixData[7] << 24) >>> 0)) >>> 0;
