@@ -8,6 +8,7 @@ import { auditEvent } from "../audit/audit.js";
 import { computeDisplayHash } from "../signingRequests/displayHash.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
 import { createArchRpcClient, submitArchTransaction, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
+import { buildSwapAction, rebuildSwapInstructions, buildAddLiquidityAction, rebuildAddLiquidityInstructions, MAX_FEE_RATE_SAT_VB, MIN_DEPOSIT_CONFIRMATIONS } from "../arch/ammInstructions.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
@@ -21,6 +22,17 @@ import type { IndexerClient } from "../indexer/client.js";
 
 const U64_DECIMAL_PATTERN = "^[0-9]{1,20}$";
 const U64_MAX = (1n << 64n) - 1n;
+// Outpoint vouts and the AMM's confirmation count are Borsh u32.
+const U32_MAX = 0xffff_ffff;
+
+// The user's own input outpoint for an AMM swap. `txid` is 32-byte internal
+// byte-order hex. Amounts are intentionally absent: the on-chain program
+// verifies the input's sat/rune value itself, so the caller cannot declare
+// (or lie about) them.
+const AmmOutpointSchema = Type.Object({
+  txid: Type.String({ minLength: 64, maxLength: 64 }),
+  vout: Type.Integer({ minimum: 0, maximum: U32_MAX })
+});
 
 const CreateSigningRequestBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
@@ -62,6 +74,36 @@ const CreateSigningRequestBody = Type.Object({
       type: Type.Literal("arch.sign_message"),
       // Raw dApp-provided message bytes, hex-encoded. Empty string not allowed.
       messageHex: Type.String({ minLength: 2, pattern: "^[0-9a-fA-F]+$" })
+    }),
+    // Native-settlement AMM (arch-bitcoin-defi): user authorizes a swap on Arch;
+    // the Bitcoin settlement is co-signed by the validator FROST set when the
+    // program runs. Same BIP-322 signing path as arch.transfer/arch.anchor.
+    Type.Object({
+      type: Type.Literal("swap.rune_native"),
+      programId: Type.String({ minLength: 1 }),
+      poolAddress: Type.String({ minLength: 1 }),
+      runeId: Type.Object({ block: Type.String({ minLength: 1 }), tx: Type.Integer({ minimum: 0, maximum: U32_MAX }) }),
+      baseToQuote: Type.Boolean(),
+      amountIn: Type.String({ pattern: U64_DECIMAL_PATTERN }),
+      minOut: Type.String({ pattern: U64_DECIMAL_PATTERN }),
+      nonce: Type.String({ pattern: U64_DECIMAL_PATTERN }),
+      // Reserve inputs are no longer caller-supplied: the program selects which
+      // of its OWN tracked reserve UTXOs to spend. The caller only names its own
+      // input outpoint (amounts verified on-chain).
+      userInput: AmmOutpointSchema,
+      recipientScriptHex: Type.String({ minLength: 2, pattern: "^[0-9a-fA-F]+$" }),
+      feeRateSatVb: Type.String({ pattern: U64_DECIMAL_PATTERN })
+    }),
+    Type.Object({
+      type: Type.Literal("pool.add_liquidity"),
+      programId: Type.String({ minLength: 1 }),
+      poolAddress: Type.String({ minLength: 1 }),
+      positionAddress: Type.String({ minLength: 1 }),
+      baseTxid: Type.String({ minLength: 64, maxLength: 64 }),
+      baseVout: Type.Integer({ minimum: 0, maximum: U32_MAX }),
+      quoteTxid: Type.String({ minLength: 64, maxLength: 64 }),
+      quoteVout: Type.Integer({ minimum: 0, maximum: U32_MAX }),
+      minConfirmations: Type.Integer({ minimum: MIN_DEPOSIT_CONFIRMATIONS, maximum: U32_MAX })
     })
   ])
 });
@@ -532,16 +574,26 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
 
       const db = getDbPool();
       const body = request.body as any;
-      const rawAmount =
-        body.action.type === "arch.transfer" ? body.action.lamports
-        : body.action.type === "arch.token_transfer" ? body.action.amount
-        : null;
-      if (rawAmount !== null) {
-        try {
-          parseU64Decimal(rawAmount, "amount");
-        } catch (err: any) {
-          return reply.badRequest(err.message);
-        }
+      const rawAmounts: Array<[string, unknown]> =
+        body.action.type === "arch.transfer" ? [["amount", body.action.lamports]]
+        : body.action.type === "arch.token_transfer" ? [["amount", body.action.amount]]
+        : body.action.type === "swap.rune_native"
+          ? [
+              ["amountIn", body.action.amountIn],
+              ["minOut", body.action.minOut],
+              ["nonce", body.action.nonce],
+              ["feeRateSatVb", body.action.feeRateSatVb]
+            ]
+        : [];
+      try {
+        for (const [label, raw] of rawAmounts) parseU64Decimal(String(raw), label);
+      } catch (err: any) {
+        return reply.badRequest(err.message);
+      }
+      // Rejected rather than clamped: the encoder would otherwise sign a lower
+      // fee rate than the one displayed.
+      if (body.action.type === "swap.rune_native" && BigInt(body.action.feeRateSatVb) > MAX_FEE_RATE_SAT_VB) {
+        return reply.badRequest(`feeRateSatVb exceeds ${MAX_FEE_RATE_SAT_VB} sat/vB`);
       }
       const user = await withDbTransaction(db, (client) =>
         getOrCreateUserByExternalId(client, { appId, externalUserId: body.externalUserId })
@@ -806,7 +858,7 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
       const recentBlockhash = new Uint8Array(Buffer.from(recentBlockhashHex, "hex"));
       const archRpc = createArchRpcClient(archRpcUrl);
 
-      let actionType: "arch.transfer" | "arch.token_transfer" | "arch.anchor";
+      let actionType: "arch.transfer" | "arch.token_transfer" | "arch.anchor" | "swap.rune_native" | "pool.add_liquidity";
       let instructions: Instruction[];
       let display: any;
 
@@ -986,6 +1038,31 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             btcAccountAddress
           },
           utxo: { txid: body.action.btcTxid, vout: body.action.vout }
+        };
+      } else if (body.action.type === "swap.rune_native") {
+        actionType = "swap.rune_native";
+        const built = buildSwapAction(body.action, payerPubkey);
+        instructions = built.instructions;
+        display = {
+          ...built.display,
+          // signer fields the submit handler looks up via display.account.*
+          account: {
+            taprootAddress: signerTaprootAddress,
+            archAccountAddress: signerArchAccountAddress,
+            xOnlyPubkeyHex: signerInternalXOnlyPubkeyHex
+          }
+        };
+      } else if (body.action.type === "pool.add_liquidity") {
+        actionType = "pool.add_liquidity";
+        const built = buildAddLiquidityAction(body.action, payerPubkey);
+        instructions = built.instructions;
+        display = {
+          ...built.display,
+          account: {
+            taprootAddress: signerTaprootAddress,
+            archAccountAddress: signerArchAccountAddress,
+            xOnlyPubkeyHex: signerInternalXOnlyPubkeyHex
+          }
         };
       } else {
         return reply.badRequest("Unsupported action type");
@@ -1216,6 +1293,10 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         const vout = Number(display?.utxo?.vout);
         if (!txid || Number.isNaN(vout)) return reply.badRequest("Signing request display missing anchor fields");
         instructions = [SystemInstructionUtil.anchor(payerPubkey, txid, vout)];
+      } else if (row.action_type === "swap.rune_native") {
+        instructions = rebuildSwapInstructions(display, payerPubkey);
+      } else if (row.action_type === "pool.add_liquidity") {
+        instructions = rebuildAddLiquidityInstructions(display, payerPubkey);
       } else if (row.action_type === "arch.sign_message") {
         // sign_message produces a standalone BIP-322 signature; no Arch instructions.
         instructions = [];

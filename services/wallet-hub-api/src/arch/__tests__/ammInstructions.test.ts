@@ -1,0 +1,169 @@
+/**
+ * AMM instruction-builder wire-layout tests (post security-hardening ABI).
+ *
+ * These lock the Borsh byte layout to the on-chain `SwapArgs` / `AddLiquidityArgs`
+ * and verify the Hub's defense-in-depth clamps:
+ *   - swap no longer carries caller-supplied reserve inputs or input amounts,
+ *   - the fee rate is clamped to the protocol ceiling,
+ *   - add_liquidity confirmations below the protocol minimum are rejected.
+ */
+import { describe, it, expect } from "vitest";
+import type { Pubkey } from "@arch-network/arch-sdk";
+import bs58 from "bs58";
+import {
+  buildSwapAction,
+  buildAddLiquidityAction,
+  buildAmmSwapInstruction,
+  buildAmmAddLiquidityInstruction,
+  MAX_FEE_RATE_SAT_VB,
+  MIN_DEPOSIT_CONFIRMATIONS,
+} from "../ammInstructions.js";
+
+const pk = (n: number): Pubkey => new Uint8Array(32).fill(n) as unknown as Pubkey;
+
+function u32le(data: Uint8Array, off: number): number {
+  return data[off] | (data[off + 1] << 8) | (data[off + 2] << 16) | (data[off + 3] << 24);
+}
+function u64le(data: Uint8Array, off: number): bigint {
+  let v = 0n;
+  for (let i = 0; i < 8; i++) v |= BigInt(data[off + i]) << (8n * BigInt(i));
+  return v;
+}
+
+describe("buildSwapAction boundary values", () => {
+  const U64_MAX = (1n << 64n) - 1n;
+  const b58 = (n: number) => bs58.encode(new Uint8Array(32).fill(n));
+  const action = (amountIn: string, minOut: string, nonce: string, feeRateSatVb: string) => ({
+    type: "swap.rune_native" as const,
+    programId: b58(1),
+    poolAddress: b58(2),
+    runeId: { block: "840000", tx: 1 },
+    baseToQuote: true,
+    amountIn,
+    minOut,
+    nonce,
+    userInput: { txid: "09".repeat(32), vout: 0xffffffff },
+    recipientScriptHex: "51" + "20" + "07".repeat(32),
+    feeRateSatVb,
+  });
+  // disc(8) bool(1) amountIn(16) minOut(16) nonce(8) txid(32) vout(4) script(4+34) fee(8)
+  const AMOUNT_IN = 9, MIN_OUT = 25, NONCE = 41, VOUT = 81, FEE = 123;
+
+  it("encodes u64 max and the fee ceiling exactly", () => {
+    const { data } = buildSwapAction(action(U64_MAX.toString(), U64_MAX.toString(), U64_MAX.toString(), "1000"), pk(3))
+      .instructions[0];
+    expect(u64le(data, AMOUNT_IN)).toBe(U64_MAX);
+    expect(u64le(data, AMOUNT_IN + 8)).toBe(0n);
+    expect(u64le(data, MIN_OUT)).toBe(U64_MAX);
+    expect(u64le(data, MIN_OUT + 8)).toBe(0n);
+    expect(u64le(data, NONCE)).toBe(U64_MAX);
+    expect(u32le(data, VOUT) >>> 0).toBe(0xffffffff);
+    expect(u64le(data, FEE)).toBe(MAX_FEE_RATE_SAT_VB);
+  });
+
+  it("encodes zeros exactly", () => {
+    const { data } = buildSwapAction(action("0", "0", "0", "0"), pk(3)).instructions[0];
+    for (const off of [AMOUNT_IN, AMOUNT_IN + 8, MIN_OUT, MIN_OUT + 8, NONCE, FEE]) expect(u64le(data, off)).toBe(0n);
+  });
+});
+
+describe("buildAmmSwapInstruction", () => {
+  const recipientScript = new Uint8Array([0x51, 0x20, ...new Uint8Array(32).fill(7)]);
+
+  it("encodes the outpoint-only user input with no reserve inputs, fixed length", () => {
+    const ix = buildAmmSwapInstruction({
+      programId: pk(1),
+      pool: pk(2),
+      user: pk(3),
+      baseToQuote: false,
+      amountIn: 2000n,
+      minOut: 1n,
+      nonce: 0n,
+      userInput: { txid: new Uint8Array(32).fill(9), vout: 0 },
+      recipientScript,
+      feeRateSatVb: 5n,
+    });
+    // disc(8) + bool(1) + amountIn(16) + minOut(16) + nonce(8)
+    //   + userInput{txid(32)+vout(4)} + recipientScript{len(4)+34} + fee(8)
+    const expected = 8 + 1 + 16 + 16 + 8 + 36 + (4 + recipientScript.length) + 8;
+    expect(ix.data.length).toBe(expected);
+    // Two accounts only: pool (writable) + user (signer).
+    expect(ix.accounts).toHaveLength(2);
+    expect(ix.accounts[1].is_signer).toBe(true);
+  });
+
+  it("clamps an abusive fee rate down to the protocol ceiling", () => {
+    const ix = buildAmmSwapInstruction({
+      programId: pk(1),
+      pool: pk(2),
+      user: pk(3),
+      baseToQuote: true,
+      amountIn: 10n,
+      minOut: 1n,
+      nonce: 7n,
+      userInput: { txid: new Uint8Array(32).fill(9), vout: 1 },
+      recipientScript,
+      feeRateSatVb: 5_000_000n,
+    });
+    const feeOffset = ix.data.length - 8;
+    expect(u64le(ix.data, feeOffset)).toBe(MAX_FEE_RATE_SAT_VB);
+  });
+});
+
+describe("buildAmmAddLiquidityInstruction", () => {
+  it.each([0, MIN_DEPOSIT_CONFIRMATIONS - 1])("rejects confirmations below the protocol minimum (%i)", (minConfirmations) => {
+    expect(() =>
+      buildAmmAddLiquidityInstruction({
+        programId: pk(1),
+        pool: pk(2),
+        position: pk(3),
+        lp: pk(4),
+        systemProgram: pk(0),
+        baseTxid: new Uint8Array(32).fill(1),
+        baseVout: 0,
+        quoteTxid: new Uint8Array(32).fill(2),
+        quoteVout: 1,
+        minConfirmations,
+      }),
+    ).toThrow(/at least 6/);
+  });
+
+  it.each([MIN_DEPOSIT_CONFIRMATIONS, 0xffffffff])("encodes the displayed confirmations unchanged (%i)", (minConfirmations) => {
+    const b58 = (n: number) => bs58.encode(new Uint8Array(32).fill(n));
+    const { instructions, display } = buildAddLiquidityAction(
+      {
+        type: "pool.add_liquidity",
+        programId: b58(1),
+        poolAddress: b58(2),
+        positionAddress: b58(3),
+        baseTxid: "01".repeat(32),
+        baseVout: 0,
+        quoteTxid: "02".repeat(32),
+        quoteVout: 1,
+        minConfirmations,
+      },
+      pk(4),
+    );
+    // disc(8)+baseTxid(32)+baseVout(4)+quoteTxid(32)+quoteVout(4)+minConf(4)
+    const minConfOffset = 8 + 32 + 4 + 32 + 4;
+    expect(u32le(instructions[0].data, minConfOffset) >>> 0).toBe(minConfirmations);
+    expect(display.minConfirmations).toBe(minConfirmations);
+  });
+
+  it("preserves a caller value above the minimum", () => {
+    const ix = buildAmmAddLiquidityInstruction({
+      programId: pk(1),
+      pool: pk(2),
+      position: pk(3),
+      lp: pk(4),
+      systemProgram: pk(0),
+      baseTxid: new Uint8Array(32).fill(1),
+      baseVout: 0,
+      quoteTxid: new Uint8Array(32).fill(2),
+      quoteVout: 1,
+      minConfirmations: 20,
+    });
+    const minConfOffset = 8 + 32 + 4 + 32 + 4;
+    expect(u32le(ix.data, minConfOffset)).toBe(20);
+  });
+});

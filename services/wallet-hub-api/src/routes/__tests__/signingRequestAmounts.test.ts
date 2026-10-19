@@ -93,4 +93,80 @@ describe("POST /signing-requests amount validation", () => {
     expect(res.statusCode).toBe(400);
     await app.close();
   });
+
+  const swap = {
+    type: "swap.rune_native",
+    programId: "p",
+    poolAddress: "q",
+    runeId: { block: "840000", tx: 1 },
+    baseToQuote: true,
+    amountIn: "1000",
+    minOut: "1",
+    nonce: "0",
+    userInput: { txid: "a".repeat(64), vout: 0 },
+    recipientScriptHex: "5120",
+    feeRateSatVb: "5",
+  };
+  const addLiquidity = {
+    type: "pool.add_liquidity",
+    programId: "p",
+    poolAddress: "q",
+    positionAddress: "r",
+    baseTxid: "a".repeat(64),
+    baseVout: 0,
+    quoteTxid: "b".repeat(64),
+    quoteVout: 1,
+    minConfirmations: 6,
+  };
+
+  async function postAction(action: unknown) {
+    const app = await buildServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/signing-requests",
+      payload: { externalUserId: "u", signer, action },
+    });
+    await app.close();
+    return res.statusCode;
+  }
+
+  // Valid payloads pass validation and reach the (mocked, throwing) DB, so the
+  // 400s below come from the field under test.
+  it.each([
+    ["swap at the boundaries", { ...swap, amountIn: U64_MAX, minOut: "0", nonce: U64_MAX, feeRateSatVb: "1000" }],
+    ["swap with zero amounts", { ...swap, amountIn: "0", minOut: "0", nonce: "0", feeRateSatVb: "0" }],
+    ["add_liquidity at u32 max", { ...addLiquidity, baseVout: 2 ** 32 - 1, quoteVout: 2 ** 32 - 1, minConfirmations: 2 ** 32 - 1 }],
+    ["add_liquidity at the confirmation minimum", { ...addLiquidity, minConfirmations: 6 }],
+  ])("accepts %s", async (_name, action) => {
+    getOrCreateUserByExternalId.mockClear();
+    expect(await postAction(action)).toBe(500);
+    expect(getOrCreateUserByExternalId).toHaveBeenCalledTimes(1);
+  });
+
+  describe.each(["amountIn", "minOut", "nonce", "feeRateSatVb"])("swap.rune_native %s", (field) => {
+    it.each(BAD)("400s %j", async (value) => {
+      expect(await postAction({ ...swap, [field]: value })).toBe(400);
+    });
+  });
+
+  it.each(["1001", U64_MAX])("400s swap.rune_native feeRateSatVb %j above the protocol ceiling", async (feeRateSatVb) => {
+    expect(await postAction({ ...swap, feeRateSatVb })).toBe(400);
+  });
+
+  const BAD_U32 = [-1, 1.5, 2 ** 32];
+  it.each(BAD_U32)("400s swap.rune_native userInput.vout %j", async (vout) => {
+    expect(await postAction({ ...swap, userInput: { ...swap.userInput, vout } })).toBe(400);
+  });
+  it.each(BAD_U32)("400s swap.rune_native runeId.tx %j", async (tx) => {
+    expect(await postAction({ ...swap, runeId: { ...swap.runeId, tx } })).toBe(400);
+  });
+  it.each([0, 5])("400s pool.add_liquidity minConfirmations %i below the protocol minimum", async (minConfirmations) => {
+    expect(await postAction({ ...addLiquidity, minConfirmations })).toBe(400);
+  });
+
+  describe.each(["baseVout", "quoteVout", "minConfirmations"])("pool.add_liquidity %s", (field) => {
+    it.each(BAD_U32)("400s %j", async (value) => {
+      expect(await postAction({ ...addLiquidity, [field]: value })).toBe(400);
+    });
+  });
 });
