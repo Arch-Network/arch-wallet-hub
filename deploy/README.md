@@ -147,6 +147,53 @@ After updating secrets, roll the API tasks so they re-read Secrets Manager. If t
 aws ecs update-service --cluster wallet-hub --service wallet-hub-api --force-new-deployment
 ```
 
+### App-store review login (dummy mainnet wallet)
+
+Google Play / App Store reviewers can't receive the Turnkey OTP email the
+email-wallet unlock depends on, which blocks public releases. The Hub can
+expose a single pre-provisioned **dummy mainnet wallet** that unlocks with a
+fixed test email + static OTP code, gated entirely behind
+`REVIEW_LOGIN_ENABLED` (default `false`). Every other email keeps the normal,
+fully OTP-gated path. Treat the dummy wallet as public and keep no value in it.
+
+**How it works:** for the configured email, `/v1/recovery/email/{init,start,verify}`
+skip Turnkey's OTP and return a credential bundle the client decrypts exactly
+like a real one — it wraps a permanent "review" API key that is already
+registered on the dummy sub-org's root user, which the client then spends once
+via `STAMP_LOGIN`.
+
+**One-time provisioning:**
+
+1. Create the dummy email wallet on **mainnet**:
+   ```bash
+   curl -X POST \
+     -H "X-Api-Key: $HUB_API_KEY" -H "X-Network: mainnet" \
+     -H "Idempotency-Key: review-$(date +%s)" \
+     -H "Content-Type: application/json" \
+     -d '{"externalUserId":"play-review","userEmail":"play-review@arch.network"}' \
+     https://<hub>/v1/turnkey/email-wallets
+   ```
+   Record `organizationId`, `walletId`, `defaultAddress`, and
+   `defaultPublicKeyHex` from the response, plus the sub-org root user id.
+2. Run the real email-OTP recovery once (receive the code, decrypt the bundle)
+   and stamp `ACTIVITY_TYPE_CREATE_API_KEYS_V2` to register a permanent review
+   API key (P-256) on that root user. Keep the key's **raw 32-byte private key
+   (64 hex chars)**.
+3. Put the values into the API secret and enable the feature:
+   ```bash
+   aws secretsmanager put-secret-value --secret-id WalletHub/AppSecrets \
+     --secret-string '{..., "REVIEW_LOGIN_API_PRIVATE_KEY_HEX":"<64-hex>"}'
+   # plus env on the task definition:
+   #   REVIEW_LOGIN_ENABLED=true
+   #   REVIEW_LOGIN_EMAIL=play-review@arch.network
+   #   REVIEW_LOGIN_OTP_CODE=<static code, >=4 chars>
+   #   REVIEW_LOGIN_ORGANIZATION_ID / _ROOT_USER_ID / _WALLET_ID
+   #   REVIEW_LOGIN_DEFAULT_ADDRESS / _DEFAULT_PUBLIC_KEY_HEX / _EXTERNAL_USER_ID
+   ```
+   The API fails fast at boot if `REVIEW_LOGIN_ENABLED=true` and any required
+   field is missing or malformed. Hand the reviewer the email + static code;
+   they pick "Recover via email" in the app and land in the dummy wallet.
+
 ### Infrastructure changes (CDK)
 
 > **Do not `cdk deploy` without a reviewed template diff** (see #123). The
