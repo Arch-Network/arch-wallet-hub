@@ -105,6 +105,49 @@ const EnvSchema = z.object({
   TURNKEY_OTP_EMAIL_REPLY_TO_ADDRESS: optionalEmail,
   TURNKEY_OTP_EMAIL_CUSTOMIZATION_JSON: optionalString,
 
+  // ── App-store review login ────────────────────────────────────────
+  // Google Play / App Store reviewers cannot receive the real OTP email
+  // that the email-wallet recovery flow depends on, which blocks public
+  // Android releases. When REVIEW_LOGIN_ENABLED=true, a single
+  // pre-provisioned "dummy" mainnet sub-org wallet can be unlocked with a
+  // fixed test email + static OTP code: the recovery endpoints short-
+  // circuit Turnkey's OTP for that one email and hand the client an
+  // HPKE-encrypted credential bundle wrapping a stored API key that is
+  // already registered on the dummy sub-org's root user. No other user is
+  // affected and the Hub never touches real users' signing material.
+  //
+  // Provisioning (one-time, see deploy/README.md):
+  //   1. Create the dummy email wallet on MAINNET via
+  //      POST /turnkey/email-wallets.
+  //   2. Run the real email-OTP recovery once to obtain a recovery key,
+  //      then stamp CREATE_API_KEYS_V2 to register a permanent review API
+  //      key on the sub-org root user.
+  //   3. Put that API key's PRIVATE half in REVIEW_LOGIN_API_PRIVATE_KEY_HEX
+  //      and the sub-org/wallet identifiers below.
+  //
+  // Leave disabled (default) in every environment that is not fronting an
+  // app-store review build.
+  REVIEW_LOGIN_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  // The test email handed to the app-store reviewers. Compared case-
+  // insensitively against the submitted recovery email.
+  REVIEW_LOGIN_EMAIL: optionalEmail,
+  // The static OTP code the reviewer types in place of an emailed code.
+  REVIEW_LOGIN_OTP_CODE: optionalString,
+  // Identifiers of the pre-provisioned dummy mainnet sub-org wallet.
+  REVIEW_LOGIN_ORGANIZATION_ID: optionalString,
+  REVIEW_LOGIN_ROOT_USER_ID: optionalString,
+  REVIEW_LOGIN_WALLET_ID: optionalString,
+  REVIEW_LOGIN_DEFAULT_ADDRESS: optionalString,
+  REVIEW_LOGIN_DEFAULT_PUBLIC_KEY_HEX: optionalString,
+  REVIEW_LOGIN_EXTERNAL_USER_ID: optionalString,
+  // Hex (no 0x) of the raw 32-byte P-256 private key for the review API
+  // key registered on the dummy sub-org root user. SECRET: inject via the
+  // same secret store as the Turnkey API key, never commit a real value.
+  REVIEW_LOGIN_API_PRIVATE_KEY_HEX: optionalString,
+
   // Platform admin (bootstrap apps + API keys)
   PLATFORM_ADMIN_API_KEY: z.string().optional(),
 
@@ -165,6 +208,37 @@ export function getEnv(rawEnv: NodeJS.ProcessEnv): Env {
     throw new Error(`Invalid environment: ${message}`);
   }
   const env = parsed.data;
+
+  if (env.REVIEW_LOGIN_ENABLED) {
+    // Fail fast: a half-configured review login would 500 the recovery
+    // endpoints for the test email, so require every field the flow needs.
+    const requiredReviewFields = [
+      "REVIEW_LOGIN_EMAIL",
+      "REVIEW_LOGIN_OTP_CODE",
+      "REVIEW_LOGIN_ORGANIZATION_ID",
+      "REVIEW_LOGIN_ROOT_USER_ID",
+      "REVIEW_LOGIN_WALLET_ID",
+      "REVIEW_LOGIN_DEFAULT_ADDRESS",
+      "REVIEW_LOGIN_API_PRIVATE_KEY_HEX",
+    ] as const;
+    const missingReview = requiredReviewFields.filter((k) => !env[k]);
+    if (missingReview.length > 0) {
+      throw new Error(
+        `Invalid environment: REVIEW_LOGIN_ENABLED=true requires ${missingReview.join(", ")}`,
+      );
+    }
+    if (!/^[0-9a-fA-F]{64}$/.test(env.REVIEW_LOGIN_API_PRIVATE_KEY_HEX!)) {
+      throw new Error(
+        "Invalid environment: REVIEW_LOGIN_API_PRIVATE_KEY_HEX must be 64 hex chars (raw 32-byte P-256 private key)",
+      );
+    }
+    if (env.REVIEW_LOGIN_OTP_CODE!.length < 4) {
+      throw new Error(
+        "Invalid environment: REVIEW_LOGIN_OTP_CODE must be at least 4 characters",
+      );
+    }
+  }
+
   if (!env.DATABASE_URL) {
     // Synthesize DATABASE_URL from DB_* fields.
     const missing = (["DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD"] as const).filter(

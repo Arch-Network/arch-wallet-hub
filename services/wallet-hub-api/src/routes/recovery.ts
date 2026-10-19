@@ -90,6 +90,15 @@ import {
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
 import {
+  buildReviewInitResponse,
+  buildReviewVerifyResponse,
+  getReviewLoginConfig,
+  isReviewChallengeId,
+  isReviewEmail,
+  reviewCandidateTokenMatches,
+  reviewOtpMatches
+} from "../recovery/reviewLogin.js";
+import {
   classifyRecoveryChallengeAvailability,
   fingerprintOtpId,
   getOtpAgeMs,
@@ -256,6 +265,38 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       const db = getDbPool();
       const body = request.body as typeof InitBody.static;
       const email = body.email.trim();
+
+      // App-store review login: the configured test email bypasses the
+      // normal candidate lookup + Turnkey OTP and returns a synthetic
+      // challenge for the single pre-provisioned dummy mainnet wallet.
+      const reviewCfg = getReviewLoginConfig(server.config);
+      if (reviewCfg && isReviewEmail(reviewCfg, email)) {
+        const response = buildReviewInitResponse(reviewCfg, {
+          emailMasked: maskEmail(email),
+          ttlMs: CHALLENGE_TTL_MS
+        });
+        request.log.info(
+          { appId, challengeId: response.challengeId },
+          "recovery.init.review_login"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.init",
+            entityType: "recovery_challenge",
+            entityId: response.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reviewLogin: true, candidateCount: 1 },
+            outcome: "succeeded"
+          })
+        );
+        return response;
+      }
+
       const emailHash = hashEmailForRateLimit(email);
 
       // Hard rate-limit by hashed email. We don't tell the caller they
@@ -555,6 +596,38 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       const db = getDbPool();
       const body = request.body as typeof StartBody.static;
       const email = body.email.trim();
+
+      // App-store review login: a synthetic review challenge never hit
+      // Turnkey, so "starting" it is a no-op that just confirms the
+      // email + candidate token and echoes the masked email.
+      const reviewCfg = getReviewLoginConfig(server.config);
+      if (reviewCfg && isReviewChallengeId(body.challengeId)) {
+        if (
+          !isReviewEmail(reviewCfg, email) ||
+          !reviewCandidateTokenMatches(body.challengeId, body.candidateToken)
+        ) {
+          return reply.badRequest("Recovery email does not match this challenge");
+        }
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.otp_start",
+            entityType: "recovery_challenge",
+            entityId: body.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reviewLogin: true },
+            outcome: "succeeded"
+          })
+        );
+        return {
+          emailMasked: maskEmail(email),
+          expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS).toISOString()
+        };
+      }
 
       const challenge = await withDbTransaction(db, (client) =>
         getRecoveryChallenge(client, { appId, id: body.challengeId })
@@ -916,6 +989,74 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
 
       const db = getDbPool();
       const body = request.body as typeof VerifyBody.static;
+
+      // App-store review login: validate the static code and return a
+      // server-produced credential bundle for the dummy mainnet wallet.
+      // No DB challenge, no Turnkey OTP_AUTH.
+      const reviewCfg = getReviewLoginConfig(server.config);
+      if (reviewCfg && isReviewChallengeId(body.challengeId)) {
+        if (!reviewCandidateTokenMatches(body.challengeId, body.candidateToken)) {
+          return reply.badRequest("Unknown candidateToken");
+        }
+        if (!reviewOtpMatches(reviewCfg, body.code)) {
+          request.log.warn(
+            { appId, challengeId: body.challengeId },
+            "recovery.verify.review_login_bad_code"
+          );
+          await withDbTransaction(db, (client) =>
+            auditEvent({
+              client,
+              appId,
+              requestId: request.id,
+              userId: null,
+              eventType: "recovery.verify",
+              entityType: "recovery_challenge",
+              entityId: body.challengeId,
+              turnkeyActivityId: null,
+              turnkeyRequestId: null,
+              payloadJson: { reviewLogin: true, reason: "invalid_code" },
+              outcome: "failed"
+            })
+          );
+          return reply.unauthorized("Invalid or expired code");
+        }
+        let response;
+        try {
+          response = buildReviewVerifyResponse(reviewCfg, {
+            ephemeralPublicKey: body.ephemeralPublicKey,
+            expiresInSeconds: Number(RECOVERY_API_KEY_TTL_SECONDS)
+          });
+        } catch (err: any) {
+          request.log.warn(
+            { appId, challengeId: body.challengeId, err: String(err?.message ?? err) },
+            "recovery.verify.review_login_bad_target_key"
+          );
+          return reply.badRequest("Invalid ephemeral public key");
+        }
+        request.log.info(
+          { appId, challengeId: body.challengeId },
+          "recovery.verify.review_login"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: body.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              reviewLogin: true,
+              organizationId: reviewCfg.organizationId
+            },
+            outcome: "succeeded"
+          })
+        );
+        return response;
+      }
 
       const challenge = await withDbTransaction(db, (client) =>
         getRecoveryChallenge(client, { appId, id: body.challengeId })
