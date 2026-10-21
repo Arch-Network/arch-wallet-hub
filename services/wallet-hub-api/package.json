@@ -47,7 +47,7 @@
     "vitest": "^3.2.4"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.23.4"
   },
   "overrides": {
     "@noble/curves": "^1.9.0",

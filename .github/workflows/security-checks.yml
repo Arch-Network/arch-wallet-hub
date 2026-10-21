@@ -116,7 +116,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: "20"
+          node-version: "22.23.4"
       - name: Install lockfile-lint
         run: npm install -g lockfile-lint@4.13.2
       - name: Lint lockfile
@@ -159,7 +159,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
         with:
-          node-version: "20"
+          node-version: "22.23.4"
       - name: Install audit-ci
         run: npm install -g audit-ci@7.1.0
       - name: audit-ci (high+; per-workspace allowlist)
