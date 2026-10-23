@@ -57,3 +57,33 @@ describe("migrateApiConfig — indexer key", () => {
     );
   });
 });
+
+describe("migrateApiConfig — indexer base URL allowlist", () => {
+  it("fills in a missing indexerBaseUrl with the default", () => {
+    const state = makeState({ indexerBaseUrl: undefined });
+    const migrated = migrateApiConfig(state);
+    expect(state.indexerBaseUrl).toBe(INDEXER_BASE_URL);
+    expect(migrated).toBe(true);
+  });
+
+  it("snaps an unallowlisted or phishing indexerBaseUrl back to default", () => {
+    const state = makeState({ indexerBaseUrl: "https://evil.com/api" });
+    const migrated = migrateApiConfig(state);
+    expect(state.indexerBaseUrl).toBe(INDEXER_BASE_URL);
+    expect(migrated).toBe(true);
+  });
+
+  it("preserves a vetted *.arch.network indexerBaseUrl", () => {
+    const custom = "https://staging.arch.network/api/v1";
+    const state = makeState({ indexerBaseUrl: custom });
+    migrateApiConfig(state);
+    expect(state.indexerBaseUrl).toBe(custom);
+  });
+
+  it("preserves a local dev indexerBaseUrl", () => {
+    const devUrl = "http://localhost:8080";
+    const state = makeState({ indexerBaseUrl: devUrl });
+    migrateApiConfig(state);
+    expect(state.indexerBaseUrl).toBe(devUrl);
+  });
+});

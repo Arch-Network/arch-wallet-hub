@@ -16,6 +16,7 @@ import {
   DEFAULT_HUB_BASE_URL,
   DEFAULT_HUB_API_KEY,
   isAllowedHubBaseUrl,
+  isAllowedIndexerBaseUrl,
   isExternalAccount,
 } from "./types";
 import { deriveArchAccountAddress } from "../utils/sdk";
@@ -191,6 +192,12 @@ export function migrateApiConfig(state: any): boolean {
   }
 
   if (!state.indexerBaseUrl) {
+    state.indexerBaseUrl = INDEXER_BASE_URL;
+    migrated = true;
+  } else if (!isAllowedIndexerBaseUrl(state.indexerBaseUrl)) {
+    // Defence-in-depth: a pre-allowlist build may have persisted an
+    // arbitrary Indexer URL the user entered. Snap it back
+    // on read so any subsequent direct-indexer call goes to a vetted host.
     state.indexerBaseUrl = INDEXER_BASE_URL;
     migrated = true;
   }
@@ -841,6 +848,13 @@ export const walletStore = {
   },
 
   async setIndexerConfig(indexerBaseUrl: string, indexerApiKey: string): Promise<void> {
+    if (!isAllowedIndexerBaseUrl(indexerBaseUrl)) {
+      // Fail closed in the store, not just the UI. Anything that
+      // reaches `setIndexerConfig` directly must also be gated.
+      throw new Error(
+        "Refusing to save Indexer URL: host not in allowlist. Use the default explorer.arch.network or a vetted *.arch.network host.",
+      );
+    }
     const state = await this.requireUnlockedState();
     state.indexerBaseUrl = indexerBaseUrl;
     state.indexerApiKey = indexerApiKey;

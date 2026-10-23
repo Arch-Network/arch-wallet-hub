@@ -1,3 +1,5 @@
+import { INDEXER_BASE_URL } from "../utils/explorer-config";
+
 export type NetworkId = "testnet4" | "mainnet";
 export type OpenAsMode = "popup" | "sidepanel";
 export type RecipientAsset = "btc" | "arch" | "apl";
@@ -299,6 +301,34 @@ export function isAllowedHubBaseUrl(rawUrl: string): boolean {
     if (host === defaultHost) return true;
   } catch {
     /* DEFAULT_HUB_BASE_URL is a static constant; this catch only
+       defends against a future refactor where it could become
+       user-supplied. */
+  }
+  if (host === "arch.network" || host.endsWith(".arch.network")) return true;
+  return false;
+}
+
+/**
+ * Pinned Indexer-host allowlist.
+ *
+ * Analogous to `isAllowedHubBaseUrl`: validates direct-indexer URLs
+ * to ensure requests are only sent to the build-time default,
+ * vetted *.arch.network hosts, or local loopback development endpoints.
+ */
+export function isAllowedIndexerBaseUrl(rawUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  if (HUB_DEV_HOSTS.has(host)) return true;
+  try {
+    const defaultHost = new URL(INDEXER_BASE_URL).hostname.toLowerCase();
+    if (host === defaultHost) return true;
+  } catch {
+    /* INDEXER_BASE_URL is a static constant; this catch only
        defends against a future refactor where it could become
        user-supplied. */
   }

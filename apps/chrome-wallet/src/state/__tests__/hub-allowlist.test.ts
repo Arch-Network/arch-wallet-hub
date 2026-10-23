@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isAllowedHubBaseUrl } from "../types";
+import { isAllowedHubBaseUrl, isAllowedIndexerBaseUrl } from "../types";
 
 describe("isAllowedHubBaseUrl", () => {
   it("accepts the production Hub host", () => {
@@ -37,5 +37,43 @@ describe("isAllowedHubBaseUrl", () => {
 
   it("matches hostname case-insensitively", () => {
     expect(isAllowedHubBaseUrl("https://HUB.ARCH.NETWORK")).toBe(true);
+  });
+});
+
+describe("isAllowedIndexerBaseUrl", () => {
+  it("accepts the production Indexer host", () => {
+    expect(isAllowedIndexerBaseUrl("https://explorer.arch.network/api/v1")).toBe(true);
+    expect(isAllowedIndexerBaseUrl("https://explorer.arch.network/")).toBe(true);
+    expect(isAllowedIndexerBaseUrl("https://explorer.arch.network")).toBe(true);
+  });
+
+  it("accepts *.arch.network subdomains", () => {
+    expect(isAllowedIndexerBaseUrl("https://staging.arch.network")).toBe(true);
+    expect(isAllowedIndexerBaseUrl("https://canary.indexer.arch.network")).toBe(true);
+    expect(isAllowedIndexerBaseUrl("https://arch.network")).toBe(true);
+  });
+
+  it("accepts local dev hosts on either protocol", () => {
+    expect(isAllowedIndexerBaseUrl("http://localhost:8080")).toBe(true);
+    expect(isAllowedIndexerBaseUrl("http://127.0.0.1:8080")).toBe(true);
+    expect(isAllowedIndexerBaseUrl("https://localhost:8080")).toBe(true);
+  });
+
+  it("rejects look-alike and unrelated hosts", () => {
+    expect(isAllowedIndexerBaseUrl("https://explorer.arch-network.com")).toBe(false);
+    expect(isAllowedIndexerBaseUrl("https://explorer.arch.netwoгk")).toBe(false); // Cyrillic 'г'
+    expect(isAllowedIndexerBaseUrl("https://arch.network.evil.com")).toBe(false);
+    expect(isAllowedIndexerBaseUrl("https://evil.com")).toBe(false);
+    expect(isAllowedIndexerBaseUrl("https://archnetwork.com")).toBe(false);
+  });
+
+  it("rejects strings that don't parse as URLs", () => {
+    expect(isAllowedIndexerBaseUrl("")).toBe(false);
+    expect(isAllowedIndexerBaseUrl("not a url")).toBe(false);
+    expect(isAllowedIndexerBaseUrl("explorer.arch.network")).toBe(false); // missing protocol
+  });
+
+  it("matches hostname case-insensitively", () => {
+    expect(isAllowedIndexerBaseUrl("https://EXPLORER.ARCH.NETWORK/api/v1")).toBe(true);
   });
 });
