@@ -16,6 +16,8 @@ const EMAIL = "victim@example.com";
 
 const mocks = vi.hoisted(() => {
   const challenges = new Map<string, any>();
+  // Stands in for pg_advisory_xact_lock: held until the transaction that took it ends.
+  const locks = new Map<string, Promise<void>>();
   let seq = 0;
   const get = async (_c: unknown, p: { appId: string; id: string }) => {
     const row = challenges.get(p.id);
@@ -25,8 +27,16 @@ const mocks = vi.hoisted(() => {
     challenges,
     reset: () => {
       challenges.clear();
+      locks.clear();
       seq = 0;
     },
+    lockEmailWallets: vi.fn(async (client: { releases: Array<() => void> }, p: { appId: string; email: string }) => {
+      const key = `${p.appId}:${p.email.trim().toLowerCase()}`;
+      while (locks.has(key)) await locks.get(key);
+      let release!: () => void;
+      locks.set(key, new Promise<void>((resolve) => (release = () => (locks.delete(key), resolve()))));
+      client.releases.push(release);
+    }),
     findEmailWalletByRecoveryEmail: vi.fn(async (_c: unknown, _p: any): Promise<any> => null),
     insertTurnkeyResource: vi.fn(async (_c: unknown, p: any) => ({
       id: "new-resource",
@@ -107,7 +117,14 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("../../db/pool.js", () => ({ getDbPool: () => ({}) }));
 vi.mock("../../db/tx.js", () => ({
-  withDbTransaction: async (_pool: unknown, cb: (client: unknown) => Promise<unknown>) => cb({}),
+  withDbTransaction: async (_pool: unknown, cb: (client: unknown) => Promise<unknown>) => {
+    const client = { releases: [] as Array<() => void> };
+    try {
+      return await cb(client);
+    } finally {
+      for (const release of client.releases) release();
+    }
+  },
 }));
 vi.mock("../../audit/audit.js", () => ({ auditEvent: async () => undefined }));
 vi.mock("../../turnkey/store.js", () => ({ getTurnkeyClient: () => mocks.turnkey }));
@@ -123,6 +140,7 @@ vi.mock("../../db/queries.js", async (orig) => ({
   ...(await orig<typeof import("../../db/queries.js")>()),
   findEmailWalletByRecoveryEmail: mocks.findEmailWalletByRecoveryEmail,
   insertTurnkeyResource: mocks.insertTurnkeyResource,
+  lockEmailWallets: mocks.lockEmailWallets,
 }));
 vi.mock("../../db/recovery.js", async (orig) => ({
   ...(await orig<typeof import("../../db/recovery.js")>()),
@@ -216,6 +234,31 @@ describe("POST /recovery/email/signin", () => {
     }
     // No Turnkey OTP is sent from signin on either path.
     expect(mocks.turnkey.initOtpAuth).not.toHaveBeenCalled();
+  });
+
+  it("creates one wallet when two sign-ups for the same new email overlap", async () => {
+    const app = await buildServer();
+    let stored: any = null;
+    mocks.findEmailWalletByRecoveryEmail.mockImplementation(async () => stored);
+    const insert = mocks.insertTurnkeyResource.getMockImplementation()!;
+    mocks.insertTurnkeyResource.mockImplementationOnce(async (c, p) => (stored = await insert(c, p)));
+    const create = mocks.turnkey.createSubOrganizationWithEmailWallet.getMockImplementation()!;
+    mocks.turnkey.createSubOrganizationWithEmailWallet.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return create();
+    });
+
+    const [first, second] = await Promise.all([
+      signin(app),
+      app.inject({ method: "POST", url: "/v1/recovery/email/signin", payload: { email: "Victim@Example.COM" } }),
+    ]);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).toHaveBeenCalledTimes(1);
+    const resourceOf = (res: typeof first) => mocks.challenges.get(res.json().challengeId).candidates[0].resourceId;
+    expect(resourceOf(first)).toBe("new-resource");
+    expect(resourceOf(second)).toBe("new-resource");
   });
 
   it("never attaches anything to a caller-supplied externalUserId", async () => {

@@ -247,6 +247,23 @@ export async function findEmailWalletByRecoveryEmail(
   return res.rows[0] ?? null;
 }
 
+/**
+ * Serializes email-wallet lookups and creates for one (app, email)
+ * until the caller's transaction ends, so two requests for the same
+ * inbox cannot both find no wallet and both create one. Must run inside
+ * a transaction: outside one, the `_xact_` lock is released as soon as
+ * the statement finishes. The key is prefixed so it cannot collide with
+ * insertAuditLog's per-app lock.
+ */
+export async function lockEmailWallets(
+  client: PoolClient,
+  params: { appId: string; email: string }
+): Promise<void> {
+  await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, [
+    `email-wallet:${params.appId}:${params.email.trim().toLowerCase()}`
+  ]);
+}
+
 export type InsertAuditLogParams = {
   appId: string;
   requestId: string | null;

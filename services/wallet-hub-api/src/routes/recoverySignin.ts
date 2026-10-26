@@ -4,9 +4,10 @@
  *
  *   POST /recovery/email/signin  { email, walletName? }
  *     ├─ rate-limit by sha256(email), shared with /init
- *     ├─ look up the app's existing OTP-capable email wallet for the
- *     │  email; if none, create an email sub-org wallet for a fresh
- *     │  Hub user with a server-generated externalUserId
+ *     ├─ under a per-(app, email) lock, look up the app's existing
+ *     │  OTP-capable email wallet for the email; if none, create an
+ *     │  email sub-org wallet for a fresh Hub user with a
+ *     │  server-generated externalUserId
  *     ├─ persist a single-candidate recovery_challenges row
  *     └─ returns { challengeId, candidateToken, emailMasked, expiresAt }
  *
@@ -25,6 +26,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import type { PoolClient } from "pg";
 import { Type } from "@sinclair/typebox";
 import { randomUUID } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
@@ -33,6 +35,7 @@ import { getOrCreateUserByExternalId, updateUserRecoveryEmail } from "../db/apps
 import {
   findEmailWalletByRecoveryEmail,
   insertTurnkeyResource,
+  lockEmailWallets,
   type EmailWalletRow
 } from "../db/queries.js";
 import {
@@ -79,20 +82,19 @@ function networkDefaults(networkHint: string | undefined): NetworkDefaults {
     : { addressFormat: "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR", derivationPath: "m/86'/1'/0'/0/0" };
 }
 
-async function createEmailWalletForNewUser(params: {
-  appId: string;
-  email: string;
-  walletName: string | undefined;
-  network: NetworkDefaults;
-  log: { warn: (obj: object, msg: string) => void };
-}): Promise<EmailWalletRow> {
-  const db = getDbPool();
+async function createEmailWalletForNewUser(
+  client: PoolClient,
+  params: {
+    appId: string;
+    email: string;
+    walletName: string | undefined;
+    network: NetworkDefaults;
+    log: { warn: (obj: object, msg: string) => void };
+  }
+): Promise<EmailWalletRow> {
   const externalUserId = `email-${randomUUID()}`;
-  const user = await withDbTransaction(db, async (client) => {
-    const u = await getOrCreateUserByExternalId(client, { appId: params.appId, externalUserId });
-    await updateUserRecoveryEmail(client, { appId: params.appId, userId: u.id, email: params.email });
-    return u;
-  });
+  const user = await getOrCreateUserByExternalId(client, { appId: params.appId, externalUserId });
+  await updateUserRecoveryEmail(client, { appId: params.appId, userId: user.id, email: params.email });
 
   const turnkey = getTurnkeyClient() as any;
   const created = await turnkey.createSubOrganizationWithEmailWallet({
@@ -123,24 +125,22 @@ async function createEmailWalletForNewUser(params: {
     );
   }
 
-  const resource = await withDbTransaction(db, (client) =>
-    insertTurnkeyResource(client, {
-      appId: params.appId,
-      userId: user.id,
-      organizationId: created.subOrganizationId,
-      turnkeyRootUserId: created.rootUserId ?? null,
-      walletId: created.walletId,
-      vaultId: null,
-      keyId: null,
-      policyId: null,
-      defaultAddress,
-      defaultPublicKeyHex,
-      defaultAddressFormat: params.network.addressFormat,
-      defaultDerivationPath: params.network.derivationPath,
-      authMethod: "email",
-      keyVerified: defaultPublicKeyHex !== null
-    })
-  );
+  const resource = await insertTurnkeyResource(client, {
+    appId: params.appId,
+    userId: user.id,
+    organizationId: created.subOrganizationId,
+    turnkeyRootUserId: created.rootUserId ?? null,
+    walletId: created.walletId,
+    vaultId: null,
+    keyId: null,
+    policyId: null,
+    defaultAddress,
+    defaultPublicKeyHex,
+    defaultAddressFormat: params.network.addressFormat,
+    defaultDerivationPath: params.network.derivationPath,
+    authMethod: "email",
+    keyVerified: defaultPublicKeyHex !== null
+  });
   return { ...resource, external_user_id: externalUserId };
 }
 
@@ -195,22 +195,28 @@ export function registerEmailSigninRoute(server: FastifyInstance, limits: Signin
         return reply.tooManyRequests("Too many sign-in attempts for this email; try again later");
       }
 
-      const existing = await withDbTransaction(db, (client) =>
-        findEmailWalletByRecoveryEmail(client, {
+      // ponytail: the lock's transaction holds a pool connection through
+      // the Turnkey create (up to its 30 s activity poll), so a replica runs
+      // at most pool-size new-email sign-ups at once. If sign-up bursts
+      // outgrow that, commit a claim row under a short lock and have
+      // waiters poll it instead.
+      const { target, reused } = await withDbTransaction(db, async (client) => {
+        await lockEmailWallets(client, { appId, email });
+        const existing = await findEmailWalletByRecoveryEmail(client, {
           appId,
           email,
           rootOrganizationId: server.config.TURNKEY_ORGANIZATION_ID
-        })
-      );
-      const target =
-        existing ??
-        (await createEmailWalletForNewUser({
+        });
+        if (existing) return { target: existing, reused: true };
+        const created = await createEmailWalletForNewUser(client, {
           appId,
           email,
           walletName: body.walletName,
           network: networkDefaults(request.headers["x-network"] as string | undefined),
           log: request.log
-        }));
+        });
+        return { target: created, reused: false };
+      });
 
       if (!target.turnkey_root_user_id) {
         throw new Error("Turnkey did not return a root user for the new email sub-org");
@@ -238,7 +244,7 @@ export function registerEmailSigninRoute(server: FastifyInstance, limits: Signin
           entityId: row.id,
           turnkeyActivityId: null,
           turnkeyRequestId: null,
-          payloadJson: { emailHash, candidateResourceId: target.id, reused: Boolean(existing) },
+          payloadJson: { emailHash, candidateResourceId: target.id, reused },
           outcome: "succeeded"
         });
         return { id: row.id, expiresAt: row.expires_at, candidateToken };
