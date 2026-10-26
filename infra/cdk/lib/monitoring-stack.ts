@@ -53,6 +53,14 @@ function parseRoleArnList(value: string, key: string): string[] {
   return value.split(",").map((part) => parseRoleArn(part.trim(), key));
 }
 
+function parseEmails(value: string): string[] {
+  if (!value) return [];
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
 /**
  * Detection and paging for the wallet hub. A separate stack so a deploy
  * cannot replace RDS, rewrite AppSecrets, or register a task definition.
@@ -64,26 +72,39 @@ export class WalletHubMonitoringStack extends cdk.Stack {
     super(scope, id, props);
 
     const deployRoleArn = contextString(this, "deployRoleArn");
-    const alertEmail = contextString(this, "securityAlertEmail");
+    const alertEmails = parseEmails(contextString(this, "securityAlertEmail"));
     const alertHttpsEndpoint = contextString(this, "securityAlertHttpsEndpoint");
     const executionRoleArns = parseRoleArnList(
       contextString(this, "ecsExecutionRoleArns"),
       "ecsExecutionRoleArns"
     );
+    const clammKeeperExecutionRoleArns = parseRoleArnList(
+      contextString(this, "clammKeeperExecutionRoleArns"),
+      "clammKeeperExecutionRoleArns"
+    );
     const createGuardDutyDetector = contextFlag(this, "createGuardDutyDetector", true);
 
     if (deployRoleArn) parseRoleArn(deployRoleArn, "deployRoleArn");
-    if (alertEmail && !alertEmail.includes("@")) {
-      throw new Error("WalletHubMonitoringStack: securityAlertEmail must contain @");
+    for (const email of alertEmails) {
+      if (!email.includes("@") || /\s/.test(email)) {
+        throw new Error(
+          `WalletHubMonitoringStack: securityAlertEmail entry is not an email: ${email}`
+        );
+      }
     }
     if (alertHttpsEndpoint && !alertHttpsEndpoint.startsWith("https://")) {
       throw new Error(
         "WalletHubMonitoringStack: securityAlertHttpsEndpoint must be an https URL"
       );
     }
-    if (!alertEmail && !alertHttpsEndpoint) {
+    if (alertEmails.length === 0 && !alertHttpsEndpoint) {
       cdk.Annotations.of(this).addWarning(
         "No securityAlertEmail or securityAlertHttpsEndpoint. Alerts stop at the SNS topic until a subscription is added."
+      );
+    }
+    if (clammKeeperExecutionRoleArns.length === 0) {
+      cdk.Annotations.of(this).addWarning(
+        "clammKeeperExecutionRoleArns is not set. ECS task starts of the mainnet CLAMM keeper will page."
       );
     }
     if (!deployRoleArn) {
@@ -93,10 +114,10 @@ export class WalletHubMonitoringStack extends cdk.Stack {
     }
 
     const topic = new sns.Topic(this, "SecurityAlerts", {
-      displayName: "Wallet Hub security alerts",
+      displayName: "Arch security alerts",
     });
-    if (alertEmail) {
-      topic.addSubscription(new subscriptions.EmailSubscription(alertEmail));
+    for (const email of alertEmails) {
+      topic.addSubscription(new subscriptions.EmailSubscription(email));
     }
     if (alertHttpsEndpoint) {
       topic.addSubscription(new subscriptions.UrlSubscription(alertHttpsEndpoint));
@@ -183,11 +204,12 @@ export class WalletHubMonitoringStack extends cdk.Stack {
       memorySize: 128,
       logGroup: alertLogs,
       description:
-        "Pages on WalletHub/AppSecrets reads and on deploys that are not the GitHub OIDC role.",
+        "Pages on watched secret reads and on wallet-hub deploys that are not the GitHub OIDC role.",
       environment: {
         TOPIC_ARN: topic.topicArn,
         DEPLOY_ROLE_ARN: deployRoleArn,
         EXECUTION_ROLE_ARNS: executionRoleArns.join(","),
+        CLAMM_KEEPER_EXECUTION_ROLE_ARNS: clammKeeperExecutionRoleArns.join(","),
       },
     });
     topic.grantPublish(filter);

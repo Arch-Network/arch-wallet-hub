@@ -6,7 +6,19 @@
 // callers set it themselves. invokedBy and sourceIPAddress are written
 // by CloudTrail.
 
-const SECRET_NAME = "WalletHub/AppSecrets";
+const APP_SECRET = "WalletHub/AppSecrets";
+const CLAMM_KEEPER_SECRET = "clamm/keeper/mainnet/authority-key";
+// Recovery copies of program-deploy keys, and the launchpad master secret.
+// These have no ECS injector, so every read pages. The CLAMM keeper secret
+// is injected at task start; only that execution role is quiet.
+const WATCHED_SECRETS = [
+  APP_SECRET,
+  CLAMM_KEEPER_SECRET,
+  "program-deploy/internal-a",
+  "program-deploy/internal-b",
+  "program-deploy/testnet",
+  "arch-agent-launchpad/runtime",
+];
 const CLUSTER = "wallet-hub";
 const SERVICES = ["wallet-hub-api", "wallet-hub-frontend"];
 const REPOSITORIES = ["wallet-hub-api", "wallet-hub-frontend"];
@@ -25,11 +37,11 @@ function splitComma(value) {
 
 function configFromEnv(env) {
   return {
-    secretName: SECRET_NAME,
     cluster: CLUSTER,
     services: SERVICES,
     repositories: REPOSITORIES,
     executionRoleArns: splitComma(env.EXECUTION_ROLE_ARNS),
+    clammKeeperExecutionRoleArns: splitComma(env.CLAMM_KEEPER_EXECUTION_ROLE_ARNS),
     deployRoleArn: env.DEPLOY_ROLE_ARN ? String(env.DEPLOY_ROLE_ARN).trim() : "",
   };
 }
@@ -40,11 +52,20 @@ function lastSegment(value) {
   return slash >= 0 ? text.slice(slash + 1) : text;
 }
 
+function matchedSecretName(secretId) {
+  if (typeof secretId !== "string" || secretId.length === 0) return "";
+  for (const name of WATCHED_SECRETS) {
+    if (secretId === name) return name;
+    if (secretId.startsWith(`${name}:`)) return name;
+    // The ARN suffix is a hyphen plus six characters. A longer name such
+    // as WalletHub/AppSecretsBackup does not match.
+    if (secretId.includes(`:secret:${name}-`)) return name;
+  }
+  return "";
+}
+
 function isAppSecretId(secretId) {
-  if (typeof secretId !== "string" || secretId.length === 0) return false;
-  if (secretId === SECRET_NAME) return true;
-  if (secretId.startsWith(`${SECRET_NAME}:`)) return true;
-  return secretId.includes(`:secret:${SECRET_NAME}-`);
+  return matchedSecretName(secretId) === APP_SECRET;
 }
 
 function secretIds(detail) {
@@ -73,14 +94,22 @@ function isDeployRole(detail, config) {
   return config.deployRoleArn !== "" && issuerArn(detail) === config.deployRoleArn;
 }
 
-// ECS itself reading the secret during task start. A stolen execution
+// ECS itself reading a secret during task start. A stolen execution
 // role used from anywhere else has a real source IP and no invokedBy,
-// so it still pages. When execution role ARNs are configured, an ECS
-// call that presents any other role also pages.
-function isBenignEcsSecretRead(detail, config) {
+// so it still pages. An empty wallet-hub allowlist still suppresses
+// every ECS-attributed read of AppSecrets, matching the first deploy.
+// Other watched secrets page unless their own role list matches.
+function isBenignEcsSecretRead(detail, config, secretName) {
   if (!isEcsServiceCall(detail)) return false;
-  if (config.executionRoleArns.length === 0) return true;
-  return config.executionRoleArns.includes(issuerArn(detail));
+  const issuer = issuerArn(detail);
+  if (secretName === APP_SECRET) {
+    if (config.executionRoleArns.length === 0) return true;
+    return config.executionRoleArns.includes(issuer);
+  }
+  if (secretName === CLAMM_KEEPER_SECRET) {
+    return config.clammKeeperExecutionRoleArns.includes(issuer);
+  }
+  return false;
 }
 
 function imageRefs(detail) {
@@ -134,7 +163,7 @@ function actorArn(detail) {
 }
 
 function subjectFor(eventName) {
-  const subject = `Wallet Hub alert: ${eventName}`;
+  const subject = `Security alert: ${eventName}`;
   return subject.length <= 100 ? subject : subject.slice(0, 100);
 }
 
@@ -166,10 +195,13 @@ function decide(event, config) {
   const eventName = detail.eventName;
 
   if (eventName === "GetSecretValue" || eventName === "BatchGetSecretValue") {
-    const matched = secretIds(detail).filter(isAppSecretId);
+    const matched = secretIds(detail).map(matchedSecretName).filter(Boolean);
     if (matched.length === 0) return { page: false };
-    if (isBenignEcsSecretRead(detail, config)) return { page: false };
-    return page(detail, matched.join(","));
+    const interesting = matched.filter(
+      (name) => !isBenignEcsSecretRead(detail, config, name)
+    );
+    if (interesting.length === 0) return { page: false };
+    return page(detail, interesting.join(","));
   }
 
   if (eventName === "PutImage") {
@@ -202,4 +234,5 @@ module.exports = {
   decide,
   configFromEnv,
   isAppSecretId,
+  matchedSecretName,
 };
