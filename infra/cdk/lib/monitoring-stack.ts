@@ -102,13 +102,6 @@ export class WalletHubMonitoringStack extends cdk.Stack {
       topic.addSubscription(new subscriptions.UrlSubscription(alertHttpsEndpoint));
     }
 
-    const secretArnPrefix = this.formatArn({
-      service: "secretsmanager",
-      resource: "secret",
-      arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
-      resourceName: "WalletHub/AppSecrets-",
-    });
-
     const trailBucket = new s3.Bucket(this, "TrailBucket", {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -123,9 +116,10 @@ export class WalletHubMonitoringStack extends cdk.Stack {
       ],
     });
 
-    // Basic event selectors cannot express Secrets Manager data events,
-    // and a trail cannot carry both selector types. Management events
-    // are restated in the advanced selector below.
+    // GetSecretValue is a Secrets Manager management event. CloudTrail
+    // rejects resources.type AWS::SecretsManager::Secret, so a data-event
+    // selector cannot record it. The filter lambda keeps only
+    // WalletHub/AppSecrets. KMS events are high-volume and are not paged.
     const trail = new cloudtrail.Trail(this, "Trail", {
       bucket: trailBucket,
       trailName: "wallet-hub",
@@ -133,31 +127,12 @@ export class WalletHubMonitoringStack extends cdk.Stack {
       includeGlobalServiceEvents: true,
       enableFileValidation: true,
       sendToCloudWatchLogs: false,
-      // Replaced below. The L2 requires a management setting, and basic
-      // selectors cannot select a Secrets Manager ARN.
       managementEvents: cloudtrail.ReadWriteType.ALL,
     });
     const cfnTrail = trail.node.defaultChild as cloudtrail.CfnTrail;
-    cfnTrail.addPropertyDeletionOverride("EventSelectors");
-    cfnTrail.advancedEventSelectors = [
-      {
-        name: "ManagementEvents",
-        fieldSelectors: [
-          { field: "eventCategory", equalTo: ["Management"] },
-          // KMS management events are high-volume and are not one of the
-          // wallet-hub pages. Secret reads are data events, selected below.
-          { field: "eventSource", notEquals: ["kms.amazonaws.com"] },
-        ],
-      },
-      {
-        name: "WalletHubAppSecretDataEvents",
-        fieldSelectors: [
-          { field: "eventCategory", equalTo: ["Data"] },
-          { field: "resources.type", equalTo: ["AWS::SecretsManager::Secret"] },
-          { field: "resources.ARN", startsWith: [secretArnPrefix] },
-        ],
-      },
-    ];
+    cfnTrail.addPropertyOverride("EventSelectors.0.ExcludeManagementEventSources", [
+      "kms.amazonaws.com",
+    ]);
 
     if (createGuardDutyDetector) {
       new guardduty.CfnDetector(this, "Detector", {
@@ -300,7 +275,7 @@ export class WalletHubMonitoringStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "TrailArn", {
       value: trail.trailArn,
-      description: "CloudTrail trail recording management events and AppSecrets data events",
+      description: "CloudTrail trail recording management events except KMS",
     });
     new cdk.CfnOutput(this, "AlertFilterDlqUrl", {
       value: dlq.queueUrl,

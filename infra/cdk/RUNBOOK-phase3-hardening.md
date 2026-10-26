@@ -217,11 +217,11 @@ constructs both stacks.
 What the stack adds:
 
 - CloudTrail trail `wallet-hub` (multi-region management events except
-  `kms.amazonaws.com`, plus Secrets Manager data events whose ARN starts
-  with `WalletHub/AppSecrets-`) to a retained S3 bucket. Objects expire
-  after 365 days. Log-file validation is on. `GetSecretValue` is a data
-  event: a management-only trail, including the 90-day event history,
-  does not record it.
+  `kms.amazonaws.com`) to a retained S3 bucket. Objects expire after 365
+  days. Log-file validation is on. `GetSecretValue` is a management
+  event. CloudTrail does not accept `AWS::SecretsManager::Secret` as a
+  data-event `resources.type`, so the trail does not use a data
+  selector. The filter keeps only `WalletHub/AppSecrets`.
 - A GuardDuty detector. If the account already has one, the create fails;
   redeploy with `-c createGuardDutyDetector=false`. The finding rule is
   created either way.
@@ -256,8 +256,8 @@ AI triage layer. Both stay in issue #140.
 ### Before deploying
 
 1. `aws cloudtrail describe-trails --region us-east-1`. A second trail
-   duplicates management-event cost. This trail is still required for the
-   secret data events. Stop if a trail named `wallet-hub` already exists.
+   duplicates management-event cost. Stop if a trail named `wallet-hub`
+   already exists.
 2. `aws guardduty list-detectors --region us-east-1`. If a detector id is
    returned, pass `-c createGuardDutyDetector=false`.
 3. Read the live execution role (the CDK role is not the one in service):
