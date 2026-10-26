@@ -83,6 +83,8 @@ const mocks = vi.hoisted(() => {
       return row;
     }),
     getOrCreateUserByExternalId: vi.fn(async () => ({ id: "new-user" })),
+    findUsersByRecoveryEmail: vi.fn(async (_c: unknown, _p: any): Promise<any[]> => []),
+    listTurnkeyResourcesForUserForApp: vi.fn(async (_c: unknown, _p: any): Promise<any[]> => []),
     updateUserRecoveryEmail: vi.fn(async () => undefined),
     countRecentChallenges: vi.fn(async () => 0),
     recovery: {
@@ -135,7 +137,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("../../db/pool.js", () => ({ getDbPool: () => ({}) }));
 vi.mock("../../db/tx.js", () => ({
   withDbTransaction: async (_pool: unknown, cb: (client: unknown) => Promise<unknown>) => {
-    const client = { releases: [] as Array<() => void> };
+    const client = { releases: [] as Array<() => void>, query: async () => ({ rows: [] }) };
     try {
       return await cb(client);
     } finally {
@@ -149,6 +151,7 @@ vi.mock("../../db/apps.js", async (orig) => ({
   ...(await orig<typeof import("../../db/apps.js")>()),
   getOrCreateUserByExternalId: mocks.getOrCreateUserByExternalId,
   updateUserRecoveryEmail: mocks.updateUserRecoveryEmail,
+  findUsersByRecoveryEmail: mocks.findUsersByRecoveryEmail,
 }));
 vi.mock("../../db/queries.js", async (orig) => ({
   ...(await orig<typeof import("../../db/queries.js")>()),
@@ -157,6 +160,7 @@ vi.mock("../../db/queries.js", async (orig) => ({
   pinVerifiedEmail: mocks.pinVerifiedEmail,
   insertTurnkeyResource: mocks.insertTurnkeyResource,
   lockEmailWallets: mocks.lockEmailWallets,
+  listTurnkeyResourcesForUserForApp: mocks.listTurnkeyResourcesForUserForApp,
 }));
 vi.mock("../../db/recovery.js", async (orig) => ({
   ...(await orig<typeof import("../../db/recovery.js")>()),
@@ -386,6 +390,31 @@ describe("email sign-in", () => {
     expect(mocks.turnkey.createSubOrganizationWithEmailWallet).toHaveBeenCalledTimes(1);
     expect(a.json().organizationId).toBe("new-sub-org");
     expect(b.json().organizationId).toBe("new-sub-org");
+  });
+
+  it("makes an /init login that overlaps a first sign-in wait for the new wallet instead of answering none", async () => {
+    const app = await buildServer();
+    mocks.findUsersByRecoveryEmail.mockImplementationOnce(async () =>
+      mocks.wallets.map((w) => ({ id: w.user_id, external_user_id: "email-new", recovery_email: EMAIL })),
+    );
+    mocks.listTurnkeyResourcesForUserForApp.mockImplementationOnce(async () => [...mocks.wallets]);
+    let finishCreate!: () => void;
+    const createDone = new Promise<void>((resolve) => (finishCreate = resolve));
+    mocks.turnkey.createSubOrganizationWithEmailWallet.mockImplementationOnce(async () => {
+      await createDone;
+      return mocks.created();
+    });
+
+    const verifying = verify(app, (await signin(app)).json().challengeId);
+    await vi.waitFor(() => expect(mocks.turnkey.createSubOrganizationWithEmailWallet).toHaveBeenCalled());
+    const loggingIn = app.inject({ method: "POST", url: "/v1/recovery/email/init", payload: { email: EMAIL } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    finishCreate();
+    const [verified, login] = await Promise.all([verifying, loggingIn]);
+
+    expect(verified.statusCode).toBe(200);
+    expect(login.statusCode).toBe(200);
+    expect(login.json().candidates).toHaveLength(1);
   });
 
   it("does not accept an /init challenge at /verify or /session", async () => {

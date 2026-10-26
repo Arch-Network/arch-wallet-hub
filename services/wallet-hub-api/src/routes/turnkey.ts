@@ -7,6 +7,7 @@ import {
   getTurnkeyResourceByIdForApp,
   insertTurnkeyResource,
   listTurnkeyResourcesForUserForApp,
+  lockEmailWallets,
   markIdempotencyFailed,
   markIdempotencySucceeded
 } from "../db/queries.js";
@@ -557,50 +558,54 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       });
 
       try {
-        const turnkey = getTurnkeyClient();
-        const subOrganizationName = `arch-${appId}-${externalUserId}-email`;
-        const created = await (turnkey as any).createSubOrganizationWithEmailWallet({
-          subOrganizationName,
-          rootUser: {
-            userName: String(externalUserId),
-            userEmail: userEmail.trim(),
-          },
-          wallet: {
-            walletName,
-            addressFormat,
-            path: derivationPath,
-          },
-        });
-
-        const defaultAddress: string | null = created.addresses[0] ?? null;
-        let defaultPublicKeyHex: string | null = null;
-        try {
-          const accountsRes = await (
-            turnkey as any
-          ).getWalletAccountsForOrganization({
-            organizationId: created.subOrganizationId,
-            walletId: created.walletId,
-          });
-          const accounts = Array.isArray(accountsRes?.accounts)
-            ? accountsRes.accounts
-            : [];
-          const match = defaultAddress
-            ? accounts.find((a: any) => a?.address === defaultAddress)
-            : null;
-          defaultPublicKeyHex =
-            typeof match?.publicKey === "string" ? match.publicKey : null;
-        } catch (e: any) {
-          request.log.warn(
-            {
-              err: String(e?.message ?? e),
-              orgId: created.subOrganizationId,
-              walletId: created.walletId,
-            },
-            "Failed to fetch Turnkey wallet accounts (email suborg) for default public key",
-          );
-        }
-
         const response = await withDbTransaction(db, async (client) => {
+          // Held through the Turnkey create so /recovery/email/init for
+          // this email waits for the wallet instead of answering none.
+          await lockEmailWallets(client, { appId, email: userEmail });
+
+          const turnkey = getTurnkeyClient();
+          const subOrganizationName = `arch-${appId}-${externalUserId}-email`;
+          const created = await (turnkey as any).createSubOrganizationWithEmailWallet({
+            subOrganizationName,
+            rootUser: {
+              userName: String(externalUserId),
+              userEmail: userEmail.trim(),
+            },
+            wallet: {
+              walletName,
+              addressFormat,
+              path: derivationPath,
+            },
+          });
+
+          const defaultAddress: string | null = created.addresses[0] ?? null;
+          let defaultPublicKeyHex: string | null = null;
+          try {
+            const accountsRes = await (
+              turnkey as any
+            ).getWalletAccountsForOrganization({
+              organizationId: created.subOrganizationId,
+              walletId: created.walletId,
+            });
+            const accounts = Array.isArray(accountsRes?.accounts)
+              ? accountsRes.accounts
+              : [];
+            const match = defaultAddress
+              ? accounts.find((a: any) => a?.address === defaultAddress)
+              : null;
+            defaultPublicKeyHex =
+              typeof match?.publicKey === "string" ? match.publicKey : null;
+          } catch (e: any) {
+            request.log.warn(
+              {
+                err: String(e?.message ?? e),
+                orgId: created.subOrganizationId,
+                walletId: created.walletId,
+              },
+              "Failed to fetch Turnkey wallet accounts (email suborg) for default public key",
+            );
+          }
+
           // Written only once the sub-org exists, in the same tx as the
           // resource, so a failed create leaves any previous
           // recovery_email untouched.
