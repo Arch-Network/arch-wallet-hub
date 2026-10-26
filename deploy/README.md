@@ -218,6 +218,13 @@ npx cdk deploy WalletHubStack -c corsAllowOrigins=https://hub.arch.network
 `npx cdk` resolves to the `aws-cdk` CLI pinned in `infra/cdk/package.json`.
 `corsAllowOrigins` is required; synthesis fails without it.
 
+### Security alerts
+
+CloudTrail, GuardDuty, and paging live in `WalletHubMonitoringStack` so
+they can be turned on without deploying this stack. Follow
+[RUNBOOK-phase3-hardening.md §D](../infra/cdk/RUNBOOK-phase3-hardening.md).
+Do not `cdk deploy WalletHubStack` to enable them.
+
 ### View logs
 
 ```bash
