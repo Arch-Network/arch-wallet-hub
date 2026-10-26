@@ -72,7 +72,7 @@ import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
 import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
 import { registerEmailSigninRoutes } from "./recoverySignin.js";
-import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
+import { listTurnkeyResourcesForUserForApp, lockEmailWallets } from "../db/queries.js";
 import {
   computeCandidateToken,
   countRecentChallenges,
@@ -369,9 +369,14 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         return emptyResponse(`chal_blocked_${Date.now().toString(36)}`);
       }
 
-      const users = await withDbTransaction(db, (client) =>
-        findUsersByRecoveryEmail(client, { appId, email })
-      );
+      // Waits out a create still in flight for this email (/signin/verify
+      // and /turnkey/email-wallets hold the lock through their Turnkey round
+      // trip), so a wallet seconds from existing is listed instead of
+      // answered as missing -- which a client would take as "create one".
+      const users = await withDbTransaction(db, async (client) => {
+        await lockEmailWallets(client, { appId, email });
+        return findUsersByRecoveryEmail(client, { appId, email });
+      });
 
       // Walk every user, collect their sub-org wallets. Post-P4
       // the only kinds we expect are passkey and email sub-org
