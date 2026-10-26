@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, preHandlerHookHandler } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
@@ -452,10 +452,21 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   // user. Idempotency, audit, and persistence semantics mirror
   // /turnkey/passkey-wallets verbatim so the operational/runbook
   // story is identical.
+  //
+  // SECURITY: closed unless EMAIL_WALLET_CREATE_ENABLED (config/env.ts).
+  // It takes the email on trust; /recovery/email/signin is the create
+  // path that proves the inbox before revealing the wallet.
+  const requireEmailWalletCreateEnabled: preHandlerHookHandler = async function (_request, reply) {
+    if (!server.config.EMAIL_WALLET_CREATE_ENABLED) {
+      return reply.gone("Email wallets are created through POST /v1/recovery/email/signin");
+    }
+  };
+
   server.post(
     "/turnkey/email-wallets",
     {
       preHandler: [
+        requireEmailWalletCreateEnabled,
         server.enforceSessionForRoute("turnkey.email-wallets.create"),
         server.requireSessionForExistingUser
       ],
