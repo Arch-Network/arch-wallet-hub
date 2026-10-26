@@ -50,7 +50,7 @@
     "vite-plugin-node-polyfills": "^0.28.0",
     "vitest": "^3.2.4",
     "wxt": "^0.20.20",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "overrides": {
     "@noble/curves": "^1.9.7",

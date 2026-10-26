@@ -36,8 +36,13 @@ export const ArchAccountToken = z.object({
 });
 export type ArchAccountToken = z.infer<typeof ArchAccountToken>;
 
+// Zod 4.6.6 checks this bound before it parses each element, so an
+// oversized indexer payload cannot allocate one issue per item
+// (GHSA-mrhx-c7xc-m3w5). A real account is nowhere near this.
+const MAX_ACCOUNT_TOKENS = 10_000;
+
 export const ArchAccountTokensResponse = z.object({
-  tokens: z.array(ArchAccountToken).default([]),
+  tokens: z.array(ArchAccountToken).max(MAX_ACCOUNT_TOKENS).default([]),
 });
 export type ArchAccountTokensResponse = z.infer<typeof ArchAccountTokensResponse>;
 
