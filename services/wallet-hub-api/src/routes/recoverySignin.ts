@@ -1,32 +1,42 @@
 /**
- * POST /recovery/email/signin -- email get-or-create without an
- * existence oracle.
+ * Email sign-in: the inbox is proven before any wallet exists, and an
+ * email signs in to exactly one wallet per app.
  *
- *   POST /recovery/email/signin  { email, walletName? }
+ *   POST /recovery/email/signin  { email }
  *     ├─ rate-limit by sha256(email), shared with /init
- *     ├─ under a per-(app, email) lock, look up the app's existing
- *     │  OTP-capable email wallet for the email; if none, create an
- *     │  email sub-org wallet for a fresh Hub user with a
- *     │  server-generated externalUserId
- *     ├─ persist a single-candidate recovery_challenges row
- *     └─ returns { challengeId, candidateToken, emailMasked, expiresAt }
+ *     ├─ Turnkey INIT_OTP_V3 under the parent org -- no lookup, no create
+ *     └─ { challengeId, otpEncryptionTargetBundle, emailMasked, expiresAt }
  *
- * The client then runs the unchanged /recovery/email/start and
- * /recovery/email/verify steps. Only /verify, after OTP_AUTH succeeds
- * for this exact email, reveals the wallet (existing or new).
+ *   POST /recovery/email/signin/verify  { challengeId, encryptedOtpBundle }
+ *     ├─ VERIFY_OTP_V2, 5 attempts per challenge. The client encrypted
+ *     │  the code and its session public key to Turnkey's enclave; the
+ *     │  Hub never sees the code.
+ *     ├─ under the per-(app, email) lock: the wallet the email already
+ *     │  signs in to, else its wallet from before sign-in existed, else
+ *     │  a new one -- pinned to the email (turnkey_resources.verified_email)
+ *     └─ { verificationToken, organizationId, walletId, ... }
  *
- * SECURITY: the response must be identical whether or not a wallet
- * already existed -- same status, same keys, no ids or addresses, and
- * a padded minimum latency so the Turnkey create on the "new" path is
- * not a timing signal. The caller's own externalUserId is deliberately
- * not accepted: attaching the new wallet to it pre-verification would
- * make GET /turnkey/wallets an existence oracle, and touching an
- * existing user without that user's session would bypass
- * requireSessionForExistingUser.
+ *   POST /recovery/email/signin/session
+ *       { challengeId, verificationToken, publicKey, clientSignature }
+ *     └─ OTP_LOGIN_V2 in that challenge's wallet -> { session, ... }
+ *
+ * SECURITY:
+ *   - /signin does the same work for every email, so its answer says
+ *     nothing about whether a wallet exists.
+ *   - A wallet is created only for an email whose code verified, and the
+ *     unique verified_email index keeps it to one per (app, email).
+ *   - The verification token is bound to the client's key: OTP_LOGIN_V2
+ *     needs that key's signature, so the token alone opens nothing.
+ *   - /session opens only the wallet its challenge resolved, never one
+ *     looked up from the (client-supplied) token's contact.
+ *   - The caller's own externalUserId is never accepted: a new wallet
+ *     belongs to a fresh Hub user, so no existing user gains a credential
+ *     without that user's session (requireSessionForExistingUser).
  */
 
 import type { FastifyInstance } from "fastify";
 import type { PoolClient } from "pg";
+import type { VerificationToken } from "@turnkey/sdk-types";
 import { Type } from "@sinclair/typebox";
 import { randomUUID } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
@@ -34,45 +44,113 @@ import { getDbPool } from "../db/pool.js";
 import { getOrCreateUserByExternalId, updateUserRecoveryEmail } from "../db/apps.js";
 import {
   findEmailWalletByRecoveryEmail,
+  findEmailWalletByVerifiedEmail,
   insertTurnkeyResource,
   lockEmailWallets,
+  pinVerifiedEmail,
   type EmailWalletRow
 } from "../db/queries.js";
 import {
-  computeCandidateToken,
   countRecentChallenges,
+  getRecoveryChallenge,
   hashEmailForRateLimit,
+  incrementRecoveryAttemptIfUnderCap,
   insertRecoveryChallenge,
+  markRecoveryChallengeStatus,
   maskAddress,
   maskEmail,
+  otpUserIdentifier,
   updateRecoveryChallengeCandidates,
   type RecoveryCandidate
 } from "../db/recovery.js";
+import { classifyRecoveryChallengeAvailability } from "../recovery/otpObservability.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
-import { padToMinimumDuration } from "../recovery/responseFloor.js";
 
-// Must exceed the typical Turnkey CREATE_SUB_ORGANIZATION + wallet
-// accounts round trip so both paths return after the same delay.
-export const SIGNIN_MIN_RESPONSE_MS = 4000;
+// Long enough to sign the login message and call /session.
+const VERIFICATION_TOKEN_TTL_SECONDS = "300";
+// The longest session Arch Wallet and arch-prime keep.
+const SESSION_TTL_SECONDS = 60 * 60;
 
 const SigninBody = Type.Object({
-  email: Type.String({ format: "email" }),
-  walletName: Type.Optional(Type.String({ minLength: 1, maxLength: 128 }))
+  email: Type.String({ format: "email" })
 });
 
 const SigninResponse = Type.Object({
   challengeId: Type.String(),
-  candidateToken: Type.String(),
+  otpEncryptionTargetBundle: Type.String(),
   emailMasked: Type.String(),
   expiresAt: Type.String()
 });
 
-export type SigninLimits = {
+const VerifyBody = Type.Object({
+  challengeId: Type.String({ format: "uuid" }),
+  encryptedOtpBundle: Type.String({ minLength: 1 })
+});
+
+const VerifyResponse = Type.Object({
+  verificationToken: Type.String(),
+  organizationId: Type.String(),
+  rootUserId: Type.Union([Type.String(), Type.Null()]),
+  walletId: Type.Union([Type.String(), Type.Null()]),
+  defaultAddress: Type.Union([Type.String(), Type.Null()]),
+  defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
+  externalUserId: Type.Union([Type.String(), Type.Null()]),
+  authMethod: Type.Literal("email")
+});
+
+const SessionBody = Type.Object({
+  challengeId: Type.String({ format: "uuid" }),
+  verificationToken: Type.String({ minLength: 1 }),
+  publicKey: Type.String({ minLength: 1 }),
+  clientSignature: Type.Object({
+    scheme: Type.Literal("CLIENT_SIGNATURE_SCHEME_API_P256"),
+    publicKey: Type.String({ minLength: 1 }),
+    message: Type.String({ minLength: 1 }),
+    signature: Type.String({ minLength: 1 })
+  })
+});
+
+const SessionResponse = Type.Object({
+  session: Type.String(),
+  organizationId: Type.String(),
+  expiresInSeconds: Type.Integer()
+});
+
+export type SigninOptions = {
   maxPerWindow: number;
   windowMs: number;
   challengeTtlMs: number;
+  maxVerifyAttempts: number;
+  /** The Hub's OTP email settings, as /start sends them to INIT_OTP_AUTH. */
+  otpEmail: () => Record<string, unknown> | undefined;
 };
+
+/** INIT_OTP_V3 takes the app name and sender fields beside, not inside, emailCustomization. */
+function initOtpEmailParams(settings: Record<string, unknown> | undefined) {
+  const { appName, sendFromEmailName, sendFromEmailAddress, replyToEmailAddress, ...emailCustomization } =
+    settings ?? {};
+  return {
+    appName: typeof appName === "string" ? appName : "Arch Wallet",
+    ...(typeof sendFromEmailAddress === "string" ? { sendFromEmailAddress } : {}),
+    ...(typeof sendFromEmailName === "string" ? { sendFromEmailSenderName: sendFromEmailName } : {}),
+    ...(typeof replyToEmailAddress === "string" ? { replyToEmailAddress } : {}),
+    ...(Object.keys(emailCustomization).length ? { emailCustomization } : {})
+  };
+}
+
+/**
+ * The email a verification token attests. Only for tokens the Hub just
+ * received from VERIFY_OTP_V2 itself: the signature is not checked here.
+ */
+function verifiedContact(verificationToken: string): string {
+  const payload = verificationToken.split(".")[1] ?? "";
+  const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as VerificationToken;
+  if (typeof claims.contact !== "string" || !claims.contact) {
+    throw new Error("Turnkey verification token has no contact");
+  }
+  return claims.contact.trim();
+}
 
 type NetworkDefaults = { addressFormat: string; derivationPath: string };
 
@@ -87,7 +165,6 @@ async function createEmailWalletForNewUser(
   params: {
     appId: string;
     email: string;
-    walletName: string | undefined;
     network: NetworkDefaults;
     log: { warn: (obj: object, msg: string) => void };
   }
@@ -101,7 +178,7 @@ async function createEmailWalletForNewUser(
     subOrganizationName: `arch-${params.appId}-${externalUserId}-email`,
     rootUser: { userName: externalUserId, userEmail: params.email },
     wallet: {
-      walletName: params.walletName ?? `arch-embedded-${user.id.slice(0, 8)}-${Date.now().toString(36)}`,
+      walletName: `arch-embedded-${user.id.slice(0, 8)}-${Date.now().toString(36)}`,
       addressFormat: params.network.addressFormat,
       path: params.network.derivationPath
     }
@@ -163,99 +240,270 @@ function toCandidate(row: EmailWalletRow): RecoveryCandidate {
   };
 }
 
-export function registerEmailSigninRoute(server: FastifyInstance, limits: SigninLimits) {
+
+export function registerEmailSigninRoutes(server: FastifyInstance, options: SigninOptions) {
   server.post(
     "/recovery/email/signin",
     {
       schema: {
-        summary:
-          "Email sign-in: get-or-create the app's email wallet for this email, revealed only after OTP verify",
+        summary: "Email sign-in: email a code; no wallet is looked up or created",
         tags: ["recovery"],
         body: SigninBody,
         response: { 200: SigninResponse }
       }
     },
     async (request, reply) => {
-      const startedAtMs = Date.now();
       const appId = (request as any).app?.appId;
       if (!appId) return reply.unauthorized("Missing app context");
 
       const db = getDbPool();
-      const body = request.body as typeof SigninBody.static;
-      const email = body.email.trim();
+      const email = (request.body as typeof SigninBody.static).email.trim();
       const emailHash = hashEmailForRateLimit(email);
 
-      // Counts depend only on how often this email was asked about, not
-      // on whether it has a wallet, so an explicit 429 is not an oracle.
+      // Counts only /signin's own challenges, one per request whatever the
+      // email: /init stores a row only for an email that has a wallet, so
+      // counting those would make this 429 an existence oracle.
       const recentCount = await withDbTransaction(db, (client) =>
-        countRecentChallenges(client, { appId, emailHash, windowMs: limits.windowMs })
+        countRecentChallenges(client, { appId, emailHash, windowMs: options.windowMs, signinOnly: true })
       );
-      if (recentCount >= limits.maxPerWindow) {
+      if (recentCount >= options.maxPerWindow) {
         request.log.warn({ appId, emailHash, recentCount }, "recovery.signin.rate_limited");
         return reply.tooManyRequests("Too many sign-in attempts for this email; try again later");
       }
 
-      // ponytail: the lock's transaction holds a pool connection through
-      // the Turnkey create (up to its 30 s activity poll), so a replica runs
-      // at most pool-size new-email sign-ups at once. If sign-up bursts
-      // outgrow that, commit a claim row under a short lock and have
-      // waiters poll it instead.
-      const { target, reused } = await withDbTransaction(db, async (client) => {
-        await lockEmailWallets(client, { appId, email });
-        const existing = await findEmailWalletByRecoveryEmail(client, {
-          appId,
-          email,
-          rootOrganizationId: server.config.TURNKEY_ORGANIZATION_ID
-        });
-        if (existing) return { target: existing, reused: true };
-        const created = await createEmailWalletForNewUser(client, {
-          appId,
-          email,
-          walletName: body.walletName,
-          network: networkDefaults(request.headers["x-network"] as string | undefined),
-          log: request.log
-        });
-        return { target: created, reused: false };
+      const otp = await getTurnkeyClient().initOtp({
+        contact: email,
+        userIdentifier: otpUserIdentifier(appId, email),
+        expirationSeconds: String(options.challengeTtlMs / 1000),
+        ...initOtpEmailParams(options.otpEmail())
       });
-
-      if (!target.turnkey_root_user_id) {
-        throw new Error("Turnkey did not return a root user for the new email sub-org");
-      }
 
       const challenge = await withDbTransaction(db, async (client) => {
         const row = await insertRecoveryChallenge(client, {
           appId,
           emailHash,
-          candidates: [toCandidate(target)],
-          ttlMs: limits.challengeTtlMs
-        });
-        const candidateToken = computeCandidateToken(row.id, target.id);
-        await updateRecoveryChallengeCandidates(client, {
-          id: row.id,
-          candidates: [{ ...toCandidate(target), candidateToken }]
+          candidates: [],
+          ttlMs: options.challengeTtlMs,
+          otpId: otp.otpId
         });
         await auditEvent({
           client,
           appId,
           requestId: request.id,
-          userId: target.user_id,
+          userId: null,
           eventType: "recovery.signin",
           entityType: "recovery_challenge",
           entityId: row.id,
-          turnkeyActivityId: null,
+          turnkeyActivityId: otp.activityId,
           turnkeyRequestId: null,
-          payloadJson: { emailHash, candidateResourceId: target.id, reused },
+          payloadJson: { emailHash },
           outcome: "succeeded"
         });
-        return { id: row.id, expiresAt: row.expires_at, candidateToken };
+        return row;
       });
 
-      await padToMinimumDuration(startedAtMs, SIGNIN_MIN_RESPONSE_MS);
       return {
         challengeId: challenge.id,
-        candidateToken: challenge.candidateToken,
+        otpEncryptionTargetBundle: otp.otpEncryptionTargetBundle,
         emailMasked: maskEmail(email),
-        expiresAt: challenge.expiresAt
+        expiresAt: challenge.expires_at
+      };
+    }
+  );
+
+  server.post(
+    "/recovery/email/signin/verify",
+    {
+      schema: {
+        summary:
+          "Verify the encrypted code; returns the email's one wallet, creating it if the email has none",
+        tags: ["recovery"],
+        body: VerifyBody,
+        response: { 200: VerifyResponse }
+      }
+    },
+    async (request, reply) => {
+      const appId = (request as any).app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const db = getDbPool();
+      const body = request.body as typeof VerifyBody.static;
+      const audit = (client: PoolClient, outcome: "succeeded" | "failed", payloadJson: object, userId: string | null = null) =>
+        auditEvent({
+          client,
+          appId,
+          requestId: request.id,
+          userId,
+          eventType: "recovery.signin.verify",
+          entityType: "recovery_challenge",
+          entityId: body.challengeId,
+          turnkeyActivityId: null,
+          turnkeyRequestId: null,
+          payloadJson,
+          outcome
+        });
+
+      const challenge = await withDbTransaction(db, (client) =>
+        getRecoveryChallenge(client, { appId, id: body.challengeId })
+      );
+      if (!challenge?.otp_id) return reply.notFound("Unknown challenge");
+      const availability = classifyRecoveryChallengeAvailability(challenge);
+      if (availability === "not_pending") return reply.gone("Challenge already consumed or expired");
+      if (availability === "expired") {
+        await withDbTransaction(db, (client) =>
+          markRecoveryChallengeStatus(client, { id: challenge.id, status: "expired" })
+        );
+        return reply.gone("Challenge expired");
+      }
+
+      // Counted before Turnkey sees the code, in one UPDATE, so
+      // concurrent guesses cannot slip past the cap. A refusal leaves the
+      // status alone: it is also what a verify racing one that just
+      // consumed the challenge gets, and that one's /session must still work.
+      const counted = await withDbTransaction(db, (client) =>
+        incrementRecoveryAttemptIfUnderCap(client, {
+          id: challenge.id,
+          appId,
+          maxAttempts: options.maxVerifyAttempts
+        })
+      );
+      if (!counted) {
+        await withDbTransaction(db, (client) => audit(client, "failed", { reason: "attempt_refused" }));
+        return reply.tooManyRequests("Too many verification attempts");
+      }
+
+      let verificationToken: string;
+      try {
+        ({ verificationToken } = await getTurnkeyClient().verifyOtp({
+          otpId: challenge.otp_id,
+          encryptedOtpBundle: body.encryptedOtpBundle,
+          expirationSeconds: VERIFICATION_TOKEN_TTL_SECONDS
+        }));
+      } catch (err: any) {
+        request.log.warn(
+          { appId, challengeId: challenge.id, attempt: counted.attempts, err: String(err?.message ?? err) },
+          "recovery.signin.verify.rejected"
+        );
+        await withDbTransaction(db, (client) =>
+          audit(client, "failed", { reason: "invalid_code", attempt: counted.attempts })
+        );
+        return reply.unauthorized("Invalid or expired code");
+      }
+
+      const email = verifiedContact(verificationToken);
+      if (hashEmailForRateLimit(email) !== challenge.email_hash) {
+        throw new Error("Turnkey verified a different email than this challenge was sent to");
+      }
+
+      // ponytail: the transaction holds a pool connection through a
+      // Turnkey create (up to its 30 s activity poll), so a replica runs at
+      // most pool-size first sign-ins at once. If bursts outgrow that,
+      // commit a claim row under a short lock and have waiters poll it.
+      const wallet = await withDbTransaction(db, async (client) => {
+        await lockEmailWallets(client, { appId, email });
+        let row = await findEmailWalletByVerifiedEmail(client, { appId, email });
+        let created = false;
+        if (!row) {
+          row = await findEmailWalletByRecoveryEmail(client, {
+            appId,
+            email,
+            rootOrganizationId: server.config.TURNKEY_ORGANIZATION_ID
+          });
+          if (!row) {
+            row = await createEmailWalletForNewUser(client, {
+              appId,
+              email,
+              network: networkDefaults(request.headers["x-network"] as string | undefined),
+              log: request.log
+            });
+            created = true;
+          }
+          await pinVerifiedEmail(client, { appId, resourceId: row.id, email });
+        }
+        await updateRecoveryChallengeCandidates(client, { id: challenge.id, candidates: [toCandidate(row)] });
+        await markRecoveryChallengeStatus(client, { id: challenge.id, status: "consumed" });
+        await audit(client, "succeeded", { resourceId: row.id, created }, row.user_id);
+        return row;
+      });
+
+      return {
+        verificationToken,
+        organizationId: wallet.organization_id,
+        rootUserId: wallet.turnkey_root_user_id,
+        walletId: wallet.wallet_id,
+        defaultAddress: wallet.default_address,
+        defaultPublicKeyHex: wallet.default_public_key_hex,
+        externalUserId: wallet.external_user_id,
+        authMethod: "email" as const
+      };
+    }
+  );
+
+  server.post(
+    "/recovery/email/signin/session",
+    {
+      schema: {
+        summary: "Open a Turnkey session for the client's key in the wallet a verified sign-in resolved",
+        tags: ["recovery"],
+        body: SessionBody,
+        response: { 200: SessionResponse }
+      }
+    },
+    async (request, reply) => {
+      const appId = (request as any).app?.appId;
+      if (!appId) return reply.unauthorized("Missing app context");
+
+      const db = getDbPool();
+      const body = request.body as typeof SessionBody.static;
+      const challenge = await withDbTransaction(db, (client) =>
+        getRecoveryChallenge(client, { appId, id: body.challengeId })
+      );
+      const wallet =
+        challenge?.otp_id && challenge.status === "consumed" && Date.parse(challenge.expires_at) > Date.now()
+          ? challenge.candidates[0]
+          : undefined;
+      if (!wallet) return reply.unauthorized("Sign-in expired; request a new code");
+
+      const audit = (outcome: "succeeded" | "failed", payloadJson: object, turnkeyActivityId: string | null) =>
+        withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: wallet.userId,
+            eventType: "recovery.signin.session",
+            entityType: "recovery_challenge",
+            entityId: body.challengeId,
+            turnkeyActivityId,
+            turnkeyRequestId: null,
+            payloadJson,
+            outcome
+          })
+        );
+
+      let login: { session: string; activityId: string };
+      try {
+        login = await getTurnkeyClient().otpLogin({
+          organizationId: wallet.organizationId,
+          verificationToken: body.verificationToken,
+          publicKey: body.publicKey,
+          clientSignature: body.clientSignature,
+          expirationSeconds: String(SESSION_TTL_SECONDS)
+        });
+      } catch (err: any) {
+        request.log.warn(
+          { appId, challengeId: body.challengeId, err: String(err?.message ?? err) },
+          "recovery.signin.session.rejected"
+        );
+        await audit("failed", { resourceId: wallet.resourceId }, null);
+        return reply.unauthorized("Invalid verification");
+      }
+
+      await audit("succeeded", { resourceId: wallet.resourceId }, login.activityId);
+      return {
+        session: login.session,
+        organizationId: wallet.organizationId,
+        expiresInSeconds: SESSION_TTL_SECONDS
       };
     }
   );

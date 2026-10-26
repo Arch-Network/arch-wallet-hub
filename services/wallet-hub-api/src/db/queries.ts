@@ -198,12 +198,13 @@ export type EmailWalletRow = TurnkeyResourceRow & { external_user_id: string | n
 
 /**
  * Find the earliest OTP-capable email wallet registered to `email` within
- * `appId`, across every user of that app that shares the recovery email.
+ * `appId`, across every user of that app that shares the recovery email,
+ * that no email has signed in to yet. This is how a wallet created before
+ * sign-in existed gets its `verified_email`.
  *
- * SECURITY: the row belongs to whoever owns the email, not to the caller.
- * Only POST /recovery/email/signin may call this, and it must never put
- * any field of the row in a response: the wallet is revealed only by
- * /recovery/email/verify after OTP_AUTH succeeds for this email.
+ * SECURITY: the row belongs to whoever owns the email. Only
+ * /recovery/email/signin/verify may call this, after VERIFY_OTP_V2 has
+ * proven the caller holds the inbox.
  *
  * Both tables are pinned to `appId` so the lookup can never cross apps.
  * Parent-org rows and rows without a root user are excluded because
@@ -235,6 +236,7 @@ export async function findEmailWalletByRecoveryEmail(
         AND r.turnkey_root_user_id IS NOT NULL
         AND r.default_address IS NOT NULL
         AND r.default_public_key_hex IS NOT NULL
+        AND r.verified_email IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM turnkey_resources o WHERE o.user_id = r.user_id AND o.id <> r.id
         )
@@ -262,6 +264,44 @@ export async function lockEmailWallets(
   await client.query(`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, [
     `email-wallet:${params.appId}:${params.email.trim().toLowerCase()}`
   ]);
+}
+
+/** The wallet `email` signs in to within `appId` (unique, migration 019). */
+export async function findEmailWalletByVerifiedEmail(
+  client: PoolClient,
+  params: { appId: string; email: string }
+): Promise<EmailWalletRow | null> {
+  const res = await client.query<EmailWalletRow>(
+    `
+      SELECT r.*, u.external_user_id
+      FROM turnkey_resources r
+      JOIN users u ON u.id = r.user_id AND u.app_id = r.app_id
+      WHERE r.app_id = $1 AND r.verified_email = $2
+    `,
+    [params.appId, params.email.trim().toLowerCase()]
+  );
+  return res.rows[0] ?? null;
+}
+
+/**
+ * Makes this wallet the one `email` signs in to. Call only after the
+ * email's OTP verified, under lockEmailWallets. Never moves a wallet that
+ * another email already signs in to.
+ */
+export async function pinVerifiedEmail(
+  client: PoolClient,
+  params: { appId: string; resourceId: string; email: string }
+): Promise<void> {
+  const res = await client.query(
+    `
+      UPDATE turnkey_resources SET verified_email = $3
+      WHERE id = $1 AND app_id = $2 AND verified_email IS NULL
+    `,
+    [params.resourceId, params.appId, params.email.trim().toLowerCase()]
+  );
+  if (res.rowCount !== 1) {
+    throw new Error("Email wallet is already pinned to another email");
+  }
 }
 
 export type InsertAuditLogParams = {

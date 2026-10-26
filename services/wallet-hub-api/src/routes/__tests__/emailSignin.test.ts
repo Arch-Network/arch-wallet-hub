@@ -3,19 +3,26 @@ import Fastify from "fastify";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * Regression guards for email get-or-create (POST /recovery/email/signin):
- *   - the pre-verification response is identical whether or not the email
- *     already has a wallet, and never carries ids or addresses;
- *   - the wallet (existing or new) is revealed only by /verify after
- *     OTP_AUTH succeeds; a wrong or expired code reveals nothing;
- *   - the existing-wallet lookup is pinned to the calling app.
+ * Regression guards for email sign-in (/recovery/email/signin, /verify, /session):
+ *   - /signin only sends a code: no lookup, no create, the same answer for
+ *     every email;
+ *   - a wallet is created only after VERIFY_OTP_V2 accepts the code, and an
+ *     email signs in to one wallet: pinned, then reused;
+ *   - a wrong code reveals and creates nothing;
+ *   - /session opens only the wallet its verified challenge resolved.
  */
 
 const ROOT_ORG = "root-org";
 const EMAIL = "victim@example.com";
 
+function tokenFor(contact: string): string {
+  const claims = { contact, exp: 4102444800, id: "token-1", public_key: "02" + "ee".repeat(32), verification_type: "OTP_TYPE_EMAIL" };
+  return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+}
+
 const mocks = vi.hoisted(() => {
   const challenges = new Map<string, any>();
+  const wallets: any[] = [];
   // Stands in for pg_advisory_xact_lock: held until the transaction that took it ends.
   const locks = new Map<string, Promise<void>>();
   let seq = 0;
@@ -23,10 +30,20 @@ const mocks = vi.hoisted(() => {
     const row = challenges.get(p.id);
     return row && row.app_id === p.appId ? structuredClone(row) : null;
   };
+  const created = () => ({
+    subOrganizationId: "new-sub-org",
+    rootUserId: "new-root-user",
+    walletId: "new-wallet",
+    addresses: ["tb1p-new-address"],
+    activityId: "act-create",
+  });
   return {
     challenges,
+    wallets,
+    created,
     reset: () => {
       challenges.clear();
+      wallets.length = 0;
       locks.clear();
       seq = 0;
     },
@@ -37,23 +54,37 @@ const mocks = vi.hoisted(() => {
       locks.set(key, new Promise<void>((resolve) => (release = () => (locks.delete(key), resolve()))));
       client.releases.push(release);
     }),
+    findEmailWalletByVerifiedEmail: vi.fn(async (_c: unknown, p: { appId: string; email: string }) => {
+      const wallet = wallets.find((w) => w.app_id === p.appId && w.verified_email === p.email.toLowerCase());
+      // The real query joins users for external_user_id.
+      return wallet ? { external_user_id: null, ...wallet } : null;
+    }),
     findEmailWalletByRecoveryEmail: vi.fn(async (_c: unknown, _p: any): Promise<any> => null),
-    insertTurnkeyResource: vi.fn(async (_c: unknown, p: any) => ({
-      id: "new-resource",
-      app_id: p.appId,
-      user_id: p.userId,
-      organization_id: p.organizationId,
-      turnkey_root_user_id: p.turnkeyRootUserId,
-      wallet_id: p.walletId,
-      default_address: p.defaultAddress,
-      default_public_key_hex: p.defaultPublicKeyHex,
-      auth_method: p.authMethod,
-      created_at: "2026-10-01T00:00:00Z",
-    })),
+    pinVerifiedEmail: vi.fn(async (_c: unknown, p: { resourceId: string; email: string }) => {
+      const wallet = wallets.find((w) => w.id === p.resourceId);
+      if (!wallet || wallet.verified_email) throw new Error("Email wallet is already pinned to another email");
+      wallet.verified_email = p.email.toLowerCase();
+    }),
+    insertTurnkeyResource: vi.fn(async (_c: unknown, p: any) => {
+      const row = {
+        id: "new-resource",
+        app_id: p.appId,
+        user_id: p.userId,
+        organization_id: p.organizationId,
+        turnkey_root_user_id: p.turnkeyRootUserId,
+        wallet_id: p.walletId,
+        default_address: p.defaultAddress,
+        default_public_key_hex: p.defaultPublicKeyHex,
+        auth_method: p.authMethod,
+        created_at: "2026-10-01T00:00:00Z",
+        verified_email: null,
+      };
+      wallets.push(row);
+      return row;
+    }),
     getOrCreateUserByExternalId: vi.fn(async () => ({ id: "new-user" })),
     updateUserRecoveryEmail: vi.fn(async () => undefined),
     countRecentChallenges: vi.fn(async () => 0),
-    padToMinimumDuration: vi.fn(async () => undefined),
     recovery: {
       insertRecoveryChallenge: vi.fn(async (_c: unknown, p: any) => {
         const row = {
@@ -66,12 +97,12 @@ const mocks = vi.hoisted(() => {
           created_at: new Date().toISOString(),
           expires_at: new Date(Date.now() + p.ttlMs).toISOString(),
           consumed_at: null,
+          otp_id: p.otpId ?? null,
         };
         challenges.set(row.id, row);
         return structuredClone(row);
       }),
       getRecoveryChallenge: get,
-      getRecoveryChallengeForUpdate: get,
       updateRecoveryChallengeCandidates: async (_c: unknown, p: any) => {
         challenges.get(p.id).candidates = p.candidates;
       },
@@ -84,32 +115,18 @@ const mocks = vi.hoisted(() => {
       markRecoveryChallengeStatus: async (_c: unknown, p: any) => {
         challenges.get(p.id).status = p.status;
       },
-      resetRecoveryAttempts: async (_c: unknown, p: any) => {
-        challenges.get(p.id).attempts = 0;
-      },
     },
     turnkey: {
-      createSubOrganizationWithEmailWallet: vi.fn(async () => ({
-        subOrganizationId: "new-sub-org",
-        rootUserId: "new-root-user",
-        walletId: "new-wallet",
-        addresses: ["tb1p-new-address"],
-        activityId: "act-create",
+      initOtp: vi.fn(async (_p: any) => ({
+        otpId: "otp-1",
+        otpEncryptionTargetBundle: "target-bundle",
+        activityId: "act-init",
       })),
+      verifyOtp: vi.fn(async (_p: any): Promise<any> => ({ verificationToken: "", activityId: "act-verify" })),
+      otpLogin: vi.fn(async (_p: any) => ({ session: "session-jwt", activityId: "act-login" })),
+      createSubOrganizationWithEmailWallet: vi.fn(async (_p: any) => created()),
       getWalletAccountsForOrganization: vi.fn(async () => ({
         accounts: [{ address: "tb1p-new-address", publicKey: "02" + "cc".repeat(32) }],
-      })),
-      initOtpAuth: vi.fn(async () => ({
-        otpId: "otp-1",
-        activityId: "act-otp",
-        submitElapsedMs: 1,
-        pollElapsedMs: 1,
-        pollAttempts: 1,
-      })),
-      otpAuth: vi.fn(async (): Promise<any> => ({
-        credentialBundle: "bundle",
-        apiKeyId: "api-key",
-        activityId: "act-auth",
       })),
     },
   };
@@ -128,9 +145,6 @@ vi.mock("../../db/tx.js", () => ({
 }));
 vi.mock("../../audit/audit.js", () => ({ auditEvent: async () => undefined }));
 vi.mock("../../turnkey/store.js", () => ({ getTurnkeyClient: () => mocks.turnkey }));
-vi.mock("../../recovery/responseFloor.js", () => ({
-  padToMinimumDuration: mocks.padToMinimumDuration,
-}));
 vi.mock("../../db/apps.js", async (orig) => ({
   ...(await orig<typeof import("../../db/apps.js")>()),
   getOrCreateUserByExternalId: mocks.getOrCreateUserByExternalId,
@@ -138,7 +152,9 @@ vi.mock("../../db/apps.js", async (orig) => ({
 }));
 vi.mock("../../db/queries.js", async (orig) => ({
   ...(await orig<typeof import("../../db/queries.js")>()),
+  findEmailWalletByVerifiedEmail: mocks.findEmailWalletByVerifiedEmail,
   findEmailWalletByRecoveryEmail: mocks.findEmailWalletByRecoveryEmail,
+  pinVerifiedEmail: mocks.pinVerifiedEmail,
   insertTurnkeyResource: mocks.insertTurnkeyResource,
   lockEmailWallets: mocks.lockEmailWallets,
 }));
@@ -149,9 +165,8 @@ vi.mock("../../db/recovery.js", async (orig) => ({
 }));
 
 import { registerRecoveryRoutes } from "../recovery.js";
-import { SIGNIN_MIN_RESPONSE_MS } from "../recoverySignin.js";
 
-function existingWallet() {
+function walletRow(overrides: Record<string, unknown> = {}) {
   return {
     id: "victim-resource",
     app_id: "app",
@@ -164,6 +179,8 @@ function existingWallet() {
     default_public_key_hex: "02" + "aa".repeat(32),
     auth_method: "email",
     created_at: "2026-01-01T00:00:00Z",
+    verified_email: null as string | null,
+    ...overrides,
   };
 }
 
@@ -179,221 +196,279 @@ async function buildServer() {
   return app;
 }
 
+type App = Awaited<ReturnType<typeof buildServer>>;
+
 const LEAK_PATTERN = /victim-(user|external|sub-org|wallet|resource|root-user)|tb1p-|new-(user|sub-org|wallet|resource)/;
 
-async function signin(app: Awaited<ReturnType<typeof buildServer>>) {
-  return app.inject({ method: "POST", url: "/v1/recovery/email/signin", payload: { email: EMAIL } });
-}
+const signin = (app: App, email = EMAIL) =>
+  app.inject({ method: "POST", url: "/v1/recovery/email/signin", payload: { email } });
 
-async function startAndVerify(
-  app: Awaited<ReturnType<typeof buildServer>>,
-  challenge: { challengeId: string; candidateToken: string },
-) {
-  const start = await app.inject({
+const verify = (app: App, challengeId: string) =>
+  app.inject({
     method: "POST",
-    url: "/v1/recovery/email/start",
-    payload: { ...challenge, email: EMAIL },
+    url: "/v1/recovery/email/signin/verify",
+    payload: { challengeId, encryptedOtpBundle: "encrypted-otp-bundle" },
   });
-  expect(start.statusCode).toBe(200);
-  return app.inject({
-    method: "POST",
-    url: "/v1/recovery/email/verify",
-    payload: { ...challenge, code: "123456", ephemeralPublicKey: "04" + "dd".repeat(64) },
-  });
-}
 
-describe("POST /recovery/email/signin", () => {
+const session = (app: App, challengeId: string) =>
+  app.inject({
+    method: "POST",
+    url: "/v1/recovery/email/signin/session",
+    payload: {
+      challengeId,
+      verificationToken: tokenFor(EMAIL),
+      publicKey: "02" + "ee".repeat(32),
+      clientSignature: {
+        scheme: "CLIENT_SIGNATURE_SCHEME_API_P256",
+        publicKey: "02" + "ee".repeat(32),
+        message: '{"login":{"publicKey":"02ee"},"tokenId":"token-1","type":"USAGE_TYPE_LOGIN"}',
+        signature: "ab".repeat(64),
+      },
+    },
+  });
+
+describe("email sign-in", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.reset();
-    mocks.findEmailWalletByRecoveryEmail.mockResolvedValue(null);
     mocks.countRecentChallenges.mockResolvedValue(0);
+    mocks.findEmailWalletByRecoveryEmail.mockResolvedValue(null);
+    mocks.turnkey.verifyOtp.mockResolvedValue({ verificationToken: tokenFor(EMAIL), activityId: "act-verify" });
   });
 
-  it("returns an indistinguishable pre-verification response for existing and new emails", async () => {
+  it("/signin sends a code without looking up or creating a wallet, and answers every email alike", async () => {
     const app = await buildServer();
+    mocks.wallets.push(walletRow({ verified_email: EMAIL }));
 
-    mocks.findEmailWalletByRecoveryEmail.mockResolvedValueOnce(existingWallet());
-    const existing = await signin(app);
-    const fresh = await signin(app);
+    const known = await signin(app);
+    const unknown = await signin(app, "nobody@example.com");
 
-    expect(existing.statusCode).toBe(200);
-    expect(fresh.statusCode).toBe(200);
-    const a = existing.json();
-    const b = fresh.json();
-    expect(Object.keys(a).sort()).toEqual(["candidateToken", "challengeId", "emailMasked", "expiresAt"]);
-    expect(Object.keys(b).sort()).toEqual(Object.keys(a).sort());
-    expect(a.emailMasked).toBe(b.emailMasked);
-    expect(existing.payload).not.toMatch(LEAK_PATTERN);
-    expect(fresh.payload).not.toMatch(LEAK_PATTERN);
-
-    // Both paths pad to the same latency floor from request start.
-    expect(mocks.padToMinimumDuration).toHaveBeenCalledTimes(2);
-    for (const call of mocks.padToMinimumDuration.mock.calls as unknown as unknown[][]) {
-      expect(call[1]).toBe(SIGNIN_MIN_RESPONSE_MS);
-    }
-    // No Turnkey OTP is sent from signin on either path.
-    expect(mocks.turnkey.initOtpAuth).not.toHaveBeenCalled();
-  });
-
-  it("creates one wallet when two sign-ups for the same new email overlap", async () => {
-    const app = await buildServer();
-    let stored: any = null;
-    mocks.findEmailWalletByRecoveryEmail.mockImplementation(async () => stored);
-    const insert = mocks.insertTurnkeyResource.getMockImplementation()!;
-    mocks.insertTurnkeyResource.mockImplementationOnce(async (c, p) => (stored = await insert(c, p)));
-    const create = mocks.turnkey.createSubOrganizationWithEmailWallet.getMockImplementation()!;
-    mocks.turnkey.createSubOrganizationWithEmailWallet.mockImplementationOnce(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return create();
-    });
-
-    const [first, second] = await Promise.all([
-      signin(app),
-      app.inject({ method: "POST", url: "/v1/recovery/email/signin", payload: { email: "Victim@Example.COM" } }),
-    ]);
-
-    expect(first.statusCode).toBe(200);
-    expect(second.statusCode).toBe(200);
-    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).toHaveBeenCalledTimes(1);
-    const resourceOf = (res: typeof first) => mocks.challenges.get(res.json().challengeId).candidates[0].resourceId;
-    expect(resourceOf(first)).toBe("new-resource");
-    expect(resourceOf(second)).toBe("new-resource");
-  });
-
-  it("never attaches anything to a caller-supplied externalUserId", async () => {
-    const app = await buildServer();
-    const res = await app.inject({
-      method: "POST",
-      url: "/v1/recovery/email/signin",
-      payload: { email: EMAIL, externalUserId: "attacker" },
-    });
-    expect(res.statusCode).toBe(200);
-    const calls = mocks.getOrCreateUserByExternalId.mock.calls as unknown as Array<[unknown, any]>;
-    expect(calls).toHaveLength(1);
-    expect(calls[0]![1].externalUserId).toMatch(/^email-[0-9a-f-]{36}$/);
-  });
-
-  it("returns the existing wallet only after a correct OTP and does not create another", async () => {
-    const app = await buildServer();
-    mocks.findEmailWalletByRecoveryEmail.mockResolvedValueOnce(existingWallet());
-    const res = await signin(app);
-
-    const verify = await startAndVerify(app, res.json());
-
-    expect(verify.statusCode).toBe(200);
-    expect(verify.json()).toMatchObject({
-      organizationId: "victim-sub-org",
-      walletId: "victim-wallet",
-      defaultAddress: "tb1p-victim-address",
-      externalUserId: "victim-external",
-      authMethod: "email",
-      credentialBundle: "bundle",
-    });
-    expect(mocks.turnkey.initOtpAuth).toHaveBeenCalledWith(
-      expect.objectContaining({ organizationId: "victim-sub-org", userId: "victim-root-user", contact: EMAIL }),
+    expect(known.statusCode).toBe(200);
+    expect(unknown.statusCode).toBe(200);
+    expect(Object.keys(known.json()).sort()).toEqual(["challengeId", "emailMasked", "expiresAt", "otpEncryptionTargetBundle"]);
+    expect(Object.keys(unknown.json()).sort()).toEqual(Object.keys(known.json()).sort());
+    expect(known.payload).not.toMatch(LEAK_PATTERN);
+    expect(mocks.turnkey.initOtp).toHaveBeenCalledWith(
+      expect.objectContaining({ contact: EMAIL, appName: "Arch Wallet", expirationSeconds: "600" }),
     );
+    expect(mocks.findEmailWalletByVerifiedEmail).not.toHaveBeenCalled();
+    expect(mocks.findEmailWalletByRecoveryEmail).not.toHaveBeenCalled();
     expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
-    expect(mocks.insertTurnkeyResource).not.toHaveBeenCalled();
+    expect(mocks.challenges.get(known.json().challengeId)).toMatchObject({ otp_id: "otp-1", candidates: [] });
   });
 
-  it("creates a wallet for a new email and reveals it only after a correct OTP", async () => {
+  it("rate-limits per email before sending a code", async () => {
     const app = await buildServer();
+    mocks.countRecentChallenges.mockResolvedValue(10);
     const res = await signin(app);
+    expect(res.statusCode).toBe(429);
+    expect(mocks.turnkey.initOtp).not.toHaveBeenCalled();
+    // /init rows exist only for emails with a wallet; counting them would leak that.
+    expect(mocks.countRecentChallenges).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ signinOnly: true }));
+  });
 
-    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).toHaveBeenCalledTimes(1);
-    expect(mocks.insertTurnkeyResource).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ appId: "app", userId: "new-user", authMethod: "email" }),
-    );
-    expect(mocks.updateUserRecoveryEmail).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ appId: "app", userId: "new-user", email: EMAIL }),
-    );
+  it("creates a wallet only after the code verifies, pins it to the email, and reveals it", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
 
-    const verify = await startAndVerify(app, res.json());
-    expect(verify.statusCode).toBe(200);
-    expect(verify.json()).toMatchObject({
+    const res = await verify(app, challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(mocks.turnkey.verifyOtp).toHaveBeenCalledWith(
+      expect.objectContaining({ otpId: "otp-1", encryptedOtpBundle: "encrypted-otp-bundle" }),
+    );
+    expect(mocks.turnkey.verifyOtp.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.turnkey.createSubOrganizationWithEmailWallet.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).toHaveBeenCalledWith(
+      expect.objectContaining({ rootUser: expect.objectContaining({ userEmail: EMAIL }) }),
+    );
+    expect(mocks.pinVerifiedEmail).toHaveBeenCalledWith(expect.anything(), {
+      appId: "app",
+      resourceId: "new-resource",
+      email: EMAIL,
+    });
+    expect(res.json()).toMatchObject({
+      verificationToken: tokenFor(EMAIL),
       organizationId: "new-sub-org",
       walletId: "new-wallet",
       defaultAddress: "tb1p-new-address",
       authMethod: "email",
     });
-    expect(verify.json().externalUserId).toMatch(/^email-/);
+    expect(res.json().externalUserId).toMatch(/^email-[0-9a-f-]{36}$/);
+    expect(mocks.challenges.get(challengeId).status).toBe("consumed");
   });
 
-  it("returns no wallet details for a wrong OTP", async () => {
+  it("returns the email's pinned wallet on every later sign-in without creating another", async () => {
     const app = await buildServer();
-    mocks.findEmailWalletByRecoveryEmail.mockResolvedValueOnce(existingWallet());
-    const res = await signin(app);
-    mocks.turnkey.otpAuth.mockRejectedValueOnce(new Error("invalid otp"));
+    mocks.wallets.push(walletRow({ verified_email: EMAIL }));
 
-    const verify = await startAndVerify(app, res.json());
+    const res = await verify(app, (await signin(app)).json().challengeId);
 
-    expect(verify.statusCode).toBe(401);
-    expect(verify.payload).not.toMatch(LEAK_PATTERN);
-  });
-
-  it("returns no wallet details for an expired challenge", async () => {
-    const app = await buildServer();
-    mocks.findEmailWalletByRecoveryEmail.mockResolvedValueOnce(existingWallet());
-    const challenge = (await signin(app)).json();
-    const start = await app.inject({
-      method: "POST",
-      url: "/v1/recovery/email/start",
-      payload: { ...challenge, email: EMAIL },
-    });
-    expect(start.statusCode).toBe(200);
-    mocks.challenges.get(challenge.challengeId).expires_at = new Date(Date.now() - 1000).toISOString();
-
-    const verify = await app.inject({
-      method: "POST",
-      url: "/v1/recovery/email/verify",
-      payload: { ...challenge, code: "123456", ephemeralPublicKey: "04" + "dd".repeat(64) },
-    });
-
-    expect(verify.statusCode).toBe(410);
-    expect(verify.payload).not.toMatch(LEAK_PATTERN);
-    expect(mocks.turnkey.otpAuth).not.toHaveBeenCalled();
-  });
-
-  it("refuses to send the OTP to a different email than the one signed in with", async () => {
-    const app = await buildServer();
-    mocks.findEmailWalletByRecoveryEmail.mockResolvedValueOnce(existingWallet());
-    const challenge = (await signin(app)).json();
-    const start = await app.inject({
-      method: "POST",
-      url: "/v1/recovery/email/start",
-      payload: { ...challenge, email: "attacker@example.com" },
-    });
-    expect(start.statusCode).toBe(400);
-    expect(mocks.turnkey.initOtpAuth).not.toHaveBeenCalled();
-  });
-
-  it("rate-limits per email with the shared recovery budget, independent of wallet existence", async () => {
-    const app = await buildServer();
-    mocks.countRecentChallenges.mockResolvedValue(10);
-    const res = await signin(app);
-    expect(res.statusCode).toBe(429);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ organizationId: "victim-sub-org", externalUserId: "victim-external" });
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
     expect(mocks.findEmailWalletByRecoveryEmail).not.toHaveBeenCalled();
+    expect(mocks.pinVerifiedEmail).not.toHaveBeenCalled();
+  });
+
+  it("pins a wallet made before sign-in existed on its first verified sign-in", async () => {
+    const app = await buildServer();
+    const legacy = walletRow();
+    mocks.wallets.push(legacy);
+    mocks.findEmailWalletByRecoveryEmail.mockResolvedValueOnce(legacy);
+
+    const res = await verify(app, (await signin(app)).json().challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().organizationId).toBe("victim-sub-org");
+    expect(legacy.verified_email).toBe(EMAIL);
+    expect(mocks.findEmailWalletByRecoveryEmail).toHaveBeenCalledWith(expect.anything(), {
+      appId: "app",
+      email: EMAIL,
+      rootOrganizationId: ROOT_ORG,
+    });
     expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
   });
 
-  it("scopes the existing-wallet lookup to the calling app", async () => {
+  it("creates and reveals nothing for a wrong code", async () => {
     const app = await buildServer();
-    await signin(app);
-    expect(mocks.findEmailWalletByRecoveryEmail).toHaveBeenCalledWith(
-      expect.anything(),
-      { appId: "app", email: EMAIL, rootOrganizationId: ROOT_ORG },
-    );
+    const { challengeId } = (await signin(app)).json();
+    mocks.turnkey.verifyOtp.mockRejectedValueOnce(new Error("invalid otp"));
+
+    const res = await verify(app, challengeId);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.payload).not.toMatch(LEAK_PATTERN);
+    expect(mocks.lockEmailWallets).not.toHaveBeenCalled();
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
+    expect(mocks.challenges.get(challengeId)).toMatchObject({ status: "pending", attempts: 1 });
+  });
+
+  it("stops verifying after five attempts without touching the challenge's status", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    mocks.challenges.get(challengeId).attempts = 5;
+
+    const res = await verify(app, challengeId);
+
+    expect(res.statusCode).toBe(429);
+    expect(mocks.turnkey.verifyOtp).not.toHaveBeenCalled();
+    // A verify racing one that consumed the challenge is refused here too; it must not undo the consume.
+    expect(mocks.challenges.get(challengeId).status).toBe("pending");
+  });
+
+  it("refuses a token Turnkey issued for a different email than the challenge", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    mocks.turnkey.verifyOtp.mockResolvedValueOnce({ verificationToken: tokenFor("other@example.com"), activityId: "a" });
+
+    const res = await verify(app, challengeId);
+
+    expect(res.statusCode).toBe(500);
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
+  });
+
+  it("creates one wallet when sign-ins for the same new email verify at the same time", async () => {
+    const app = await buildServer();
+    const first = (await signin(app)).json().challengeId;
+    const second = (await signin(app)).json().challengeId;
+    mocks.turnkey.createSubOrganizationWithEmailWallet.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return mocks.created();
+    });
+
+    const [a, b] = await Promise.all([verify(app, first), verify(app, second)]);
+
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).toHaveBeenCalledTimes(1);
+    expect(a.json().organizationId).toBe("new-sub-org");
+    expect(b.json().organizationId).toBe("new-sub-org");
+  });
+
+  it("does not accept an /init challenge at /verify or /session", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    mocks.challenges.get(challengeId).otp_id = null;
+
+    expect((await verify(app, challengeId)).statusCode).toBe(404);
+    expect((await session(app, challengeId)).statusCode).toBe(401);
+    expect(mocks.turnkey.verifyOtp).not.toHaveBeenCalled();
+    expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
+  });
+
+  it("/session opens OTP_LOGIN_V2 in the verified wallet with the client's key and signature", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    await verify(app, challengeId);
+
+    const res = await session(app, challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ session: "session-jwt", organizationId: "new-sub-org", expiresInSeconds: 3600 });
+    expect(mocks.turnkey.otpLogin).toHaveBeenCalledWith({
+      organizationId: "new-sub-org",
+      verificationToken: tokenFor(EMAIL),
+      publicKey: "02" + "ee".repeat(32),
+      clientSignature: expect.objectContaining({ scheme: "CLIENT_SIGNATURE_SCHEME_API_P256" }),
+      expirationSeconds: "3600",
+    });
+  });
+
+  it("/session refuses a challenge whose code has not verified", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+
+    const res = await session(app, challengeId);
+
+    expect(res.statusCode).toBe(401);
+    expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
+  });
+
+  it("/session refuses a verified challenge once it has expired", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    await verify(app, challengeId);
+    mocks.challenges.get(challengeId).expires_at = new Date(Date.now() - 1000).toISOString();
+
+    const res = await session(app, challengeId);
+
+    expect(res.statusCode).toBe(401);
+    expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
+  });
+
+  it("/session answers 401 when Turnkey refuses the token or signature", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    await verify(app, challengeId);
+    mocks.turnkey.otpLogin.mockRejectedValueOnce(new Error("invalid client signature"));
+
+    const res = await session(app, challengeId);
+
+    expect(res.statusCode).toBe(401);
+    expect(res.payload).not.toMatch(/session-jwt/);
   });
 });
 
-describe("findEmailWalletByRecoveryEmail SQL", () => {
-  it("pins both turnkey_resources and users to the caller's app_id", async () => {
-    const { findEmailWalletByRecoveryEmail } = await vi.importActual<
-      typeof import("../../db/queries.js")
-    >("../../db/queries.js");
+describe("email sign-in SQL", () => {
+  const actual = () => vi.importActual<typeof import("../../db/queries.js")>("../../db/queries.js");
+
+  it("counts only /signin's own challenges for its rate limit", async () => {
+    const { countRecentChallenges } = await vi.importActual<typeof import("../../db/recovery.js")>("../../db/recovery.js");
+    const query = vi.fn(async () => ({ rows: [{ count: "0" }] }));
+
+    await countRecentChallenges({ query } as never, { appId: "a", emailHash: "h", windowMs: 1, signinOnly: true });
+    await countRecentChallenges({ query } as never, { appId: "a", emailHash: "h", windowMs: 1 });
+
+    const calls = query.mock.calls as unknown as Array<[string]>;
+    expect(calls[0]![0]).toContain("AND otp_id IS NOT NULL");
+    expect(calls[1]![0]).not.toContain("otp_id");
+  });
+
+  it("only falls back to a recovery-email wallet that is unpinned, app-scoped and its owner's sole credential", async () => {
+    const { findEmailWalletByRecoveryEmail } = await actual();
     const query = vi.fn(async () => ({ rows: [] }));
 
     await findEmailWalletByRecoveryEmail({ query } as never, {
@@ -403,29 +478,35 @@ describe("findEmailWalletByRecoveryEmail SQL", () => {
     });
 
     const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    const flat = sql.replace(/\s+/g, " ");
     expect(params).toEqual(["app-a", "victim@example.com", ROOT_ORG]);
-    expect(sql).toMatch(/r\.app_id = \$1/);
-    expect(sql).toMatch(/u\.app_id = \$1/);
-    expect(sql).toMatch(/u\.app_id = r\.app_id/);
-    expect(sql).toMatch(/r\.organization_id <> \$3/);
+    expect(flat).toMatch(/r\.app_id = \$1/);
+    expect(flat).toMatch(/u\.app_id = \$1/);
+    expect(flat).toContain("r.verified_email IS NULL");
+    expect(flat).toContain("NOT EXISTS ( SELECT 1 FROM turnkey_resources o WHERE o.user_id = r.user_id AND o.id <> r.id )");
+    expect(flat).toContain("NOT EXISTS (SELECT 1 FROM linked_wallets l WHERE l.user_id = r.user_id)");
   });
 
-  it("only matches a wallet that is its owner's sole credential (anti-squatting)", async () => {
-    const { findEmailWalletByRecoveryEmail } = await vi.importActual<
-      typeof import("../../db/queries.js")
-    >("../../db/queries.js");
+  it("looks the pinned wallet up by app and lowercased email", async () => {
+    const { findEmailWalletByVerifiedEmail } = await actual();
     const query = vi.fn(async () => ({ rows: [] }));
 
-    await findEmailWalletByRecoveryEmail({ query } as never, {
-      appId: "app-a",
-      email: EMAIL,
-      rootOrganizationId: ROOT_ORG,
-    });
+    await findEmailWalletByVerifiedEmail({ query } as never, { appId: "app-a", email: " Victim@Example.com " });
 
-    const sql = (query.mock.calls[0] as unknown as [string])[0].replace(/\s+/g, " ");
-    expect(sql).toContain(
-      "NOT EXISTS ( SELECT 1 FROM turnkey_resources o WHERE o.user_id = r.user_id AND o.id <> r.id )",
-    );
-    expect(sql).toContain("NOT EXISTS (SELECT 1 FROM linked_wallets l WHERE l.user_id = r.user_id)");
+    const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(params).toEqual(["app-a", "victim@example.com"]);
+    expect(sql).toMatch(/r\.app_id = \$1 AND r\.verified_email = \$2/);
+  });
+
+  it("never re-pins a wallet another email already signs in to", async () => {
+    const { pinVerifiedEmail } = await actual();
+    const query = vi.fn(async () => ({ rowCount: 0, rows: [] }));
+
+    await expect(
+      pinVerifiedEmail({ query } as never, { appId: "app-a", resourceId: "r-1", email: "Victim@Example.com" }),
+    ).rejects.toThrow(/already pinned/);
+    const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(sql).toMatch(/verified_email IS NULL/);
+    expect(params).toEqual(["r-1", "app-a", "victim@example.com"]);
   });
 });

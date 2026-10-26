@@ -510,6 +510,98 @@ export class TurnkeyService {
     return { credentialBundle, apiKeyId, activityId };
   }
 
+  /**
+   * INIT_OTP_V3 under the parent org: emails a code to any address,
+   * whether or not a sub-org exists for it yet. The code never reaches
+   * the Hub -- the client encrypts it to `otpEncryptionTargetBundle`
+   * (`encryptOtpCodeToBundle` in `@turnkey/crypto`) for VERIFY_OTP_V2.
+   */
+  async initOtp(params: {
+    contact: string;
+    userIdentifier: string;
+    appName: string;
+    expirationSeconds: string;
+    emailCustomization?: Record<string, unknown>;
+    sendFromEmailAddress?: string;
+    sendFromEmailSenderName?: string;
+    replyToEmailAddress?: string;
+  }): Promise<{ otpId: string; otpEncryptionTargetBundle: string; activityId: string }> {
+    const res = await (this.client as any).initOtp({
+      type: "ACTIVITY_TYPE_INIT_OTP_V3",
+      timestampMs: nowMs(),
+      organizationId: this.organizationId,
+      parameters: { otpType: "OTP_TYPE_EMAIL", otpLength: 6, alphanumeric: false, ...params }
+    });
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey initOtp did not complete: ${activityId}`);
+    }
+    const result = (activity.result as any)?.initOtpResultV2;
+    if (!result?.otpId || !result?.otpEncryptionTargetBundle) {
+      throw new Error("Turnkey initOtp did not return otpId/otpEncryptionTargetBundle");
+    }
+    return { otpId: result.otpId, otpEncryptionTargetBundle: result.otpEncryptionTargetBundle, activityId };
+  }
+
+  /**
+   * VERIFY_OTP_V2 under the parent org. Turnkey's enclave decrypts the
+   * client's bundle, checks the code, and returns a verification token
+   * bound to the public key inside the bundle, so OTP_LOGIN_V2 with it
+   * needs that key's signature. A wrong or expired code fails the
+   * activity (or the request), which the caller counts as an attempt.
+   */
+  async verifyOtp(params: {
+    otpId: string;
+    encryptedOtpBundle: string;
+    expirationSeconds: string;
+  }): Promise<{ verificationToken: string; activityId: string }> {
+    const res = await (this.client as any).verifyOtp({
+      type: "ACTIVITY_TYPE_VERIFY_OTP_V2",
+      timestampMs: nowMs(),
+      organizationId: this.organizationId,
+      parameters: params
+    });
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey verifyOtp did not complete: ${activityId}`);
+    }
+    const verificationToken = (activity.result as any)?.verifyOtpResult?.verificationToken;
+    if (!verificationToken) throw new Error("Turnkey verifyOtp did not return verificationToken");
+    return { verificationToken, activityId };
+  }
+
+  /**
+   * OTP_LOGIN_V2 in the user's sub-org: registers the client's public key
+   * as a session key for the sub-org user whose contact the token
+   * verified. `clientSignature` is the token-bound key's signature over
+   * the token id and that public key; the Hub only relays it.
+   */
+  async otpLogin(params: {
+    organizationId: string;
+    verificationToken: string;
+    publicKey: string;
+    clientSignature: { scheme: string; publicKey: string; message: string; signature: string };
+    expirationSeconds: string;
+  }): Promise<{ session: string; activityId: string }> {
+    const { organizationId, ...parameters } = params;
+    const res = await (this.client as any).otpLogin({
+      type: "ACTIVITY_TYPE_OTP_LOGIN_V2",
+      timestampMs: nowMs(),
+      organizationId,
+      parameters
+    });
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId, organizationId, res.activity);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey otpLogin did not complete: ${activityId}`);
+    }
+    const session = (activity.result as any)?.otpLoginResult?.session;
+    if (!session) throw new Error("Turnkey otpLogin did not return session");
+    return { session, activityId };
+  }
+
   async getWalletAccounts(params: GetWalletAccountsParams): Promise<{ accounts: WalletAccount[] }> {
     const res = await this.client.getWalletAccounts({
       organizationId: this.organizationId,
