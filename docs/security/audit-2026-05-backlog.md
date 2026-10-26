@@ -175,7 +175,7 @@ The deprecated mobile platform API key (`x7NaU5AHiZ...`) still must be
 - **H3** No HTTPS / no 80→443 redirect — DONE (gated on `certificateArn`)
 - **H4** SSH + 3005 in public SG — DONE (no SSH; API service is private)
 - **H5** `CORS_ALLOW_ORIGINS=*` default in CDK — DONE (refuses to deploy with `*`)
-- **H6** No detection or paging (CloudTrail, GuardDuty, alarms) — OPEN ([#140](https://github.com/Arch-Network/arch-wallet-hub/issues/140)). Phase 1–2 is `WalletHubMonitoringStack`: a management-event trail (except KMS; `GetSecretValue` is a management event), GuardDuty, 365-day app-log retention, SNS, and alerts for secret reads and deploys outside the GitHub OIDC role. IAM, security-group, and RDS snapshot alarms, plus AI triage, remain in that issue.
+- **H6** No detection or paging (CloudTrail, GuardDuty, alarms) — OPEN ([#140](https://github.com/Arch-Network/arch-wallet-hub/issues/140)). Phase 1–2 is `WalletHubMonitoringStack`: a management-event trail (except KMS; `GetSecretValue` is a management event), GuardDuty, 365-day app-log retention, SNS, and alerts for reads of the wallet-hub, mainnet CLAMM keeper, program-deploy, and launchpad secrets, and for deploys outside the GitHub OIDC role. IAM, security-group, and RDS snapshot alarms, plus AI triage, remain in that issue.
 
 ### Medium
 

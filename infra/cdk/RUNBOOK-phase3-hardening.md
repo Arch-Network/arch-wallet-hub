@@ -221,13 +221,17 @@ What the stack adds:
   days. Log-file validation is on. `GetSecretValue` is a management
   event. CloudTrail does not accept `AWS::SecretsManager::Secret` as a
   data-event `resources.type`, so the trail does not use a data
-  selector. The filter keeps only `WalletHub/AppSecrets`.
+  selector. The filter pages on `WalletHub/AppSecrets`,
+  `clamm/keeper/mainnet/authority-key`, `program-deploy/internal-a`,
+  `program-deploy/internal-b`, `program-deploy/testnet`, and
+  `arch-agent-launchpad/runtime`.
 - A GuardDuty detector. If the account already has one, the create fails;
   redeploy with `-c createGuardDutyDetector=false`. The finding rule is
   created either way.
-- An SNS topic. Without `-c securityAlertEmail` or
-  `-c securityAlertHttpsEndpoint` nothing is subscribed and nothing pages.
-  Email subscriptions stay pending until the recipient confirms.
+- An SNS topic. `-c securityAlertEmail` is a comma-separated list.
+  Without that or `-c securityAlertHttpsEndpoint` nothing is subscribed
+  and nothing pages. Email subscriptions stay pending until each
+  recipient confirms.
 - `putRetentionPolicy` of 365 days on the two log groups named in
   `deploy/README.md`. The `WalletHubStack` template now says the same
   retention, so a later deploy of that stack does not shorten it. The
@@ -236,11 +240,16 @@ What the stack adds:
   filter function pages unless CloudTrail attributes the call to
   `ecs.amazonaws.com` or `ecs-tasks.amazonaws.com` (`userIdentity.invokedBy`
   or `sourceIPAddress`). `userAgent` is ignored because the caller sets it.
-  Pass `-c ecsExecutionRoleArns=` with the execution role ARNs from the
-  **live** task definitions. When that list is set, an ECS-attributed read
-  that uses any other role also pages. When it is empty, every
-  ECS-attributed read is suppressed, including a `RunTask` that borrows
-  the execution role; the `RunTask` rule below is what catches that.
+  Pass `-c ecsExecutionRoleArns=` with the wallet-hub execution role ARN
+  from the **live** API task definition. When that list is set, an
+  ECS-attributed read of `WalletHub/AppSecrets` that uses any other role
+  also pages. When it is empty, every ECS-attributed read of that secret
+  is suppressed, including a `RunTask` that borrows the execution role;
+  the `RunTask` rule below is what catches that. Pass
+  `-c clammKeeperExecutionRoleArns=` with the live mainnet keeper
+  execution role. Without it, every keeper task start pages. Reads of
+  the program-deploy and launchpad secrets page even when ECS makes the
+  call.
 - When `-c deployRoleArn` is set to `AWS_DEPLOY_ROLE_ARN`: page on
   `PutImage` to `wallet-hub-api` or `wallet-hub-frontend`, and on
   `RegisterTaskDefinition`, `UpdateService`, and `RunTask` for cluster
@@ -277,8 +286,9 @@ AI triage layer. Both stay in issue #140.
    npx cdk diff WalletHubMonitoringStack --method template \
      -c corsAllowOrigins=https://hub.arch.network \
      -c deployRoleArn="$AWS_DEPLOY_ROLE_ARN" \
-     -c securityAlertEmail="you@arch.network" \
-     -c ecsExecutionRoleArns="$API_EXEC_ROLE"
+     -c securityAlertEmail="brian@arch.network,amine@arch.network" \
+     -c ecsExecutionRoleArns="$API_EXEC_ROLE" \
+     -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE"
    ```
 
 5. `cdk diff WalletHubStack` may show pre-existing drift plus
@@ -291,8 +301,9 @@ cd infra/cdk
 npx cdk deploy WalletHubMonitoringStack \
   -c corsAllowOrigins=https://hub.arch.network \
   -c deployRoleArn="$AWS_DEPLOY_ROLE_ARN" \
-  -c securityAlertEmail="you@arch.network" \
-  -c ecsExecutionRoleArns="$API_EXEC_ROLE"
+  -c securityAlertEmail="brian@arch.network,amine@arch.network" \
+  -c ecsExecutionRoleArns="$API_EXEC_ROLE" \
+  -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE"
 ```
 
 CDK prompts for IAM changes. Do not pass `--require-approval never`.
