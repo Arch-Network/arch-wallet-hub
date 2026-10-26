@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => {
     updateUserRecoveryEmail: vi.fn(async (_c: unknown, p: { email: string | null }) => {
       db.recoveryEmail = p.email ? p.email.trim().toLowerCase() : null;
     }),
+    lockEmailWallets: vi.fn(async () => undefined),
     insertTurnkeyResource: vi.fn(async (_c: unknown, p: any) => {
       db.resources.push(p);
       return { id: "resource-1", ...p };
@@ -47,7 +48,7 @@ vi.mock("../../db/tx.js", () => ({
   withDbTransaction: async (_pool: unknown, cb: (client: unknown) => Promise<unknown>) => {
     const snapshot = { recoveryEmail: mocks.db.recoveryEmail, resources: [...mocks.db.resources] };
     try {
-      return await cb({});
+      return await cb({ tx: Symbol("tx") });
     } catch (err) {
       mocks.db.recoveryEmail = snapshot.recoveryEmail;
       mocks.db.resources = snapshot.resources;
@@ -70,6 +71,7 @@ vi.mock("../../db/apps.js", async (orig) => ({
 vi.mock("../../db/queries.js", async (orig) => ({
   ...(await orig<typeof import("../../db/queries.js")>()),
   insertTurnkeyResource: mocks.insertTurnkeyResource,
+  lockEmailWallets: mocks.lockEmailWallets,
   markIdempotencySucceeded: async () => undefined,
   markIdempotencyFailed: async () => undefined,
 }));
@@ -205,5 +207,27 @@ describe("/turnkey/email-wallets is closed unless EMAIL_WALLET_CREATE_ENABLED", 
     });
     await app.close();
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("/turnkey/email-wallets holds the email lock through the create", () => {
+  it("locks the email before the Turnkey create and persists in that transaction", async () => {
+    vi.clearAllMocks();
+    const app = await buildServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/turnkey/email-wallets",
+      headers: { "idempotency-key": "idem-key" },
+      payload: { externalUserId: "ext-1", userEmail: "New@Example.com" },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    const [lockClient, lockParams] = mocks.lockEmailWallets.mock.calls[0] as unknown as [unknown, unknown];
+    expect(lockParams).toEqual({ appId: "app", email: "New@Example.com" });
+    expect(mocks.insertTurnkeyResource.mock.calls[0]![0]).toBe(lockClient);
+    expect(mocks.lockEmailWallets.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.turnkey.createSubOrganizationWithEmailWallet.mock.invocationCallOrder[0]!,
+    );
   });
 });
