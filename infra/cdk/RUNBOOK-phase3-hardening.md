@@ -32,6 +32,10 @@ Region: `us-east-1`. Account: `590184001652`. Stack: `WalletHubStack`.
 > pass `--method template`. Until the stack has been deployed once, the CI
 > deploy workflow and hand-registered task definitions remain how production
 > changes.
+>
+> `WalletHubMonitoringStack` (§D) is the exception: it is a new stack and
+> does not update RDS, `AppSecrets`, or task definitions. Review its diff
+> before deploying it, and do not deploy `WalletHubStack` in that step.
 
 ---
 
@@ -198,6 +202,132 @@ passed (creating a second 443 listener would conflict with the live one).
 
 ---
 
+## D. Detection and alerting
+
+**Goal:** a read of `WalletHub/AppSecrets` by anyone other than ECS task
+startup, and a deploy that is not the GitHub OIDC role, pages within a
+few minutes. GuardDuty findings above low severity page on the same topic.
+
+This is a **separate stack**, `WalletHubMonitoringStack`. Deploying it
+does not update RDS, `AppSecrets`, task definitions, or
+`MasterUserPassword`. Do not deploy `WalletHubStack` as part of this step.
+`corsAllowOrigins` is still required on the command line because synth
+constructs both stacks.
+
+What the stack adds:
+
+- CloudTrail trail `wallet-hub` (multi-region management events except
+  `kms.amazonaws.com`, plus Secrets Manager data events whose ARN starts
+  with `WalletHub/AppSecrets-`) to a retained S3 bucket. Objects expire
+  after 365 days. Log-file validation is on. `GetSecretValue` is a data
+  event: a management-only trail, including the 90-day event history,
+  does not record it.
+- A GuardDuty detector. If the account already has one, the create fails;
+  redeploy with `-c createGuardDutyDetector=false`. The finding rule is
+  created either way.
+- An SNS topic. Without `-c securityAlertEmail` or
+  `-c securityAlertHttpsEndpoint` nothing is subscribed and nothing pages.
+  Email subscriptions stay pending until the recipient confirms.
+- `putRetentionPolicy` of 365 days on the two log groups named in
+  `deploy/README.md`. The `WalletHubStack` template now says the same
+  retention, so a later deploy of that stack does not shorten it. The
+  template change is not how retention gets applied.
+- An EventBridge rule for `GetSecretValue` and `BatchGetSecretValue`. A
+  filter function pages unless CloudTrail attributes the call to
+  `ecs.amazonaws.com` or `ecs-tasks.amazonaws.com` (`userIdentity.invokedBy`
+  or `sourceIPAddress`). `userAgent` is ignored because the caller sets it.
+  Pass `-c ecsExecutionRoleArns=` with the execution role ARNs from the
+  **live** task definitions. When that list is set, an ECS-attributed read
+  that uses any other role also pages. When it is empty, every
+  ECS-attributed read is suppressed, including a `RunTask` that borrows
+  the execution role; the `RunTask` rule below is what catches that.
+- When `-c deployRoleArn` is set to `AWS_DEPLOY_ROLE_ARN`: page on
+  `PutImage` to `wallet-hub-api` or `wallet-hub-frontend`, and on
+  `RegisterTaskDefinition`, `UpdateService`, and `RunTask` for cluster
+  `wallet-hub`, unless that role is `sessionIssuer`. That role is what
+  `deploy/pin-ecs-image.sh` runs as. A `cdk deploy` is not that role, so
+  it pages. Leave the flag unset and those rules are not created — arming
+  them with no allowlist would page every CI push.
+
+IAM changes, new access keys, security-group edits, and RDS snapshot
+copy/share are account-wide and are not in this stack. Neither is the
+AI triage layer. Both stay in issue #140.
+
+### Before deploying
+
+1. `aws cloudtrail describe-trails --region us-east-1`. A second trail
+   duplicates management-event cost. This trail is still required for the
+   secret data events. Stop if a trail named `wallet-hub` already exists.
+2. `aws guardduty list-detectors --region us-east-1`. If a detector id is
+   returned, pass `-c createGuardDutyDetector=false`.
+3. Read the live execution role (the CDK role is not the one in service):
+
+   ```bash
+   td=$(aws ecs describe-services --cluster wallet-hub --services wallet-hub-api \
+     --query 'services[0].taskDefinition' --output text --region us-east-1)
+   aws ecs describe-task-definition --task-definition "$td" \
+     --query 'taskDefinition.executionRoleArn' --output text --region us-east-1
+   ```
+
+4. Diff **only** the monitoring stack. The diff is a new stack. It must
+   not mention `Postgres`, `AppSecrets`, or `MasterUserPassword`.
+
+   ```bash
+   cd infra/cdk
+   npx cdk diff WalletHubMonitoringStack --method template \
+     -c corsAllowOrigins=https://hub.arch.network \
+     -c deployRoleArn="$AWS_DEPLOY_ROLE_ARN" \
+     -c securityAlertEmail="you@arch.network" \
+     -c ecsExecutionRoleArns="$API_EXEC_ROLE"
+   ```
+
+5. `cdk diff WalletHubStack` may show pre-existing drift plus
+   `RetentionInDays` 14 → 365. Do not deploy `WalletHubStack`.
+
+### Deploy
+
+```bash
+cd infra/cdk
+npx cdk deploy WalletHubMonitoringStack \
+  -c corsAllowOrigins=https://hub.arch.network \
+  -c deployRoleArn="$AWS_DEPLOY_ROLE_ARN" \
+  -c securityAlertEmail="you@arch.network" \
+  -c ecsExecutionRoleArns="$API_EXEC_ROLE"
+```
+
+CDK prompts for IAM changes. Do not pass `--require-approval never`.
+Confirm the email subscription before the test below. For PagerDuty, add
+`-c securityAlertHttpsEndpoint=https://events.pagerduty.com/integration/<key>/enqueue`.
+
+### Acceptance test
+
+Run as a principal that is not the ECS service (an IAM user or role you
+control). `--query Name` keeps the secret value off stdout; the call
+still returns it to this machine.
+
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id WalletHub/AppSecrets \
+  --query Name \
+  --output text \
+  --region us-east-1
+```
+
+Expect a page within 5 minutes. If it does not arrive, read the
+`AlertFilter` log group and the `AlertFilterDlqUrl` output.
+
+- **Rollback:** `npx cdk destroy WalletHubMonitoringStack` with the same
+  `-c` flags. The trail bucket is retained. Log-group retention stays at
+  365 days. GuardDuty is removed only if this stack created the detector.
+- **Risk callouts:** a wrong `deployRoleArn` pages every CI deploy, or
+  suppresses a real one if it names a role an attacker can assume. A
+  wrong log-group name fails `putRetentionPolicy` and rolls the stack
+  back; the names are the two `aws logs tail` targets in `deploy/README.md`.
+  The first trail delivery can lag; EventBridge is the paging path and is
+  usually under a minute, not the S3 log-file delay.
+
+---
+
 ## Pre-flight checklist (run before ANY deploy above)
 
 - [ ] `cd infra/cdk && npx cdk diff WalletHubStack --method template -c corsAllowOrigins=https://hub.arch.network`
@@ -209,3 +339,6 @@ passed (creating a second 443 listener would conflict with the live one).
 - [ ] Confirm `PostgresSubnetGroup` subnet list is intentional for this step.
 - [ ] Take an RDS snapshot if the step touches the DB.
 - [ ] Announce a window for step A.3 (RDS subnet move) and step B (rotation).
+- [ ] For §D, diff and deploy `WalletHubMonitoringStack` only. A
+      `WalletHubStack` diff may show log `RetentionInDays` 14 → 365 plus
+      pre-existing drift; do not deploy `WalletHubStack` to apply it.

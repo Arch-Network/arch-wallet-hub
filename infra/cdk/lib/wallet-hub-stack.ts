@@ -184,7 +184,9 @@ export class WalletHubStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(apiRepo, "latest"),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "wallet-hub-api",
-        logRetention: logs.RetentionDays.TWO_WEEKS,
+        // 365 days, matching WalletHubMonitoringStack. That stack applies
+        // the live retention; do not deploy this stack only to change it.
+        logRetention: logs.RetentionDays.ONE_YEAR,
       }),
       // Run as a non-root user. The image must include a `node` user
       // with shell access to /app -- the upstream node:*-slim images
@@ -331,7 +333,8 @@ export class WalletHubStack extends cdk.Stack {
       image: ecs.ContainerImage.fromEcrRepository(frontendRepo, "latest"),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "wallet-hub-frontend",
-        logRetention: logs.RetentionDays.TWO_WEEKS,
+        // 365 days, matching WalletHubMonitoringStack. See RUNBOOK §D.
+        logRetention: logs.RetentionDays.ONE_YEAR,
       }),
       // Matches the image in ECR (March 2026), which predates the
       // non-root nginx on 8080 + `/healthz` in deploy/Dockerfile.frontend.
