@@ -42,6 +42,19 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("../../db/pool.js", () => ({ getDbPool: () => ({}) }));
+vi.mock("../../db/emailWalletLimit.js", () => ({
+  acquireEmailWalletSlot: async () => ({ kind: "skip" }),
+  releaseEmailWalletClaim: async () => undefined,
+  getAppEmailWalletLimit: async () => null,
+  emailWalletLimitError: {
+    email_wallet_limit_reached: "This app allows a limited number of wallets per email",
+    recovery_email_locked: "Recovery email is already set for this user",
+    email_required: "This app requires an email address to create a wallet",
+    email_wallet_import_locked:
+      "This app locks wallet creation to an email quota; import is not available",
+    email_wallet_limit_exceeds_existing: "Existing wallets for an email already exceed this limit",
+  },
+}));
 // Snapshot/restore so a throwing callback behaves like a rolled-back tx.
 vi.mock("../../db/tx.js", () => ({
   withDbTransaction: async (_pool: unknown, cb: (client: unknown) => Promise<unknown>) => {
