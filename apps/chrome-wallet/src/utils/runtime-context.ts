@@ -13,6 +13,8 @@
  * shim so the call sites stay one-liners.
  */
 
+import { readPopupBounds } from "./popup-bounds";
+
 const SIDE_PANEL_DATA_ATTR = "sidepanel";
 
 /**
@@ -84,15 +86,6 @@ export async function reopenForExternalSigning(path: string): Promise<boolean> {
   return true;
 }
 
-/**
- * Default size for the popup window we spawn from the side panel. Kept
- * in sync with the standalone approve window dimensions used by
- * `background.ts::openApprovalPopup` so the user gets a familiar
- * popup shape regardless of which flow opened it.
- */
-const DEFAULT_POPUP_WIDTH = 400;
-const DEFAULT_POPUP_HEIGHT = 640;
-
 export type OpenWalletPopupOpts = {
   /** Path within the popup, e.g. `/swap` or `/dashboard`. */
   path: string;
@@ -123,6 +116,8 @@ export function buildPopupUrl(opts: OpenWalletPopupOpts): string {
 
 /**
  * Spawn a standalone popup window pointed at the given hash path.
+ * The window opens at the size the user last resized one of these
+ * windows to, unless the caller passes an explicit width and height.
  * Throws if the `chrome.windows` API is unavailable (e.g. when running
  * inside a regular tab during a unit test).
  */
@@ -132,11 +127,12 @@ export async function openWalletPopup(opts: OpenWalletPopupOpts): Promise<void> 
       "Popup window unavailable: chrome.windows API is missing from this context.",
     );
   }
+  const bounds = await readPopupBounds();
   await chrome.windows.create({
     url: buildPopupUrl(opts),
     type: "popup",
-    width: opts.width ?? DEFAULT_POPUP_WIDTH,
-    height: opts.height ?? DEFAULT_POPUP_HEIGHT,
+    width: opts.width ?? bounds.width,
+    height: opts.height ?? bounds.height,
     focused: true,
   });
 }

@@ -78,3 +78,22 @@ export function tokenUsdValue(
   if (!Number.isFinite(raw)) return null;
   return (raw / Math.pow(10, decimals)) * usdPerUnit;
 }
+
+/**
+ * USD value of a user-typed token amount in whole units.
+ *
+ * Send forms keep the amount as a decimal string ("0.001"), not an
+ * atomic balance. Empty, partial ("0."), and non-positive input return
+ * null so the fiat hint stays hidden until the amount is a real send.
+ */
+export function displayAmountUsd(
+  displayAmount: string,
+  usdPerUnit: number | null | undefined,
+): number | null {
+  if (usdPerUnit == null || !Number.isFinite(usdPerUnit) || usdPerUnit <= 0) return null;
+  const trimmed = displayAmount.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
+  const units = Number(trimmed);
+  if (!Number.isFinite(units) || units <= 0) return null;
+  return units * usdPerUnit;
+}

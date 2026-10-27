@@ -217,21 +217,30 @@ html, body, #root {
   -webkit-overflow-scrolling: touch;
 }
 
-/* When mounted inside Chrome's side panel the container fills the panel
-   width (typically 280-1000px+) and the full viewport height. */
-html[data-mode="sidepanel"],
-html[data-mode="sidepanel"] body,
-html[data-mode="sidepanel"] #root {
+/* Fluid surfaces fill their container: the side panel, and the popup
+   window opened from the toolbar. The 400×600 rule above is only the
+   fallback when this attribute is absent. */
+html[data-layout="fluid"],
+html[data-layout="fluid"] body,
+html[data-layout="fluid"] #root {
   width: 100%;
   min-width: 320px;
   max-width: 100%;
-  height: 100vh;
+  /* 100% of the window, not 100vh. A viewport-height page makes Chrome
+     grow a popup window to fit the document, which fights dragging. */
+  height: 100%;
   overflow: hidden;
+}
+
+html[data-mode="sidepanel"],
+html[data-mode="sidepanel"] body,
+html[data-mode="sidepanel"] #root {
+  height: 100vh;
 }
 
 /* Narrow side panel keeps the popup-style centered column.
    Wide side panel takes over and switches to the sidebar shell below. */
-html[data-mode="sidepanel"] .app-body {
+html[data-layout="fluid"] .app-body {
   max-width: 100%;
   margin: 0 auto;
 }
@@ -358,15 +367,15 @@ a {
   display: none;
 }
 
-/* Wide side panel: persistent left sidebar nav, content fills the right column.
-   Activated only in sidepanel mode at >= 560px viewport width so the regular
-   popup (400px) and narrow side panels keep their bottom tab nav. */
+/* Wide fluid surface: persistent left sidebar, content fills the right column.
+   Activated at >= 560px so the toolbar popup (400px) and a narrow window
+   or side panel keep their bottom tab nav. */
 @media (min-width: 560px) {
-  html[data-mode="sidepanel"] .app-container {
+  html[data-layout="fluid"] .app-container {
     flex-direction: row;
   }
 
-  html[data-mode="sidepanel"] .app-sidebar {
+  html[data-layout="fluid"] .app-sidebar {
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
@@ -378,14 +387,14 @@ a {
     overflow-y: auto;
   }
 
-  html[data-mode="sidepanel"] .app-nav {
+  html[data-layout="fluid"] .app-nav {
     display: none;
   }
 
   /* Body breathing room: the side panel can be much taller and wider than
      the popup, so let content use it. Horizontal padding slimmed from 24
      to 16 -- the cards inside provide their own visual containment. */
-  html[data-mode="sidepanel"] .app-body {
+  html[data-layout="fluid"] .app-body {
     --body-gutter-x: 16px;
     --body-gutter-y: 20px;
     max-width: 880px;
@@ -395,17 +404,17 @@ a {
 
   /* Per-route caps: forms and settings shouldn't stretch the full width
      even when the shell allows it. Applied via bodyClassForPath in App.tsx. */
-  html[data-mode="sidepanel"] .app-body-narrow {
+  html[data-layout="fluid"] .app-body-narrow {
     max-width: 520px;
   }
 
-  html[data-mode="sidepanel"] .app-body-medium {
+  html[data-layout="fluid"] .app-body-medium {
     max-width: 640px;
   }
 
   /* Wide-content routes (e.g. Token Detail) -- no max-width cap so the
      activity feed and hero stretch to fill the available main column. */
-  html[data-mode="sidepanel"] .app-body-wide {
+  html[data-layout="fluid"] .app-body-wide {
     --body-gutter-x: 18px;
     max-width: none;
     padding: 20px 18px;
@@ -414,28 +423,28 @@ a {
   /* Dashboard body: strip the centered-column constraints so the city
      hero can bleed edge-to-edge of the main column. Inner content
      manages its own max-width via .dashboard-shell. */
-  html[data-mode="sidepanel"] .app-body-full {
+  html[data-layout="fluid"] .app-body-full {
     max-width: none;
     margin: 0;
     padding: 0;
   }
 
   /* ═══════════════════ Wide-mode typography + spacing ═══════════════════
-     The whole design system is sized for a 360px popup. When the side panel
-     opens up at >= 560px viewport, scale everything up so the UI doesn't
+     The whole design system is sized for a 360px popup. When a fluid
+     surface is at least 560px wide, scale everything up so the UI doesn't
      read as a tiny postage stamp in the middle of a big canvas. */
 
-  html[data-mode="sidepanel"] {
+  html[data-layout="fluid"] {
     font-size: 15px;
   }
 
-  html[data-mode="sidepanel"] .section-title {
+  html[data-layout="fluid"] .section-title {
     font-size: 14px;
     margin-bottom: 14px;
     letter-spacing: 0.1em;
   }
 
-  html[data-mode="sidepanel"] .section {
+  html[data-layout="fluid"] .section {
     margin-bottom: 28px;
   }
 
@@ -443,19 +452,19 @@ a {
      .app-body-full (Dashboard route) has zero padding/max-width.
      Other routes still get -20/-24 break-out margins from the popup
      defaults further down the file, which compose correctly here. */
-  html[data-mode="sidepanel"] .balance-hero {
+  html[data-layout="fluid"] .balance-hero {
     margin: 0 0 24px;
     padding: 56px 48px 48px;
     border-radius: 0;
   }
 
-  html[data-mode="sidepanel"] .balance-amount {
+  html[data-layout="fluid"] .balance-amount {
     font-size: 52px;
     margin-bottom: 10px;
     letter-spacing: -0.02em;
   }
 
-  html[data-mode="sidepanel"] .balance-label {
+  html[data-layout="fluid"] .balance-label {
     font-size: 15px;
     gap: 8px;
   }
@@ -463,7 +472,7 @@ a {
   /* Inner content cap on dashboard. Wider than other routes (920px)
      so the 2-col grid below has plenty of room to breathe. Slimmer
      horizontal gutter so rows fill more of the column. */
-  html[data-mode="sidepanel"] .dashboard-shell {
+  html[data-layout="fluid"] .dashboard-shell {
     max-width: 920px;
     margin: 0 auto;
     padding: 0 16px 32px;
@@ -471,7 +480,7 @@ a {
   }
 
   /* Quick actions row -- pill-style buttons feel less cramped */
-  html[data-mode="sidepanel"] .action-bar {
+  html[data-layout="fluid"] .action-bar {
     gap: 12px;
     padding: 0 0 28px;
     /* Allow pill buttons to wrap to a second row when the main column
@@ -481,7 +490,7 @@ a {
     flex-wrap: wrap;
   }
 
-  html[data-mode="sidepanel"] .action-btn {
+  html[data-layout="fluid"] .action-btn {
     flex-direction: row;
     justify-content: center;
     gap: 10px;
@@ -494,72 +503,72 @@ a {
     flex: 1 1 130px;
   }
 
-  html[data-mode="sidepanel"] .action-btn-icon {
+  html[data-layout="fluid"] .action-btn-icon {
     font-size: 22px;
   }
 
   /* Portfolio asset rows (Dashboard). The Send asset picker reuses
      .asset-row inside its own cards, so we scope out .send-asset-row
      to keep those picker rows compact. */
-  html[data-mode="sidepanel"] .asset-row:not(.send-asset-row) {
+  html[data-layout="fluid"] .asset-row:not(.send-asset-row) {
     padding: 18px 4px;
     gap: 18px;
   }
 
   /* BTC row stacks vertically; the head supplies its own gap and the
      breakdown its own margin, so cancel the row-level gap here. */
-  html[data-mode="sidepanel"] .asset-row.btc-row {
+  html[data-layout="fluid"] .asset-row.btc-row {
     gap: 0;
   }
 
-  html[data-mode="sidepanel"] .btc-row-head {
+  html[data-layout="fluid"] .btc-row-head {
     gap: 18px;
   }
 
-  html[data-mode="sidepanel"] .send-asset-row {
+  html[data-layout="fluid"] .send-asset-row {
     gap: 14px;
   }
 
-  html[data-mode="sidepanel"] .asset-icon {
+  html[data-layout="fluid"] .asset-icon {
     width: 48px;
     height: 48px;
     font-size: 21px;
   }
 
-  html[data-mode="sidepanel"] .asset-name {
+  html[data-layout="fluid"] .asset-name {
     font-size: 17px;
   }
 
-  html[data-mode="sidepanel"] .asset-sub {
+  html[data-layout="fluid"] .asset-sub {
     font-size: 13px;
   }
 
-  html[data-mode="sidepanel"] .asset-balance {
+  html[data-layout="fluid"] .asset-balance {
     font-size: 18px;
   }
 
-  html[data-mode="sidepanel"] .asset-balance-usd {
+  html[data-layout="fluid"] .asset-balance-usd {
     font-size: 13px;
   }
 
-  html[data-mode="sidepanel"] .btc-breakdown-label {
+  html[data-layout="fluid"] .btc-breakdown-label {
     font-size: 12px;
   }
 
-  html[data-mode="sidepanel"] .btc-breakdown-value {
+  html[data-layout="fluid"] .btc-breakdown-value {
     font-size: 13px;
   }
 
   /* Activity rows in the recent activity card */
-  html[data-mode="sidepanel"] .tx-activity-label {
+  html[data-layout="fluid"] .tx-activity-label {
     font-size: 15px;
   }
 
-  html[data-mode="sidepanel"] .tx-activity-meta {
+  html[data-layout="fluid"] .tx-activity-meta {
     font-size: 12px;
   }
 
-  html[data-mode="sidepanel"] .tx-activity-amount {
+  html[data-layout="fluid"] .tx-activity-amount {
     font-size: 15px;
   }
 }
@@ -776,7 +785,7 @@ a {
   white-space: nowrap;
 }
 
-html[data-mode="sidepanel"] .account-switcher-label {
+html[data-layout="fluid"] .account-switcher-label {
   max-width: 200px;
 }
 
@@ -1899,10 +1908,10 @@ html[data-mode="sidepanel"] .account-switcher-label {
 }
 
 @media (min-width: 720px) {
-  html[data-mode="sidepanel"] .page-title {
+  html[data-layout="fluid"] .page-title {
     font-size: 26px;
   }
-  html[data-mode="sidepanel"] .page-subtitle {
+  html[data-layout="fluid"] .page-subtitle {
     font-size: 14px;
   }
 }
@@ -2440,21 +2449,21 @@ html[data-mode="sidepanel"] .account-switcher-label {
 }
 
 @media (min-width: 720px) {
-  html[data-mode="sidepanel"] .send-asset-list {
+  html[data-layout="fluid"] .send-asset-list {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 14px;
   }
-  html[data-mode="sidepanel"] .send-asset-card {
+  html[data-layout="fluid"] .send-asset-card {
     min-height: 92px;
   }
   /* Inside a 2-col grid each card is ~280-310px wide; relax the right-side
      balance column so the asset name has room to breathe. */
-  html[data-mode="sidepanel"] .send-asset-balance-wrap {
+  html[data-layout="fluid"] .send-asset-balance-wrap {
     min-width: 0;
     max-width: none;
   }
-  html[data-mode="sidepanel"] .send-asset-balance {
+  html[data-layout="fluid"] .send-asset-balance {
     font-size: 16px;
   }
 }
@@ -2585,18 +2594,18 @@ html[data-mode="sidepanel"] .account-switcher-label {
 }
 
 /* Two-column layout once we have real space: the asset column on the
-   left, Recent Activity on the right. Only fires in the side panel
-   since the popup is fixed at 400px. */
+   left, Recent Activity on the right. The toolbar popup stays 400px
+   and never reaches this; a resized popup window or side panel does. */
 @media (min-width: 880px) {
-  html[data-mode="sidepanel"] .dashboard-grid {
+  html[data-layout="fluid"] .dashboard-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 18px;
     align-items: start;
   }
 
-  html[data-mode="sidepanel"] .dashboard-grid > .section,
-  html[data-mode="sidepanel"] .dashboard-grid > .dashboard-assets-col {
+  html[data-layout="fluid"] .dashboard-grid > .section,
+  html[data-layout="fluid"] .dashboard-grid > .dashboard-assets-col {
     margin-bottom: 0;
   }
 }
@@ -3331,17 +3340,17 @@ html[data-mode="sidepanel"] .account-switcher-label {
 
 /* Wide-mode polish: larger title + a touch more breathing room on the card */
 @media (min-width: 720px) {
-  html[data-mode="sidepanel"] .receive-title {
+  html[data-layout="fluid"] .receive-title {
     font-size: 26px;
   }
-  html[data-mode="sidepanel"] .receive-subtitle {
+  html[data-layout="fluid"] .receive-subtitle {
     font-size: 14px;
   }
-  html[data-mode="sidepanel"] .receive-card {
+  html[data-layout="fluid"] .receive-card {
     padding: 18px 20px;
     gap: 12px;
   }
-  html[data-mode="sidepanel"] .receive-address-text {
+  html[data-layout="fluid"] .receive-address-text {
     font-size: 13px;
   }
 }
@@ -3559,22 +3568,22 @@ button.address-chip-link:hover {
 }
 
 @media (min-width: 720px) {
-  html[data-mode="sidepanel"] .address-chip {
+  html[data-layout="fluid"] .address-chip {
     padding: 7px 14px;
     font-size: 12px;
     gap: 8px;
   }
-  html[data-mode="sidepanel"] button.address-chip-link {
+  html[data-layout="fluid"] button.address-chip-link {
     max-width: 180px;
   }
 }
 
 @media (min-width: 1000px) {
-  html[data-mode="sidepanel"] .address-chip {
+  html[data-layout="fluid"] .address-chip {
     padding: 8px 16px;
     font-size: 13px;
   }
-  html[data-mode="sidepanel"] button.address-chip-link {
+  html[data-layout="fluid"] button.address-chip-link {
     max-width: 260px;
   }
 }
@@ -4569,7 +4578,7 @@ button.address-chip-link:hover {
    The collapsible "Details" section follows the summary in the left
    column so the activity feed stays full-height. */
 @container (min-width: 760px) {
-  html[data-mode="sidepanel"] .token-detail-grid {
+  html[data-layout="fluid"] .token-detail-grid {
     display: grid;
     grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
     grid-template-areas:
@@ -4579,9 +4588,9 @@ button.address-chip-link:hover {
     align-items: start;
   }
 
-  html[data-mode="sidepanel"] .token-detail-summary { grid-area: summary; }
-  html[data-mode="sidepanel"] .token-detail-activity { grid-area: activity; margin-top: 0; }
-  html[data-mode="sidepanel"] .token-detail-extras { grid-area: extras; }
+  html[data-layout="fluid"] .token-detail-summary { grid-area: summary; }
+  html[data-layout="fluid"] .token-detail-activity { grid-area: activity; margin-top: 0; }
+  html[data-layout="fluid"] .token-detail-extras { grid-area: extras; }
 }
 
 .token-detail-hero {

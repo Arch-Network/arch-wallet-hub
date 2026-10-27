@@ -34,7 +34,7 @@ import {
   type FeeTierId,
 } from "../../utils/btc-fee-tiers";
 import BtcFeeTierPicker from "../../components/BtcFeeTierPicker";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, truncateAddress } from "../../utils/format";
+import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, formatUsd, truncateAddress } from "../../utils/format";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { walletStore } from "../../state/wallet-store";
@@ -43,7 +43,7 @@ import {
   loadSendForm,
   saveSendForm,
 } from "../../state/send-form-session";
-import { isExternalAccount, isWatchAccount, type WalletAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import { isUserRejection } from "../../wallets/bridge/errors";
 import { signerInfo } from "../../wallets/capabilities";
@@ -68,6 +68,7 @@ import {
   rawTokenAmountToInput,
   usdInputToBtc,
 } from "../../utils/send-amounts";
+import { displayAmountUsd, tokenUsdValue, usdPerUnitForMint } from "../../utils/token-usd";
 import { isArchName, isAnsEnabledForNetwork, resolveName, type NameResolution } from "../../utils/name-service";
 
 type AssetType = "btc" | "arch" | "apl";
@@ -163,6 +164,37 @@ interface SendProps {
 function btcUsdSubtitle(sats: number, btcUsd: number | null): string | null {
   if (sats <= 0) return null;
   return formatBtcUsd(sats, btcUsd);
+}
+
+/** Fiat value of a held APL balance, when the mint has a price. */
+function tokenBalanceUsdLabel(
+  token: TokenHolding,
+  network: NetworkId,
+  btcUsd: number | null,
+): string | null {
+  const usd = tokenUsdValue(
+    token.rawAmount,
+    token.decimals,
+    usdPerUnitForMint(token.mint, network, btcUsd),
+  );
+  return usd != null ? formatUsd(usd) : null;
+}
+
+/**
+ * Fiat value of the amount the user is typing. aBTC tracks BTC/USD;
+ * dollar-pegged mints sit at $1. Unpriced mints return null.
+ */
+function tokenSendUsdLabel(
+  token: TokenHolding,
+  displayAmount: string,
+  network: NetworkId,
+  btcUsd: number | null,
+): string | null {
+  const usd = displayAmountUsd(
+    displayAmount,
+    usdPerUnitForMint(token.mint, network, btcUsd),
+  );
+  return usd != null ? formatUsd(usd) : null;
 }
 
 export default function Send({ networkStatus }: SendProps) {
@@ -953,25 +985,29 @@ export default function Send({ networkStatus }: SendProps) {
               </div>
             </div>
           </button>
-          {tokensHeld.map((tk) => (
-            <button
-              key={tk.mint}
-              className="card send-asset-card"
-              onClick={() => { setSelectedToken(tk); setAsset("apl"); setStep(2); }}
-            >
-              <div className="asset-row send-asset-row">
-                {renderAssetIcon("apl", tk)}
-                <div className="asset-info">
-                  <div className="asset-name">{tk.name || "APL Token"}</div>
-                  <div className="asset-sub">{tk.symbol || "APL Token"}</div>
+          {tokensHeld.map((tk) => {
+            const balanceUsd = tokenBalanceUsdLabel(tk, state.network, btcUsd);
+            return (
+              <button
+                key={tk.mint}
+                className="card send-asset-card"
+                onClick={() => { setSelectedToken(tk); setAsset("apl"); setStep(2); }}
+              >
+                <div className="asset-row send-asset-row">
+                  {renderAssetIcon("apl", tk)}
+                  <div className="asset-info">
+                    <div className="asset-name">{tk.name || "APL Token"}</div>
+                    <div className="asset-sub">{tk.symbol || "APL Token"}</div>
+                  </div>
+                  <div className="send-asset-balance-wrap">
+                    <div className="send-asset-balance-label">Available</div>
+                    <div className="send-asset-balance">{tk.uiAmount} {tk.symbol ? tk.symbol : ""}</div>
+                    {balanceUsd && <div className="send-asset-usd">{balanceUsd}</div>}
+                  </div>
                 </div>
-                <div className="send-asset-balance-wrap">
-                  <div className="send-asset-balance-label">Available</div>
-                  <div className="send-asset-balance">{tk.uiAmount} {tk.symbol ? tk.symbol : ""}</div>
-                </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
           {tokensHeld.length === 0 && (
             <div className="card send-asset-card send-asset-card-disabled">
               <div className="asset-row send-asset-row">
@@ -1046,6 +1082,9 @@ export default function Send({ networkStatus }: SendProps) {
         : asset === "apl" && selectedToken
           ? `${selectedToken.uiAmount} ${selectedToken.symbol || ""}`.trim()
           : "—";
+    const availableUsd = asset === "apl" && selectedToken
+      ? tokenBalanceUsdLabel(selectedToken, state.network, btcUsd)
+      : null;
     const showMax = (asset === "btc" && btcLoaded && btcSpendableSats > 0)
       || (asset === "arch" && archBalance && Number(archBalance) > 0)
       || (
@@ -1106,6 +1145,15 @@ export default function Send({ networkStatus }: SendProps) {
           : btcUsdLine
             ? `≈ ${btcUsdLine}`
             : null;
+    const tokenAmountUsd =
+      asset === "apl" && selectedToken
+        ? tokenSendUsdLabel(selectedToken, amount, state.network, btcUsd)
+        : null;
+    const amountHint = asset === "btc"
+      ? btcAmountHint
+      : tokenAmountUsd
+        ? `≈ ${tokenAmountUsd}`
+        : null;
 
     // Recent recipients for the current asset / network / mint context.
     // The store keeps them MRU-sorted; we cap to 6 here to keep the chip
@@ -1139,6 +1187,7 @@ export default function Send({ networkStatus }: SendProps) {
           <div className="asset-summary-chip-balance">
             <div className="asset-summary-chip-balance-label">Available</div>
             <div className="asset-summary-chip-balance-value">{availableValue}</div>
+            {availableUsd && <div className="send-asset-usd">{availableUsd}</div>}
           </div>
         </div>
 
@@ -1273,7 +1322,11 @@ export default function Send({ networkStatus }: SendProps) {
               inputMode="decimal"
             />
             <span className="form-field-suffix">
-              {asset === "btc" && btcAmountMode === "usd" ? "USD" : meta.unit}
+              {asset === "btc" && btcAmountMode === "usd"
+                ? "USD"
+                : asset === "apl"
+                  ? (selectedToken?.symbol || meta.unit)
+                  : meta.unit}
             </span>
             {asset === "btc" && btcUsd !== null && (
               <button
@@ -1300,8 +1353,8 @@ export default function Send({ networkStatus }: SendProps) {
               </button>
             )}
           </div>
-          {btcAmountHint && (
-            <div className="form-field-hint">{btcAmountHint}</div>
+          {amountHint && (
+            <div className="form-field-hint">{amountHint}</div>
           )}
         </div>
 
@@ -1349,13 +1402,19 @@ export default function Send({ networkStatus }: SendProps) {
         : selectedToken
           ? `${amount} ${selectedToken.symbol || "APL"}`
           : amount;
+    const tokenAmountUsd =
+      asset === "apl" && selectedToken
+        ? tokenSendUsdLabel(selectedToken, amount, state.network, btcUsd)
+        : null;
     const amountSubline = asset === "arch" && Number(amount) > 0
       ? `${Math.round((Number(amount) || 0) * 1e9).toLocaleString()} lamports`
       : asset === "btc" && amountSats > 0
         ? `${amountSats.toLocaleString()} sats`
-        : asset === "apl" && aplRawAmount !== null
-          ? `${aplRawAmount.toLocaleString()} raw units`
-          : null;
+        : tokenAmountUsd
+          ? `≈ ${tokenAmountUsd}`
+          : asset === "apl" && aplRawAmount !== null
+            ? `${aplRawAmount.toLocaleString()} raw units`
+            : null;
 
     return (
       <div className="send-form-shell">
