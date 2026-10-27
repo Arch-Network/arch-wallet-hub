@@ -26,6 +26,14 @@ const shimAliases = {
 };
 
 export default defineConfig({
+  hooks: {
+    // The popup entrypoint would otherwise install popup.html as the
+    // toolbar bubble. That bubble cannot be resized. Click handling in
+    // the service worker opens a real window instead.
+    "build:manifestGenerated": (_wxt, manifest) => {
+      if (manifest.action) delete manifest.action.default_popup;
+    },
+  },
   modules: ["@wxt-dev/module-react"],
   srcDir: ".",
   manifest: {

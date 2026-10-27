@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { reopenForExternalSigning } from "../runtime-context";
+import { openWalletPopup, reopenForExternalSigning } from "../runtime-context";
 
 function stubChrome(currentTab: unknown) {
   const create = vi.fn().mockResolvedValue({});
@@ -26,5 +26,28 @@ describe("reopenForExternalSigning", () => {
     const create = stubChrome({ id: 7 });
     await expect(reopenForExternalSigning("/send")).resolves.toBe(false);
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("openWalletPopup", () => {
+  it("opens at the size the user last resized a popup window to", async () => {
+    const create = vi.fn().mockResolvedValue({});
+    vi.stubGlobal("chrome", {
+      windows: { create },
+      runtime: { getURL: (path: string) => `chrome-extension://id${path}` },
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({
+            arch_wallet_popup_bounds: { width: 720, height: 900 },
+          }),
+        },
+      },
+    });
+
+    await openWalletPopup({ path: "/dashboard" });
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "popup", width: 720, height: 900, focused: true }),
+    );
   });
 });

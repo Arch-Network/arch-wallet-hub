@@ -389,7 +389,7 @@ export default function Settings() {
             </button>
           </div>
           <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "8px 0 0" }}>
-            Popup closes when you click away. Side panel stays open while you browse.
+            Popup opens in a window you can resize. Side panel stays docked while you browse.
           </p>
         </div>
       </div>

@@ -19,6 +19,7 @@ import {
   installGlobalErrorHandlers,
 } from "../src/utils/log";
 import { installNotificationClickHandler } from "../src/utils/notifications";
+import { readPopupBounds, selectResizableWalletWindow } from "../src/utils/popup-bounds";
 
 const AUTO_LOCK_ALARM = "arch-wallet-auto-lock";
 const PENDING_GC_ALARM = "arch-wallet-pending-gc";
@@ -78,23 +79,51 @@ function isInternalUiSender(sender: chrome.runtime.MessageSender): boolean {
 }
 
 /**
- * Configure the toolbar action so clicking the icon opens either the popup
- * window or the Chrome side panel, per the user's preference.
+ * Configure the toolbar action so clicking the icon opens either a
+ * resizable window or the Chrome side panel, per the user's preference.
+ *
+ * The anchored toolbar bubble cannot be resized — Chrome sizes it to the
+ * page and ignores dragging. Popup mode therefore leaves the action
+ * without a popup so `action.onClicked` can open a real window.
  */
 async function applyOpenAsPreference(mode: OpenAsMode): Promise<void> {
   try {
+    await chrome.action.setPopup({ popup: "" });
     if (mode === "sidepanel" && chrome.sidePanel?.setPanelBehavior) {
-      await chrome.action.setPopup({ popup: "" });
       await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-    } else {
-      if (chrome.sidePanel?.setPanelBehavior) {
-        await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
-      }
-      await chrome.action.setPopup({ popup: "popup.html" });
+    } else if (chrome.sidePanel?.setPanelBehavior) {
+      await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
     }
   } catch (err) {
     console.warn("[arch-wallet] applyOpenAsPreference failed", err);
   }
+}
+
+async function openOrFocusWalletWindow(): Promise<void> {
+  try {
+    const getContexts = chrome.runtime.getContexts as (
+      filter: chrome.runtime.ContextFilter,
+    ) => Promise<chrome.runtime.ExtensionContext[]>;
+    const contexts = await getContexts({
+      documentUrls: [`${chrome.runtime.getURL("/popup.html")}*`],
+    });
+    const existing = selectResizableWalletWindow(contexts);
+    if (existing != null) {
+      await chrome.windows.update(existing, { focused: true });
+      return;
+    }
+  } catch {
+    /* fall through and open a fresh window */
+  }
+
+  const bounds = await readPopupBounds();
+  await chrome.windows.create({
+    url: chrome.runtime.getURL("/popup.html"),
+    type: "popup",
+    width: bounds.width,
+    height: bounds.height,
+    focused: true,
+  });
 }
 
 let openAsSync = Promise.resolve();
@@ -381,6 +410,17 @@ async function rejectAndCleanup(requestId: string, reason: string): Promise<void
 export default defineBackground(() => {
   walletStore.initialize();
   syncOpenAsFromStorage();
+
+  chrome.action.onClicked.addListener(() => {
+    void (async () => {
+      const saved = await readOpenAsPreference();
+      const mode = saved ?? (await walletStore.getState()).openAs;
+      if (mode === "sidepanel") return;
+      await openOrFocusWalletWindow();
+    })().catch((err) => {
+      console.warn("[arch-wallet] could not open wallet window", err);
+    });
+  });
   pendingRequestsStore.clearAll(); // SW boot: drop any stale entries.
 
   // Install diagnostics in the SW realm. This realm is a different
@@ -649,11 +689,12 @@ export default defineBackground(() => {
 
   async function openApprovalPopup(req: PendingRequest): Promise<number | undefined> {
     const url = chrome.runtime.getURL(`/popup.html#/approve/${req.id}`);
+    const bounds = await readPopupBounds();
     const win = await chrome.windows.create({
       url,
       type: "popup",
-      width: 400,
-      height: 640,
+      width: bounds.width,
+      height: bounds.height,
       focused: true,
     });
     return win?.id;
