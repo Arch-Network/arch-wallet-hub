@@ -164,7 +164,8 @@ via `STAMP_LOGIN`.
 
 **One-time provisioning:**
 
-1. Create the dummy email wallet on **mainnet**:
+1. Create the dummy email wallet on **mainnet**. The route answers `410`
+   unless `EMAIL_WALLET_CREATE_ENABLED=true`; turn it on for this step only.
    ```bash
    curl -X POST \
      -H "X-Api-Key: $HUB_API_KEY" -H "X-Network: mainnet" \

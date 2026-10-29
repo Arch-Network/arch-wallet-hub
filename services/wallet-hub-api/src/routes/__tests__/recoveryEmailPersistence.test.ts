@@ -74,12 +74,17 @@ vi.mock("../../db/queries.js", async (orig) => ({
   markIdempotencyFailed: async () => undefined,
 }));
 
+import { getEnv } from "../../config/env.js";
 import { registerSessionAuth } from "../../plugins/sessionAuth.js";
 import { registerTurnkeyRoutes } from "../turnkey.js";
 
-async function buildServer() {
+async function buildServer({ emailWalletCreateEnabled = true } = {}) {
   const app = Fastify();
-  app.decorate("config", { TURNKEY_ORGANIZATION_ID: "root-org", SESSION_ENFORCED_ROUTES: "" } as never);
+  app.decorate("config", {
+    TURNKEY_ORGANIZATION_ID: "root-org",
+    SESSION_ENFORCED_ROUTES: "",
+    EMAIL_WALLET_CREATE_ENABLED: emailWalletCreateEnabled,
+  } as never);
   app.addHook("onRequest", async (request) => {
     (request as any).app = { appId: "app", apiKeyId: "key", apiKeyPrefix: "p" };
   });
@@ -160,5 +165,45 @@ describe.each(routes)("$name recovery email persistence", ({ url, create, payloa
     expect(mocks.db.recoveryEmail).toBe("new@example.com");
     expect(mocks.db.resources).toHaveLength(1);
     expect(create()).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("/turnkey/email-wallets is closed unless EMAIL_WALLET_CREATE_ENABLED", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("is off when the env leaves it unset", () => {
+    const env = getEnv({
+      TURNKEY_ORGANIZATION_ID: "root-org",
+      TURNKEY_API_PUBLIC_KEY: "pub",
+      TURNKEY_API_PRIVATE_KEY: "priv",
+      DATABASE_URL: "postgres://u:p@localhost:5432/db",
+    } as NodeJS.ProcessEnv);
+    expect(env.EMAIL_WALLET_CREATE_ENABLED).toBe(false);
+  });
+
+  it("answers 410 and creates nothing for any email", async () => {
+    const app = await buildServer({ emailWalletCreateEnabled: false });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/turnkey/email-wallets",
+      headers: { "idempotency-key": "idem-key" },
+      payload: { externalUserId: "ext-1", userEmail: "someone-else@example.com" },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(410);
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
+    expect(mocks.updateUserRecoveryEmail).not.toHaveBeenCalled();
+  });
+
+  it("leaves passkey wallet creation open", async () => {
+    const app = await buildServer({ emailWalletCreateEnabled: false });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/turnkey/passkey-wallets",
+      headers: { "idempotency-key": "idem-key" },
+      payload: routes[1].payload,
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
   });
 });

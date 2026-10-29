@@ -71,6 +71,7 @@ import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
 import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
+import { registerEmailSigninRoutes } from "./recoverySignin.js";
 import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
 import {
   computeCandidateToken,
@@ -246,6 +247,14 @@ const VerifyResponse = Type.Object({
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
   setDefaultRateLimitGroup(server, "recovery");
+
+  registerEmailSigninRoutes(server, {
+    maxPerWindow: RATE_LIMIT_MAX_INITS,
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    challengeTtlMs: CHALLENGE_TTL_MS,
+    maxVerifyAttempts: VERIFY_MAX_ATTEMPTS,
+    otpEmail: () => buildOtpEmailCustomization(server.config)
+  });
 
   server.post(
     "/recovery/email/init",

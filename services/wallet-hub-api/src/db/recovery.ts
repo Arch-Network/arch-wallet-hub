@@ -53,6 +53,8 @@ export interface RecoveryChallengeRow {
   created_at: string;
   expires_at: string;
   consumed_at: string | null;
+  /** INIT_OTP_V3 id of a /recovery/email/signin challenge (no candidates). */
+  otp_id: string | null;
 }
 
 export function hashEmailForRateLimit(email: string): string {
@@ -85,7 +87,7 @@ export function maskAddress(address: string | null): string {
 
 export async function countRecentChallenges(
   client: PoolClient,
-  params: { appId: string; emailHash: string; windowMs: number }
+  params: { appId: string; emailHash: string; windowMs: number; signinOnly?: boolean }
 ): Promise<number> {
   const res = await client.query<{ count: string }>(
     `
@@ -93,6 +95,7 @@ export async function countRecentChallenges(
       WHERE app_id = $1
         AND email_hash = $2
         AND created_at > NOW() - ($3::int * INTERVAL '1 millisecond')
+        ${params.signinOnly ? "AND otp_id IS NOT NULL" : ""}
     `,
     [params.appId, params.emailHash, params.windowMs]
   );
@@ -106,15 +109,16 @@ export async function insertRecoveryChallenge(
     emailHash: string;
     candidates: RecoveryCandidate[];
     ttlMs: number;
+    otpId?: string;
   }
 ): Promise<RecoveryChallengeRow> {
   const res = await client.query<RecoveryChallengeRow>(
     `
-      INSERT INTO recovery_challenges (app_id, email_hash, candidates, status, expires_at)
-      VALUES ($1, $2, $3::jsonb, 'pending', NOW() + ($4::int * INTERVAL '1 millisecond'))
+      INSERT INTO recovery_challenges (app_id, email_hash, candidates, status, expires_at, otp_id)
+      VALUES ($1, $2, $3::jsonb, 'pending', NOW() + ($4::int * INTERVAL '1 millisecond'), $5)
       RETURNING *
     `,
-    [params.appId, params.emailHash, JSON.stringify(params.candidates), params.ttlMs]
+    [params.appId, params.emailHash, JSON.stringify(params.candidates), params.ttlMs, params.otpId ?? null]
   );
   return res.rows[0]!;
 }
