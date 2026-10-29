@@ -384,6 +384,21 @@ export async function mintSession(
   client: PoolClient,
   params: { challengeId: string; appId: string; userId: string },
 ): Promise<{ token: string; sessionId: string; expiresAt: string }> {
+  const minted = await mintSessionForUser(client, params);
+  await markChallengeConsumed(client, params.challengeId);
+  return minted;
+}
+
+/**
+ * Mint a session with no challenge to consume: for flows whose proof of
+ * control is something other than a signed Hub challenge -- an OIDC token
+ * Turnkey has just accepted for OAUTH_LOGIN, or an OTP code the inbox
+ * answered. The caller decides the proof; this only records the session.
+ */
+export async function mintSessionForUser(
+  client: PoolClient,
+  params: { appId: string; userId: string },
+): Promise<{ token: string; sessionId: string; expiresAt: string }> {
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
   const random = crypto.randomBytes(32).toString("base64url");
   const token = `${SESSION_TOKEN_PREFIX}${random}`;
@@ -396,7 +411,6 @@ export async function mintSession(
     `,
     [params.appId, params.userId, tokenHash, expiresAt.toISOString()],
   );
-  await markChallengeConsumed(client, params.challengeId);
   return {
     token,
     sessionId: res.rows[0]!.id,

@@ -14,6 +14,8 @@ import { registerSecurityHeaders } from "./plugins/securityHeaders.js";
 import { registerRequireHttps } from "./plugins/requireHttps.js";
 import { registerRateLimit } from "./plugins/rateLimit.js";
 import { registerAuthSessionRoutes } from "./routes/authSessions.js";
+import { registerAuthOAuthRoutes, registerJwksRoute } from "./routes/authOAuth.js";
+import { createIdTokenSigner } from "./auth/idToken.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerPlatformRoutes } from "./routes/platform.js";
 import { registerTurnkeyRoutes } from "./routes/turnkey.js";
@@ -97,6 +99,22 @@ export async function createServer() {
     );
   }
 
+  // The Arch ID token's signing key, once per process (auth/idToken.ts).
+  // Production refuses to boot without a configured key (env.ts); dev and
+  // test get an ephemeral one, loudly.
+  const idTokenSigner = createIdTokenSigner({
+    issuer: config.ID_TOKEN_ISSUER,
+    privateJwkJson: config.ID_TOKEN_PRIVATE_JWK,
+    previousJwksJson: config.ID_TOKEN_PREVIOUS_JWKS,
+    allowEphemeral: config.NODE_ENV !== "production",
+  });
+  server.decorate("idTokenSigner", idTokenSigner);
+  if (idTokenSigner.ephemeral) {
+    server.log.warn(
+      "ID_TOKEN_PRIVATE_JWK unset — signing Arch ID tokens with an ephemeral dev key; tokens die with this process.",
+    );
+  }
+
   await server.register(sensible);
   // Security headers run before everything so even error responses
   // carry them.
@@ -120,6 +138,8 @@ export async function createServer() {
   // authenticated apiKeyId.
   await server.register(registerRateLimit);
   await server.register(registerAuthSessionRoutes, { prefix: "/v1" });
+  await server.register(registerAuthOAuthRoutes, { prefix: "/v1" });
+  await server.register(registerJwksRoute);
   await server.register(registerHealthRoutes, { prefix: "/v1" });
   await server.register(registerPlatformRoutes, { prefix: "/v1" });
   await server.register(registerTurnkeyRoutes, { prefix: "/v1" });

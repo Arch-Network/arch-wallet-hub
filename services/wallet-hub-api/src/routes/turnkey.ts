@@ -112,12 +112,16 @@ const GetWalletResponse = Type.Object({
    *   - "passkey": sub-org with WebAuthn authenticators registered.
    *   - "email":   sub-org with API keys only; requires OTP per
    *                session bootstrap.
+   *   - "oauth":   sub-org whose root user is an OIDC identity (Google,
+   *                Apple); sessions open through OAUTH_LOGIN
+   *                (routes/authOAuth.ts).
    *   - null:      legacy parent-org row from the deprecated
    *                custodial model.
    */
   authMethod: Type.Union([
     Type.Literal("passkey"),
     Type.Literal("email"),
+    Type.Literal("oauth"),
     Type.Null()
   ])
 });
