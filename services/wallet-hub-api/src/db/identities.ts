@@ -117,9 +117,9 @@ export async function getPersonByVerifiedEmail(
 /** A new person: canonical id, email as the provider reported it, verified only when the provider said so. */
 export async function createPerson(
   client: PoolClient,
-  params: { appId: string; email: string | null; emailVerified: boolean },
+  params: { appId: string; externalUserId?: string; email: string | null; emailVerified: boolean },
 ): Promise<PersonRow> {
-  const externalUserId = newPersonExternalId();
+  const externalUserId = params.externalUserId ?? newPersonExternalId();
   const res = await client.query<PersonRow>(
     `
       INSERT INTO users (app_id, external_user_id, primary_email, email_verified_at, recovery_email, recovery_email_set_at)

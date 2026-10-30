@@ -46,6 +46,7 @@ import {
 import {
   createPerson,
   getIdentity,
+  newPersonExternalId,
   getPerson,
   getPersonByVerifiedEmail,
   insertIdentity,
@@ -235,6 +236,13 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
         if (claims.email && claims.emailVerified) {
           const owner = await getPersonByVerifiedEmail(client, { appId, email: claims.email });
           if (owner) {
+            // A person with no wallet and no non-email identity is the residue of a sign-up that never finished
+            // (or a legacy row); nothing of theirs can be hijacked, so the sign-up adopts the row instead of refusing.
+            const ownerResources = await listTurnkeyResourcesForUserForApp(client, { appId, userId: owner.id });
+            const ownerIdentities = await listIdentitiesForUser(client, { appId, userId: owner.id });
+            if (ownerResources.length === 0 && ownerIdentities.every((i) => i.kind === "email")) {
+              return { kind: "adopt" as const, person: owner };
+            }
             await auditEvent({
               client, appId, requestId: request.id, userId: owner.id,
               eventType: "auth.oauth.identity_collision", entityType: "user", entityId: owner.id,
@@ -274,15 +282,19 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
         const addressFormat = body.addressFormat ?? (isMainnet ? "ADDRESS_FORMAT_BITCOIN_MAINNET_P2TR" : "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR");
         const derivationPath = body.derivationPath ?? (isMainnet ? "m/86'/0'/0'/0/0" : "m/86'/1'/0'/0/0");
 
-        person = await withDbTransaction(db, (client) => createPerson(client, { appId, email: claims.email, emailVerified: claims.emailVerified }));
-        const walletName = body.walletName ?? `arch-${claims.provider}-${person.id.slice(0, 8)}-${Date.now().toString(36)}`;
+        // The person's canonical id is chosen now so the sub-organization can be named for it, but NOTHING is written
+        // until Turnkey has made the sub-org: a failed create must leave no person row behind, or the next attempt
+        // would find a verified email with no wallet and refuse itself. An orphan from before this ordering is adopted.
+        const adopted = resolved.kind === "adopt" ? resolved.person : null;
+        const externalUserId = adopted?.external_user_id ?? newPersonExternalId();
+        const walletName = body.walletName ?? `arch-${claims.provider}-${externalUserId.slice(4, 12)}-${Date.now().toString(36)}`;
 
         await withDbTransaction(db, (client) =>
           auditEvent({
-            client, appId, requestId: request.id, userId: person.id,
-            eventType: "turnkey.wallet.create", entityType: "user", entityId: person.id,
+            client, appId, requestId: request.id, userId: adopted?.id ?? null,
+            eventType: "turnkey.wallet.create", entityType: "user", entityId: externalUserId,
             turnkeyActivityId: null, turnkeyRequestId: null,
-            payloadJson: { mode: "oauth_suborg", provider: claims.provider, walletName, addressFormat, derivationPath },
+            payloadJson: { mode: "oauth_suborg", provider: claims.provider, walletName, addressFormat, derivationPath, adoptedOrphan: adopted !== null },
             outcome: "requested",
           }),
         );
@@ -290,16 +302,16 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
         let madeSubOrg: Awaited<ReturnType<typeof turnkey.createSubOrganizationWithOAuthWallet>>;
         try {
           madeSubOrg = await turnkey.createSubOrganizationWithOAuthWallet({
-            subOrganizationName: `arch-${appId}-${person.external_user_id}-${claims.provider}`,
-            rootUser: { userName: claims.email ?? person.external_user_id ?? "arch-user", ...(claims.email ? { userEmail: claims.email } : {}) },
+            subOrganizationName: `arch-${appId}-${externalUserId}-${claims.provider}`,
+            rootUser: { userName: claims.email ?? externalUserId, ...(claims.email ? { userEmail: claims.email } : {}) },
             provider: { providerName: claims.provider, oidcToken: body.oidcToken },
             wallet: { walletName, addressFormat: addressFormat as never, path: derivationPath },
           });
         } catch (err: any) {
           await withDbTransaction(db, (client) =>
             auditEvent({
-              client, appId, requestId: request.id, userId: person.id,
-              eventType: "turnkey.wallet.create", entityType: "user", entityId: person.id,
+              client, appId, requestId: request.id, userId: adopted?.id ?? null,
+              eventType: "turnkey.wallet.create", entityType: "user", entityId: externalUserId,
               turnkeyActivityId: null, turnkeyRequestId: null,
               payloadJson: { mode: "oauth_suborg", error: String(err?.message ?? err) },
               outcome: "failed",
@@ -319,10 +331,12 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
           request.log.warn({ err: String(e?.message ?? e), orgId: madeSubOrg.subOrganizationId }, "auth.oauth.wallet_account_lookup_failed");
         }
 
-        resource = await withDbTransaction(db, async (client) => {
+        const made = await withDbTransaction(db, async (client) => {
+          const who = adopted ?? (await createPerson(client, { appId, externalUserId, email: claims.email, emailVerified: claims.emailVerified }));
+          if (adopted && claims.email && claims.emailVerified) await setVerifiedPrimaryEmail(client, { appId, userId: who.id, email: claims.email });
           const row = await insertTurnkeyResource(client, {
             appId,
-            userId: person.id,
+            userId: who.id,
             organizationId: madeSubOrg.subOrganizationId,
             turnkeyRootUserId: madeSubOrg.rootUserId ?? null,
             walletId: madeSubOrg.walletId,
@@ -335,24 +349,26 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
             keyVerified: defaultPublicKeyHex !== null,
           });
           await insertIdentity(client, {
-            appId, userId: person.id, kind: claims.provider, subject: claims.subject,
+            appId, userId: who.id, kind: claims.provider, subject: claims.subject,
             issuer: claims.issuer, audience: claims.audience, emailAtLink: claims.email, verified: true,
           });
           if (claims.email) {
             await insertIdentity(client, {
-              appId, userId: person.id, kind: "email", subject: claims.email.toLowerCase(),
+              appId, userId: who.id, kind: "email", subject: claims.email.toLowerCase(),
               issuer: null, audience: null, emailAtLink: claims.email, verified: claims.emailVerified,
             });
           }
           await auditEvent({
-            client, appId, requestId: request.id, userId: person.id,
+            client, appId, requestId: request.id, userId: who.id,
             eventType: "turnkey.wallet.create", entityType: "turnkey_resource", entityId: row.id,
             turnkeyActivityId: madeSubOrg.activityId, turnkeyRequestId: null,
             payloadJson: { mode: "oauth_suborg", provider: claims.provider, subOrganizationId: madeSubOrg.subOrganizationId, rootUserId: madeSubOrg.rootUserId, walletId: madeSubOrg.walletId, defaultAddress },
             outcome: "succeeded",
           });
-          return row;
+          return { who, row };
         });
+        person = made.who;
+        resource = made.row;
       }
 
       // 4. Open the session: Turnkey registers the browser key on the sub-org.

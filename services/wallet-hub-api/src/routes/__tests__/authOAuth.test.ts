@@ -42,11 +42,11 @@ const mocks = vi.hoisted(() => ({
   listTurnkeyResourcesForUserForApp: vi.fn(async (): Promise<any[]> => []),
   insertTurnkeyResource: vi.fn(async (_c: unknown, p: any) => ({ id: "res-new", app_id: "app", user_id: p.userId, organization_id: p.organizationId, turnkey_root_user_id: p.turnkeyRootUserId, wallet_id: p.walletId, default_address: p.defaultAddress, default_public_key_hex: p.defaultPublicKeyHex, auth_method: p.authMethod, key_verified_at: "2026-01-01", created_at: "2026-01-01" })),
   mintSessionForUser: vi.fn(async () => ({ token: "whs_v1_test", sessionId: "s-1", expiresAt: "2030-01-01T00:00:00.000Z" })),
-  auditEvent: vi.fn(async () => undefined),
+  auditEvent: vi.fn(async (_p: any) => undefined),
   turnkey: {
-    createSubOrganizationWithOAuthWallet: vi.fn(async () => ({ subOrganizationId: SUB_ORG, rootUserId: "root-1", walletId: "wallet-1", addresses: ["tb1p-new"], activityId: "act-create" })),
-    getWalletAccountsForOrganization: vi.fn(async () => ({ accounts: [{ walletAccountId: "wa", walletId: "wallet-1", address: "tb1p-new", publicKey: WALLET_KEY }] })),
-    oauthLogin: vi.fn(async () => ({ session: "jwt", activityId: "act-login" })),
+    createSubOrganizationWithOAuthWallet: vi.fn(async (_p: any) => ({ subOrganizationId: SUB_ORG, rootUserId: "root-1", walletId: "wallet-1", addresses: ["tb1p-new"], activityId: "act-create" })),
+    getWalletAccountsForOrganization: vi.fn(async (_p: any) => ({ accounts: [{ walletAccountId: "wa", walletId: "wallet-1", address: "tb1p-new", publicKey: WALLET_KEY }] })),
+    oauthLogin: vi.fn(async (_p: any) => ({ session: "jwt", activityId: "act-login" })),
   },
 }));
 
@@ -119,6 +119,7 @@ describe("POST /v1/auth/oauth", () => {
     mocks.getIdentity.mockResolvedValue(null);
     mocks.getPersonByVerifiedEmail.mockResolvedValue(null);
     mocks.listTurnkeyResourcesForUserForApp.mockResolvedValue([]);
+    mocks.listIdentitiesForUser.mockResolvedValue([]);
   });
 
   it("signs up: creates the person, the OAuth sub-org and both identities, then opens the session", async () => {
@@ -133,7 +134,7 @@ describe("POST /v1/auth/oauth", () => {
     expect(json.defaultPublicKeyHex).toBe(WALLET_KEY);
     expect(json.sessionToken).toBe("whs_v1_test");
 
-    const create = mocks.turnkey.createSubOrganizationWithOAuthWallet.mock.calls[0]![0] as any;
+    const create = mocks.turnkey.createSubOrganizationWithOAuthWallet.mock.calls[0]![0];
     expect(create.provider).toEqual({ providerName: "google", oidcToken: "header.payload.signature" });
     expect(create.wallet.addressFormat).toBe("ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR");
     expect(mocks.insertTurnkeyResource.mock.calls[0]![1]).toMatchObject({ authMethod: "oauth", keyVerified: true, organizationId: SUB_ORG });
@@ -162,14 +163,41 @@ describe("POST /v1/auth/oauth", () => {
     await app.close();
   });
 
-  it("answers 409 identity_exists when the verified email already belongs to another person", async () => {
+  it("answers 409 identity_exists when the verified email already belongs to another person who holds a wallet", async () => {
     mocks.getPersonByVerifiedEmail.mockResolvedValue(existingPerson);
+    mocks.listTurnkeyResourcesForUserForApp.mockResolvedValue([{ ...existingResource, auth_method: "email" }]);
     const app = await buildServer();
     const res = await app.inject({ method: "POST", url: "/v1/auth/oauth", payload: body() });
     expect(res.statusCode).toBe(409);
     expect(res.json().code).toBe("identity_exists");
     expect(res.json().emailMasked).toMatch(/^j\*+@arch\.network$/);
     expect(mocks.turnkey.createSubOrganizationWithOAuthWallet).not.toHaveBeenCalled();
+    expect(mocks.turnkey.oauthLogin).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("adopts a verified-email person with no wallet and no provider identity: the residue of an unfinished sign-up", async () => {
+    mocks.getPersonByVerifiedEmail.mockResolvedValue(existingPerson);
+    mocks.listTurnkeyResourcesForUserForApp.mockResolvedValue([]);
+    mocks.listIdentitiesForUser.mockResolvedValue([{ kind: "email" }] as never);
+    mocks.getPerson.mockResolvedValue(existingPerson);
+    const app = await buildServer();
+    const res = await app.inject({ method: "POST", url: "/v1/auth/oauth", payload: body() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ created: true, externalUserId: "usr_existing" });
+    expect(mocks.createPerson).not.toHaveBeenCalled();
+    expect(mocks.insertTurnkeyResource.mock.calls[0]![1]).toMatchObject({ userId: "user-1", authMethod: "oauth" });
+    expect(mocks.turnkey.createSubOrganizationWithOAuthWallet.mock.calls[0]![0]).toMatchObject({ subOrganizationName: expect.stringContaining("usr_existing") });
+    await app.close();
+  });
+
+  it("writes no person when Turnkey will not create the sub-org, so the next attempt is a clean sign-up", async () => {
+    mocks.turnkey.createSubOrganizationWithOAuthWallet.mockRejectedValueOnce(new Error("ACTIVITY_STATUS_FAILED"));
+    const app = await buildServer();
+    const res = await app.inject({ method: "POST", url: "/v1/auth/oauth", payload: body() });
+    expect(res.statusCode).toBe(502);
+    expect(mocks.createPerson).not.toHaveBeenCalled();
+    expect(mocks.insertIdentity).not.toHaveBeenCalled();
     expect(mocks.turnkey.oauthLogin).not.toHaveBeenCalled();
     await app.close();
   });
