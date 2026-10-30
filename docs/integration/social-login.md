@@ -86,8 +86,8 @@ moving the old public JWK into `ID_TOKEN_PREVIOUS_JWKS`.
    (see `routes/platform.ts`); give it to the web app's proxy as
    `WALLET_HUB_API_KEY`.
 5. In Google Cloud → Credentials → the OAuth web client: add
-   `http://localhost:3000` to authorized JavaScript origins and
-   `http://localhost:3000/auth/google` to authorized redirect URIs. In the
+   `http://localhost:4313` (web-v2's `next dev` port) to authorized JavaScript origins and
+   `http://localhost:4313/auth/google` to authorized redirect URIs. In the
    consent screen, keep the app in *Testing* and add your account as a
    test user.
 
