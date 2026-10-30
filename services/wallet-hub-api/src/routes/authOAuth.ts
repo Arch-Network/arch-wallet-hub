@@ -1,6 +1,6 @@
 /**
- * Social login (Google today; Apple is the same route with a second
- * provider config) and the person it signs in as.
+ * Social login (Google and Apple: one route, one provider config each)
+ * and the person it signs in as.
  *
  *   POST /v1/auth/oauth
  *     Body: { provider, oidcToken, publicKey, walletName?, addressFormat?,
@@ -58,7 +58,7 @@ import {
   type IdentityKind,
 } from "../db/identities.js";
 import { mintSessionForUser } from "../auth/sessionToken.js";
-import { GOOGLE_PROVIDER, OidcError, verifyOidcToken, type OidcClaims, type OidcProvider, type OidcProviderConfig } from "../auth/oidc.js";
+import { APPLE_PROVIDER, GOOGLE_PROVIDER, OidcError, verifyOidcToken, type OidcClaims, type OidcProvider, type OidcProviderConfig } from "../auth/oidc.js";
 import { jwksDocument, mintIdToken, type IdTokenSigner } from "../auth/idToken.js";
 
 declare module "fastify" {
@@ -75,7 +75,7 @@ const SESSION_KEY_TTL_SECONDS = "3600";
 const COMPRESSED_P256 = /^0[23][0-9a-f]{64}$/i;
 
 const OAuthBody = Type.Object({
-  provider: Type.Literal("google"),
+  provider: Type.Union([Type.Literal("google"), Type.Literal("apple")]),
   oidcToken: Type.String({ minLength: 16 }),
   /** Compressed P-256 hex (66 chars): the browser's Turnkey session key. */
   publicKey: Type.String({ minLength: 66, maxLength: 66 }),
@@ -149,9 +149,16 @@ function maskSubject(kind: IdentityKind, subject: string): string {
   return subject;
 }
 
-export function providerConfigs(env: { GOOGLE_OAUTH_CLIENT_IDS: string }): Record<OidcProvider, OidcProviderConfig> {
-  const google = env.GOOGLE_OAUTH_CLIENT_IDS.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-  return { google: { ...GOOGLE_PROVIDER, clientIds: google } };
+function clientIdList(raw: string | undefined): string[] {
+  return (raw ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+/** One config per provider; a provider with no client ids is off (the route answers 503 for it). */
+export function providerConfigs(env: { GOOGLE_OAUTH_CLIENT_IDS: string; APPLE_OAUTH_CLIENT_IDS?: string }): Record<OidcProvider, OidcProviderConfig> {
+  return {
+    google: { ...GOOGLE_PROVIDER, clientIds: clientIdList(env.GOOGLE_OAUTH_CLIENT_IDS) },
+    apple: { ...APPLE_PROVIDER, clientIds: clientIdList(env.APPLE_OAUTH_CLIENT_IDS) },
+  };
 }
 
 async function mintIdentityToken(
@@ -362,7 +369,7 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
             client, appId, requestId: request.id, userId: who.id,
             eventType: "turnkey.wallet.create", entityType: "turnkey_resource", entityId: row.id,
             turnkeyActivityId: madeSubOrg.activityId, turnkeyRequestId: null,
-            payloadJson: { mode: "oauth_suborg", provider: claims.provider, subOrganizationId: madeSubOrg.subOrganizationId, rootUserId: madeSubOrg.rootUserId, walletId: madeSubOrg.walletId, defaultAddress },
+            payloadJson: { mode: "oauth_suborg", provider: claims.provider, subOrganizationId: madeSubOrg.subOrganizationId, rootUserId: madeSubOrg.rootUserId, walletId: madeSubOrg.walletId, defaultAddress, privateRelay: claims.privateRelay },
             outcome: "succeeded",
           });
           return { who, row };

@@ -11,7 +11,7 @@
  *
  * Verification is the standard OIDC recipe, done with node:crypto so no
  * JWT library joins the dependency set:
- *   - header `alg` must be RS256 (Google) or ES256; `kid` names a key in
+ *   - header `alg` must be RS256 (Google and Apple) or ES256; `kid` names a key in
  *     the issuer's JWKS, fetched from the issuer's own well-known document
  *     and cached for JWKS_TTL_MS (Google rotates about every six hours);
  *   - `iss` must be one the provider is known to use;
@@ -30,7 +30,7 @@
 import crypto from "node:crypto";
 import { sha256Hex } from "./sessionToken.js";
 
-export type OidcProvider = "google";
+export type OidcProvider = "google" | "apple";
 
 export type OidcClaims = {
   provider: OidcProvider;
@@ -40,6 +40,12 @@ export type OidcClaims = {
   email: string | null;
   emailVerified: boolean;
   name: string | null;
+  /**
+   * Apple only: the email is a Hide-My-Email relay (`@privaterelay.appleid.com`),
+   * which forwards to the person only from senders Apple has been told about
+   * (the app's registered email sources). Still unique and still verified.
+   */
+  privateRelay: boolean;
   expiresAt: Date;
   /** sha256 of the raw token: the replay key. */
   tokenHash: string;
@@ -87,6 +93,18 @@ export const GOOGLE_PROVIDER: Omit<OidcProviderConfig, "clientIds"> = {
   // Google documents both spellings as valid issuer values.
   issuers: ["https://accounts.google.com", "accounts.google.com"],
   jwksUrl: "https://www.googleapis.com/oauth2/v3/certs",
+};
+
+/**
+ * Sign in with Apple for the web. `aud` is the Services ID (the web
+ * "client_id", e.g. network.arch.prime.web), not the App ID. Apple signs
+ * with RS256 and rotates its JWKS; `email_verified` and `is_private_email`
+ * arrive as strings in some tokens, booleans in others.
+ */
+export const APPLE_PROVIDER: Omit<OidcProviderConfig, "clientIds"> = {
+  provider: "apple",
+  issuers: ["https://appleid.apple.com"],
+  jwksUrl: "https://appleid.apple.com/auth/keys",
 };
 
 export function oauthNonceFor(sessionPublicKeyHex: string): string {
@@ -223,9 +241,11 @@ export async function verifyOidcToken(params: {
   if (!sub) throw new OidcError("malformed", "OIDC token has no sub");
 
   const email = typeof payload.email === "string" && payload.email.includes("@") ? payload.email.trim() : null;
-  // Google sends a boolean; Apple has been seen sending the string "true".
+  // Google sends a boolean; Apple sends the string "true" in some tokens.
   const emailVerifiedRaw = payload.email_verified;
   const emailVerified = emailVerifiedRaw === true || emailVerifiedRaw === "true";
+  const privateRelayRaw = payload.is_private_email;
+  const privateRelay = privateRelayRaw === true || privateRelayRaw === "true";
 
   return {
     provider: config.provider,
@@ -235,6 +255,7 @@ export async function verifyOidcToken(params: {
     email,
     emailVerified: email !== null && emailVerified,
     name: typeof payload.name === "string" && payload.name.trim().length > 0 ? payload.name.trim() : null,
+    privateRelay,
     expiresAt: new Date(exp),
     tokenHash: sha256Hex(token),
   };

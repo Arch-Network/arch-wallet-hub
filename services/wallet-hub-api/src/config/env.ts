@@ -158,6 +158,8 @@ const EnvSchema = z.object({
   // in every client); the secret is never needed for the OIDC id-token
   // flow and is not read here.
   GOOGLE_OAUTH_CLIENT_IDS: z.string().default(""),
+  // Sign in with Apple: the Services ID(s) the web client uses as client_id.
+  APPLE_OAUTH_CLIENT_IDS: z.string().default(""),
 
   // The Arch ID token (auth/idToken.ts): ES256 signing key as a P-256
   // private JWK (JSON string). Required outside dev/test; in dev/test an

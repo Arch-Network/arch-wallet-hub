@@ -21,6 +21,7 @@ const claims = (overrides: Record<string, unknown> = {}) => ({
   audience: "client-1",
   email: "jonah@arch.network",
   emailVerified: true,
+  privateRelay: false,
   name: "Jonah",
   expiresAt: new Date(Date.now() + 3600_000),
   tokenHash: "hash-1",
@@ -91,9 +92,9 @@ import { registerAuthOAuthRoutes, registerJwksRoute } from "../authOAuth.js";
 const ISSUER = "https://hub.test";
 const signer = createIdTokenSigner({ issuer: ISSUER, privateJwkJson: undefined, allowEphemeral: true });
 
-async function buildServer(clientIds = "client-1") {
+async function buildServer(clientIds = "client-1", appleClientIds = "") {
   const app = Fastify();
-  app.decorate("config", { TURNKEY_ORGANIZATION_ID: ROOT_ORG, SESSION_ENFORCED_ROUTES: "", GOOGLE_OAUTH_CLIENT_IDS: clientIds, NODE_ENV: "test" } as never);
+  app.decorate("config", { TURNKEY_ORGANIZATION_ID: ROOT_ORG, SESSION_ENFORCED_ROUTES: "", GOOGLE_OAUTH_CLIENT_IDS: clientIds, APPLE_OAUTH_CLIENT_IDS: appleClientIds, NODE_ENV: "test" } as never);
   app.decorate("idTokenSigner", signer);
   app.addHook("onRequest", async (request) => {
     (request as any).app = { appId: "app", apiKeyId: "key", apiKeyPrefix: "p" };
@@ -145,6 +146,25 @@ describe("POST /v1/auth/oauth", () => {
     const payload = verifyIdToken(json.idToken, jwksDocument(signer), ISSUER);
     expect(payload).toMatchObject({ sub: "usr_new", email: "jonah@arch.network", email_verified: true, wallets: [WALLET_KEY], amr: ["google"] });
     await app.close();
+  });
+
+  it("signs up with Apple the same way, keyed on the apple identity, and 503s Apple where only Google is configured", async () => {
+    mocks.verifyOidcToken.mockResolvedValue(claims({ provider: "apple", issuer: "https://appleid.apple.com", subject: "001234.abcdef.5678", audience: "network.arch.prime.web", email: "abc123@privaterelay.appleid.com", privateRelay: true }));
+    mocks.getPerson.mockResolvedValue({ id: "user-new", external_user_id: "usr_new", primary_email: "abc123@privaterelay.appleid.com", email_verified_at: "2026-01-01" });
+    const app = await buildServer("client-1", "network.arch.prime.web");
+    const res = await app.inject({ method: "POST", url: "/v1/auth/oauth", payload: body({ provider: "apple" }) });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().created).toBe(true);
+    expect(mocks.turnkey.createSubOrganizationWithOAuthWallet.mock.calls[0]![0].provider).toEqual({ providerName: "apple", oidcToken: "header.payload.signature" });
+    const kinds = mocks.insertIdentity.mock.calls.map((c) => (c[1] as any).kind).sort();
+    expect(kinds).toEqual(["apple", "email"]);
+    expect(verifyIdToken(res.json().idToken, jwksDocument(signer), ISSUER)).toMatchObject({ amr: ["apple"], email: "abc123@privaterelay.appleid.com" });
+    await app.close();
+
+    const googleOnly = await buildServer("client-1");
+    const off = await googleOnly.inject({ method: "POST", url: "/v1/auth/oauth", payload: body({ provider: "apple" }) });
+    expect(off.statusCode).toBe(503);
+    await googleOnly.close();
   });
 
   it("signs in an identity the Hub knows without creating anything", async () => {

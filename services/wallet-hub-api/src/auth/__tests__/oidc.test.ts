@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 
-import { _setJwksCacheForTests, GOOGLE_PROVIDER, OidcError, oauthNonceFor, verifyOidcToken, type OidcProviderConfig } from "../oidc.js";
+import { _setJwksCacheForTests, APPLE_PROVIDER, GOOGLE_PROVIDER, OidcError, oauthNonceFor, verifyOidcToken, type OidcProviderConfig } from "../oidc.js";
 
 /**
  * A stand-in Google: an RSA key pair, a JWKS seeded into the verifier's
@@ -14,12 +14,14 @@ const CLIENT_ID = "123-abc.apps.googleusercontent.com";
 const SESSION_KEY = "0394e549c71fa99dd5cf752fba623090be314949b74e4cdf7ca72031dd638e281a";
 
 const config: OidcProviderConfig = { ...GOOGLE_PROVIDER, clientIds: [CLIENT_ID] };
+const SERVICES_ID = "network.arch.prime.web";
+const appleConfig: OidcProviderConfig = { ...APPLE_PROVIDER, clientIds: [SERVICES_ID] };
 
 function b64u(input: Buffer | string): string {
   return Buffer.from(input).toString("base64url");
 }
 
-function mint(claims: Record<string, unknown>, header: Record<string, unknown> = { alg: "RS256", typ: "JWT", kid: KID }): string {
+function mint(claims: Record<string, unknown> = {}, header: Record<string, unknown> = { alg: "RS256", typ: "JWT", kid: KID }): string {
   const now = Math.floor(Date.now() / 1000);
   const payload = {
     iss: "https://accounts.google.com",
@@ -38,6 +40,13 @@ function mint(claims: Record<string, unknown>, header: Record<string, unknown> =
 }
 
 _setJwksCacheForTests(GOOGLE_PROVIDER.jwksUrl, [{ ...(publicKey.export({ format: "jwk" }) as crypto.JsonWebKey), kid: KID, alg: "RS256", use: "sig" }]);
+// The stand-in Apple signs with the same pair under its own JWKS URL; only the issuer and audience differ.
+_setJwksCacheForTests(APPLE_PROVIDER.jwksUrl, [{ ...(publicKey.export({ format: "jwk" }) as crypto.JsonWebKey), kid: KID, alg: "RS256", use: "sig" }]);
+
+/** An Apple id token as Sign in with Apple for the web mints it: string booleans, the Services ID as `aud`. */
+function mintApple(claims: Record<string, unknown> = {}): string {
+  return mint({ iss: "https://appleid.apple.com", aud: SERVICES_ID, sub: "001234.abcdef.5678", email: "jonah@arch.network", email_verified: "true", is_private_email: "false", nonce_supported: true, ...claims });
+}
 
 async function codeOf(token: string, sessionPublicKeyHex = SESSION_KEY): Promise<string> {
   try {
@@ -114,6 +123,18 @@ describe("verifyOidcToken", () => {
     expect(await codeOf(mint({}, { alg: "HS256", kid: KID }))).toBe("unsupported_alg");
     expect(await codeOf("not.a.jwt.at.all")).toBe("malformed");
     expect(await codeOf("")).toBe("malformed");
+  });
+
+  it("accepts an Apple token against the Apple config, reading its string booleans and the relay flag", async () => {
+    const plain = await verifyOidcToken({ token: mintApple(), config: appleConfig, sessionPublicKeyHex: SESSION_KEY });
+    expect(plain).toMatchObject({ provider: "apple", issuer: "https://appleid.apple.com", subject: "001234.abcdef.5678", audience: SERVICES_ID, email: "jonah@arch.network", emailVerified: true, privateRelay: false });
+    const relay = await verifyOidcToken({ token: mintApple({ email: "abc123@privaterelay.appleid.com", is_private_email: "true" }), config: appleConfig, sessionPublicKeyHex: SESSION_KEY });
+    expect(relay).toMatchObject({ email: "abc123@privaterelay.appleid.com", emailVerified: true, privateRelay: true });
+  });
+
+  it("keeps the providers apart: a Google token is not an Apple one, and the Services ID is not a Google audience", async () => {
+    await expect(verifyOidcToken({ token: mint(), config: appleConfig, sessionPublicKeyHex: SESSION_KEY })).rejects.toMatchObject({ code: "bad_issuer" });
+    await expect(verifyOidcToken({ token: mintApple(), config, sessionPublicKeyHex: SESSION_KEY })).rejects.toMatchObject({ code: "bad_issuer" });
   });
 
   it("treats a string email_verified as Apple sends it, and an unverified email as unverified", async () => {
