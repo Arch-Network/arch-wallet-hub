@@ -287,6 +287,17 @@ export type VerifyRecoveryEmailResponse = {
   authMethod: "passkey" | "email";
   /** Seconds until the recovery API key expires; usually 86400 (24 h). */
   expiresInSeconds: number;
+  /**
+   * The person the code attested: a Hub session and an Arch ID token
+   * (amr ["email"]). Absent on the app-store review login and on a Hub
+   * predating the person layer; read absence as "no person".
+   */
+  sessionToken?: string;
+  sessionExpiresAt?: string;
+  idToken?: string;
+  idTokenExpiresAt?: string;
+  email?: string | null;
+  emailVerified?: boolean;
 };
 
 // ── Bitcoin ─────────────────────────────────────────────────────────────
