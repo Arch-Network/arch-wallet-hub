@@ -41,10 +41,16 @@
  *     ├─ resolve candidate by candidateToken
  *     ├─ call Turnkey OTP_AUTH(otpId, code, targetPublicKey) ->
  *     │  returns HPKE-encrypted credentialBundle
- *     ├─ mark challenge consumed
+ *     ├─ mark challenge consumed; the code proved the inbox, so the
+ *     │  user's recovery email becomes their verified email identity
+ *     │  and primary email (unless another user already holds it
+ *     │  verified), a Hub session opens and an Arch ID token is minted
+ *     │  with amr ["email"] (the same person the OAuth route attests)
  *     └─ return { credentialBundle, organizationId, walletId,
  *                  defaultAddress, defaultPublicKeyHex,
- *                  externalUserId, authMethod, expiresInSeconds }
+ *                  externalUserId, authMethod, expiresInSeconds,
+ *                  sessionToken, sessionExpiresAt, idToken,
+ *                  idTokenExpiresAt, email, emailVerified }
  *
  * Security posture:
  *
@@ -89,6 +95,9 @@ import {
 } from "../db/recovery.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
+import { getPerson, insertIdentity, setVerifiedPrimaryEmail } from "../db/identities.js";
+import { mintSessionForUser } from "../auth/sessionToken.js";
+import { mintIdentityToken } from "../auth/idToken.js";
 import {
   buildReviewInitResponse,
   buildReviewVerifyResponse,
@@ -241,8 +250,22 @@ const VerifyResponse = Type.Object({
     Type.Literal("passkey"),
     Type.Literal("email")
   ]),
-  expiresInSeconds: Type.Integer()
+  expiresInSeconds: Type.Integer(),
+  /**
+   * The person the code attested: a Hub session (whs_v1_, 24 h) and an
+   * Arch ID token (15 min, amr ["email"]). The four token fields are
+   * absent on the review login, whose dummy wallet is no person; a
+   * client reads their absence (that, or an older Hub) as no person.
+   */
+  sessionToken: Type.Optional(Type.String()),
+  sessionExpiresAt: Type.Optional(Type.String()),
+  idToken: Type.Optional(Type.String()),
+  idTokenExpiresAt: Type.Optional(Type.String()),
+  email: Type.Union([Type.String(), Type.Null()]),
+  emailVerified: Type.Boolean()
 });
+
+const NO_PERSON = { email: null, emailVerified: false } as const;
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
   setDefaultRateLimitGroup(server, "recovery");
@@ -1061,7 +1084,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             outcome: "succeeded"
           })
         );
-        return response;
+        return { ...response, ...NO_PERSON };
       }
 
       const challenge = await withDbTransaction(db, (client) =>
@@ -1407,11 +1430,51 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           });
         }
 
-        await withDbTransaction(db, async (client) => {
+        const attested = await withDbTransaction(db, async (client) => {
           await markRecoveryChallengeStatus(client, {
             id: challenge.id,
             status: "consumed"
           });
+
+          const person = await getPerson(client, { appId, userId: candidate.userId });
+          if (!person) throw new Error("Candidate user no longer exists");
+          // The code proved control of the inbox the challenge was bound to at
+          // /init. The row's recovery_email is attested only while it still
+          // hashes to that binding: any app-key caller may have rewritten it
+          // since, and a rewritten address was never sent a code.
+          const email = person.recovery_email;
+          const emailProven =
+            email !== null &&
+            safeEqualHex(hashEmailForRateLimit(email), challenge.email_hash);
+          if (emailProven) {
+            const owned = await insertIdentity(client, {
+              appId,
+              userId: person.id,
+              kind: "email",
+              subject: email.trim().toLowerCase(),
+              issuer: null,
+              audience: null,
+              emailAtLink: email,
+              verified: true
+            });
+            if (owned) {
+              await setVerifiedPrimaryEmail(client, { appId, userId: person.id, email });
+            }
+          }
+          const fresh = (await getPerson(client, { appId, userId: person.id })) ?? person;
+          const emailOut = fresh.primary_email ?? (emailProven ? email : null);
+          const emailVerified = fresh.email_verified_at !== null;
+
+          const session = await mintSessionForUser(client, { appId, userId: person.id });
+          const idToken = await mintIdentityToken(client, server.idTokenSigner, {
+            appId,
+            userId: person.id,
+            externalUserId: person.external_user_id ?? person.id,
+            email: emailOut,
+            emailVerified,
+            amr: ["email"]
+          });
+
           await auditEvent({
             client,
             appId,
@@ -1426,10 +1489,21 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
               candidateResourceId: candidate.resourceId,
               apiKeyId: otpResult.apiKeyId,
               attempt: verifyAttempt,
-              otpStartCount: getOtpStartCount(candidate)
+              otpStartCount: getOtpStartCount(candidate),
+              sessionId: session.sessionId,
+              emailProven,
+              emailVerified
             },
             outcome: "succeeded"
           });
+          return {
+            sessionToken: session.token,
+            sessionExpiresAt: session.expiresAt,
+            idToken: idToken.token,
+            idTokenExpiresAt: idToken.expiresAt,
+            email: emailOut,
+            emailVerified
+          };
         });
 
         request.log.info(
@@ -1455,7 +1529,8 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           defaultPublicKeyHex: candidate.defaultPublicKeyHex,
           externalUserId: candidate.externalUserId,
           authMethod: candidate.authMethod,
-          expiresInSeconds: Number(RECOVERY_API_KEY_TTL_SECONDS)
+          expiresInSeconds: Number(RECOVERY_API_KEY_TTL_SECONDS),
+          ...attested
         };
       } catch (err: any) {
         await withDbTransaction(db, (client) =>
