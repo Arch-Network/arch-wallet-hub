@@ -57,6 +57,27 @@ backfilled as unverified email identities.
 masked) and wallets. `POST /v1/auth/id-token` (session) mints a fresh ID
 token.
 
+## The email road
+
+The code flow (`POST /v1/recovery/email/{init,start,verify}`) is the other
+way into the same person. A correct code proves the inbox, so a successful
+`verify` now also:
+
+- upserts `user_identities(email, <address>)` as verified for that user — a
+  row another user already owns is left exactly as it was;
+- sets the user's `primary_email` + `email_verified_at`, unless another user
+  of the app already holds that email verified (the first holder keeps it);
+- opens a Hub session and mints an Arch ID token with `amr: ["email"]`.
+
+The response gains `sessionToken`, `sessionExpiresAt`, `idToken`,
+`idTokenExpiresAt`, `email` and `emailVerified` beside the credential bundle
+it always carried. The token's `sub` is the same `externalUserId` the OAuth
+route answers with, so a person who signs in with Google one day and the
+email code the next is one person to arch-prime-rewards. On the app-store
+review login the four token fields are absent and `email` / `emailVerified`
+are `null` / `false`: the review wallet is no person. A client reads an
+absent `sessionToken` (the review login, or an older Hub) as no person.
+
 ## The Arch ID token
 
 ```json

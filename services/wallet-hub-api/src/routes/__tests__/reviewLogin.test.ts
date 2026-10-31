@@ -158,6 +158,9 @@ describe("app-store review login", () => {
     expect(body.walletId).toBe(REVIEW_WALLET);
     expect(body.defaultAddress).toBe(REVIEW_ADDRESS);
     expect(body.authMethod).toBe("email");
+    // The review wallet is no person: nothing attests it, and the token fields are absent, not null.
+    expect(body).toMatchObject({ email: null, emailVerified: false });
+    for (const key of ["sessionToken", "sessionExpiresAt", "idToken", "idTokenExpiresAt"]) expect(body).not.toHaveProperty(key);
     expect(mocks.turnkey.otpAuth).not.toHaveBeenCalled();
 
     // The client decrypts the bundle to the stored review API key.
