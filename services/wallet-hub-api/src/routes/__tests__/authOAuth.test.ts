@@ -176,6 +176,19 @@ describe("POST /v1/auth/oauth", () => {
     await app.close();
   });
 
+  it("rolls the sign-up back with 409 identity_raced when a racing sign-up took the provider identity first, auditing the orphaned sub-org", async () => {
+    mocks.insertIdentity.mockResolvedValueOnce(null);
+    const app = await buildServer();
+    const res = await app.inject({ method: "POST", url: "/v1/auth/oauth", payload: body() });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().code).toBe("identity_raced");
+    expect(mocks.turnkey.oauthLogin).not.toHaveBeenCalled();
+    expect(mocks.mintSessionForUser).not.toHaveBeenCalled();
+    const orphaned = mocks.auditEvent.mock.calls.map((c) => c[0] as any).find((e) => e.outcome === "failed" && e.eventType === "turnkey.wallet.create");
+    expect(orphaned?.payloadJson).toMatchObject({ error: "identity_raced", subOrganizationId: SUB_ORG });
+    await app.close();
+  });
+
   it("adopts a verified-email person with no wallet and no provider identity: the residue of an unfinished sign-up", async () => {
     mocks.getPersonByVerifiedEmail.mockResolvedValue(existingPerson);
     mocks.listTurnkeyResourcesForUserForApp.mockResolvedValue([]);

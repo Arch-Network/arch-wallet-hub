@@ -18,6 +18,8 @@
  *     the link flow (an OTP code or a passkey proves the existing
  *     account; CREATE_OAUTH_PROVIDERS is stamped from that session), which
  *     is phase 3; until then the person signs in with the email code.
+ *     409 `identity_raced`: a concurrent sign-up took this identity first;
+ *     the same call again signs in as it.
  *
  *   GET  /v1/auth/me            (session)  the person, identities, wallets
  *   POST /v1/auth/id-token      (session)  a fresh Arch ID token
@@ -51,7 +53,6 @@ import {
   getPersonByVerifiedEmail,
   insertIdentity,
   listIdentitiesForUser,
-  listWalletPubkeysForUser,
   recordOidcTokenUse,
   setVerifiedPrimaryEmail,
   touchIdentityLogin,
@@ -59,14 +60,7 @@ import {
 } from "../db/identities.js";
 import { mintSessionForUser } from "../auth/sessionToken.js";
 import { GOOGLE_PROVIDER, OidcError, verifyOidcToken, type OidcClaims, type OidcProvider, type OidcProviderConfig } from "../auth/oidc.js";
-import { jwksDocument, mintIdToken, type IdTokenSigner } from "../auth/idToken.js";
-
-declare module "fastify" {
-  interface FastifyInstance {
-    /** Created once in server.ts; shared by this plugin and the root JWKS route. */
-    idTokenSigner: IdTokenSigner;
-  }
-}
+import { jwksDocument, mintIdentityToken } from "../auth/idToken.js";
 import { auditEvent } from "../audit/audit.js";
 import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
 
@@ -154,20 +148,8 @@ export function providerConfigs(env: { GOOGLE_OAUTH_CLIENT_IDS: string }): Recor
   return { google: { ...GOOGLE_PROVIDER, clientIds: google } };
 }
 
-async function mintIdentityToken(
-  signer: IdTokenSigner,
-  params: { appId: string; userId: string; externalUserId: string; email: string | null; emailVerified: boolean; amr: string[] },
-): Promise<{ token: string; expiresAt: string }> {
-  const wallets = await withDbTransaction(getDbPool(), (client) => listWalletPubkeysForUser(client, { appId: params.appId, userId: params.userId }));
-  return mintIdToken(signer, {
-    sub: params.externalUserId,
-    app: params.appId,
-    email: params.email,
-    email_verified: params.emailVerified,
-    wallets,
-    amr: params.amr,
-  });
-}
+/** Thrown inside the sign-up transaction to roll it back when another sign-up owns the provider identity. */
+const IDENTITY_RACED = Symbol("identity_raced");
 
 export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
   setDefaultRateLimitGroup(server, "auth");
@@ -348,10 +330,13 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
             authMethod: "oauth",
             keyVerified: defaultPublicKeyHex !== null,
           });
-          await insertIdentity(client, {
+          const providerRow = await insertIdentity(client, {
             appId, userId: who.id, kind: claims.provider, subject: claims.subject,
             issuer: claims.issuer, audience: claims.audience, emailAtLink: claims.email, verified: true,
           });
+          // Only a sign-up racing this one for the same subject can own the row by now; roll back
+          // rather than keep a person nobody can sign in as. The next attempt resolves to theirs.
+          if (!providerRow) throw IDENTITY_RACED;
           if (claims.email) {
             await insertIdentity(client, {
               appId, userId: who.id, kind: "email", subject: claims.email.toLowerCase(),
@@ -366,7 +351,21 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
             outcome: "succeeded",
           });
           return { who, row };
-        });
+        }).catch((err: unknown) => (err === IDENTITY_RACED ? null : Promise.reject(err)));
+        if (!made) {
+          // The rows rolled back; the Turnkey sub-org did not. Leave its id on the audit chain.
+          await withDbTransaction(db, (client) =>
+            auditEvent({
+              client, appId, requestId: request.id, userId: adopted?.id ?? null,
+              eventType: "turnkey.wallet.create", entityType: "user", entityId: externalUserId,
+              turnkeyActivityId: madeSubOrg.activityId, turnkeyRequestId: null,
+              payloadJson: { mode: "oauth_suborg", provider: claims.provider, subOrganizationId: madeSubOrg.subOrganizationId, walletId: madeSubOrg.walletId, error: "identity_raced" },
+              outcome: "failed",
+            }),
+          );
+          request.log.error({ appId, subOrganizationId: madeSubOrg.subOrganizationId }, "auth.oauth.suborg_orphaned");
+          return reply.code(409).send({ code: "identity_raced", message: "This identity was just linked to another account; sign in again" });
+        }
         person = made.who;
         resource = made.row;
       }
@@ -410,9 +409,11 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
       const fresh = await withDbTransaction(db, (client) => getPerson(client, { appId, userId: person.id }));
       const email = fresh?.primary_email ?? claims.email;
       const emailVerified = fresh?.email_verified_at !== null && fresh?.email_verified_at !== undefined;
-      const idToken = await mintIdentityToken(signer, {
-        appId, userId: person.id, externalUserId: person.external_user_id ?? person.id, email, emailVerified, amr: [claims.provider],
-      });
+      const idToken = await withDbTransaction(db, (client) =>
+        mintIdentityToken(client, signer, {
+          appId, userId: person.id, externalUserId: person.external_user_id ?? person.id, email, emailVerified, amr: [claims.provider],
+        }),
+      );
 
       return {
         created,
@@ -481,10 +482,12 @@ export const registerAuthOAuthRoutes: FastifyPluginAsync = async (server) => {
       if (!principal) return reply.unauthorized("Missing session");
       const person = await withDbTransaction(getDbPool(), (client) => getPerson(client, { appId: principal.appId, userId: principal.userId }));
       if (!person) return reply.notFound("Unknown user");
-      const minted = await mintIdentityToken(signer, {
-        appId: principal.appId, userId: person.id, externalUserId: person.external_user_id ?? person.id,
-        email: person.primary_email, emailVerified: person.email_verified_at !== null, amr: ["session"],
-      });
+      const minted = await withDbTransaction(getDbPool(), (client) =>
+        mintIdentityToken(client, signer, {
+          appId: principal.appId, userId: person.id, externalUserId: person.external_user_id ?? person.id,
+          email: person.primary_email, emailVerified: person.email_verified_at !== null, amr: ["session"],
+        }),
+      );
       return { idToken: minted.token, expiresAt: minted.expiresAt };
     },
   );
