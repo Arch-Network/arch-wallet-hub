@@ -37,8 +37,9 @@ export class WalletHubStack extends cdk.Stack {
     // from the template, replacing every populated value (Turnkey keys,
     // DB_PASSWORD, AUDIT_HMAC_SECRET, …) with CHANGE_ME. It must stay
     // byte-identical to the deployed template. Add new keys
-    // (AUDIT_HMAC_SECRET, INDEXER_SERVICE_KEY, …) to the live secret by
-    // hand and reference them with `ecs.Secret.fromSecretsManager` only.
+    // (AUDIT_HMAC_SECRET, INDEXER_SERVICE_KEY, ID_TOKEN_PRIVATE_JWK, …)
+    // to the live secret by hand and reference them with
+    // `ecs.Secret.fromSecretsManager` only.
     const appSecrets = new secretsmanager.Secret(this, "AppSecrets", {
       secretName: "WalletHub/AppSecrets",
       description: "Wallet Hub application secrets",
@@ -245,6 +246,15 @@ export class WalletHubStack extends cdk.Stack {
         // resilient to any future change of that default. RDS also
         // enforces it server-side (rds.force_ssl=1).
         DB_SSLMODE: "require",
+        // Google sign-in (#148). Client ids are public; no client secret
+        // is needed for the OIDC id-token flow. Empty on a live task
+        // would boot but POST /v1/auth/oauth would 503.
+        GOOGLE_OAUTH_CLIENT_IDS:
+          "539309018243-0v5ne7a4af4dgh415c3fgt9nj93jlc2j.apps.googleusercontent.com",
+        // Must match the public Hub origin verifiers will check as `iss`.
+        // The API default is https://wallet-hub.arch.network; prod is
+        // hub.arch.network, so this cannot be omitted on the live task def.
+        ID_TOKEN_ISSUER: "https://hub.arch.network",
         DEPLOY_STAMP: new Date().toISOString(),
       },
       secrets: {
@@ -276,6 +286,16 @@ export class WalletHubStack extends cdk.Stack {
         INDEXER_API_KEY: ecs.Secret.fromSecretsManager(
           appSecrets,
           "INDEXER_API_KEY"
+        ),
+        // ES256 signing key for Arch ID tokens. Required in production
+        // (the #148 image refuses to boot without it). Add the key to
+        // the live WalletHub/AppSecrets JSON by hand — do not put it in
+        // generateSecretString (#123). CI pin-ecs-image.sh clones the
+        // live task def, so this wiring only matches prod after a
+        // hand-registered revision also injects this json-key.
+        ID_TOKEN_PRIVATE_JWK: ecs.Secret.fromSecretsManager(
+          appSecrets,
+          "ID_TOKEN_PRIVATE_JWK"
         ),
         // NOTE: INTERNAL_API_KEY is intentionally NOT injected into the API
         // container. It is not read anywhere in services/wallet-hub-api/src;
