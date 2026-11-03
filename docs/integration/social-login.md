@@ -29,6 +29,7 @@ Sign-in and sign-up are one call:
 | `user_identities(google, sub)` | `OAUTH_LOGIN` on that person's sub-org with `publicKey` | 200, `created: false` |
 | nothing, and the token's verified email belongs to no one | creates the person (`usr_…`), a Turnkey sub-org whose root user is the OIDC identity, the wallet, then `OAUTH_LOGIN` | 200, `created: true` |
 | nothing, but the verified email belongs to another person | nothing — the inbox, not the token, must prove that account | 409 `{ code: "identity_exists", emailMasked }` |
+| nothing, but a concurrent sign-up took the identity first | rolls its own rows back; the same call again signs in | 409 `{ code: "identity_raced" }` |
 | a replayed or badly bound token | nothing | 401 |
 
 A 200 carries the wallet (`organizationId`, `defaultAddress`,

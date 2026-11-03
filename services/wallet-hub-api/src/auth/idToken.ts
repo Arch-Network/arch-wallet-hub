@@ -22,6 +22,15 @@
  */
 
 import crypto from "node:crypto";
+import type { PoolClient } from "pg";
+import { listWalletPubkeysForUser } from "../db/identities.js";
+
+declare module "fastify" {
+  interface FastifyInstance {
+    /** Created once in server.ts; every route that mints or publishes ID tokens reads it here. */
+    idTokenSigner: IdTokenSigner;
+  }
+}
 
 export const ID_TOKEN_TTL_SECONDS = 15 * 60;
 export const ID_TOKEN_AUDIENCE = "arch";
@@ -117,6 +126,23 @@ export function mintIdToken(signer: IdTokenSigner, claims: IdTokenClaims, now: D
   const signingInput = `${base64Url(JSON.stringify(header))}.${base64Url(JSON.stringify(payload))}`;
   const signature = crypto.sign("sha256", Buffer.from(signingInput), { key: signer.privateKey, dsaEncoding: "ieee-p1363" });
   return { token: `${signingInput}.${base64Url(signature)}`, expiresAt: new Date(exp * 1000).toISOString() };
+}
+
+/** An ID token for a Hub user: `wallets[]` is every pubkey the Hub holds for them, read on the caller's transaction. */
+export async function mintIdentityToken(
+  client: PoolClient,
+  signer: IdTokenSigner,
+  params: { appId: string; userId: string; externalUserId: string; email: string | null; emailVerified: boolean; amr: string[] },
+): Promise<{ token: string; expiresAt: string }> {
+  const wallets = await listWalletPubkeysForUser(client, { appId: params.appId, userId: params.userId });
+  return mintIdToken(signer, {
+    sub: params.externalUserId,
+    app: params.appId,
+    email: params.email,
+    email_verified: params.emailVerified,
+    wallets,
+    amr: params.amr,
+  });
 }
 
 export function jwksDocument(signer: IdTokenSigner): { keys: Array<crypto.JsonWebKey & { kid: string }> } {

@@ -59,6 +59,11 @@ export async function listIdentitiesForUser(
   return res.rows;
 }
 
+/**
+ * Insert or refresh the caller's own identity row. A row for the same
+ * (app, kind, subject) owned by ANOTHER user is left untouched and null is
+ * returned: a login proof never re-verifies or re-times someone else's row.
+ */
 export async function insertIdentity(
   client: PoolClient,
   params: {
@@ -71,7 +76,7 @@ export async function insertIdentity(
     emailAtLink: string | null;
     verified: boolean;
   },
-): Promise<UserIdentityRow> {
+): Promise<UserIdentityRow | null> {
   const res = await client.query<UserIdentityRow>(
     `
       INSERT INTO user_identities (app_id, user_id, kind, subject, issuer, audience, email_at_link, verified_at, last_login_at)
@@ -79,11 +84,12 @@ export async function insertIdentity(
       ON CONFLICT (app_id, kind, subject) DO UPDATE
         SET last_login_at = NOW(),
             verified_at = COALESCE(user_identities.verified_at, EXCLUDED.verified_at)
+        WHERE user_identities.user_id = EXCLUDED.user_id
       RETURNING *
     `,
     [params.appId, params.userId, params.kind, params.subject, params.issuer, params.audience, params.emailAtLink, params.verified],
   );
-  return res.rows[0]!;
+  return res.rows[0] ?? null;
 }
 
 export async function touchIdentityLogin(client: PoolClient, params: { id: string }): Promise<void> {
@@ -131,7 +137,12 @@ export async function createPerson(
   return res.rows[0]!;
 }
 
-/** Promote a verified email onto an existing person (an OTP verify, or a provider that vouches for it). */
+/**
+ * Promote a verified email onto an existing person (an OTP verify, or a
+ * provider that vouches for it). A no-op while another user of the app
+ * holds that email verified: uniq_users_app_verified_primary_email would
+ * otherwise reject the update, and the first verified holder keeps it.
+ */
 export async function setVerifiedPrimaryEmail(
   client: PoolClient,
   params: { appId: string; userId: string; email: string },
@@ -142,6 +153,11 @@ export async function setVerifiedPrimaryEmail(
          SET primary_email = COALESCE(primary_email, $3),
              email_verified_at = CASE WHEN lower(COALESCE(primary_email, $3)) = lower($3) THEN COALESCE(email_verified_at, NOW()) ELSE email_verified_at END
        WHERE app_id = $1 AND id = $2
+         AND NOT EXISTS (
+           SELECT 1 FROM users other
+            WHERE other.app_id = $1 AND other.id <> $2
+              AND lower(other.primary_email) = lower($3) AND other.email_verified_at IS NOT NULL
+         )
     `,
     [params.appId, params.userId, params.email],
   );
