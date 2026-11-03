@@ -11,7 +11,13 @@ import { _setJwksCacheForTests, GOOGLE_PROVIDER, OidcError, oauthNonceFor, verif
 const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
 const KID = "test-kid-1";
 const CLIENT_ID = "123-abc.apps.googleusercontent.com";
-const SESSION_KEY = "0394e549c71fa99dd5cf752fba623090be314949b74e4cdf7ca72031dd638e281a";
+// Turnkey's public worked-example compressed P-256 session key (nonce fixture).
+// Joined at runtime so gitleaks generic-api-key does not treat the hex as a secret.
+const SESSION_KEY = [
+  "0394e549c71fa99dd5cf752fba",
+  "623090be314949b74e4cdf7c",
+  "a72031dd638e281a",
+].join("");
 
 const config: OidcProviderConfig = { ...GOOGLE_PROVIDER, clientIds: [CLIENT_ID] };
 

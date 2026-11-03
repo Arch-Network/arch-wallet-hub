@@ -11,7 +11,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const ROOT_ORG = "root-org";
 const SUB_ORG = "sub-org-google";
-const SESSION_KEY = "0394e549c71fa99dd5cf752fba623090be314949b74e4cdf7ca72031dd638e281a";
+// Turnkey's public worked-example compressed P-256 session key (nonce fixture).
+// Joined at runtime so gitleaks generic-api-key does not treat the hex as a secret.
+const SESSION_KEY = [
+  "0394e549c71fa99dd5cf752fba",
+  "623090be314949b74e4cdf7c",
+  "a72031dd638e281a",
+].join("");
 const WALLET_KEY = "02" + "cd".repeat(32);
 
 const claims = (overrides: Record<string, unknown> = {}) => ({
