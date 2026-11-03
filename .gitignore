@@ -20,3 +20,6 @@ infra/cdk/node_modules/
 # cdk.context.json caches account-specific AZ/AMI data; recreate via
 # `cdk synth` rather than committing.
 infra/cdk/cdk.context.json
+
+# Local social-login spike keypair (services/wallet-hub-api/scripts/oauth-spike.ts)
+.oauth-spike-key.json
