@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_POPUP_BOUNDS,
+  isWalletPopupDocumentUrl,
+  listResizableWalletWindowIds,
   sanitizePopupBounds,
   selectResizableWalletWindow,
 } from "../popup-bounds";
@@ -26,6 +28,18 @@ describe("sanitizePopupBounds", () => {
   });
 });
 
+describe("isWalletPopupDocumentUrl", () => {
+  it("matches HashRouter wallet routes and rejects approve prompts", () => {
+    expect(isWalletPopupDocumentUrl("chrome-extension://id/popup.html")).toBe(true);
+    expect(isWalletPopupDocumentUrl("chrome-extension://id/popup.html#/dashboard")).toBe(true);
+    expect(isWalletPopupDocumentUrl("chrome-extension://id/popup.html#/send")).toBe(true);
+    expect(isWalletPopupDocumentUrl("chrome-extension://id/popup.html#/approve/abc")).toBe(false);
+    expect(isWalletPopupDocumentUrl("chrome-extension://id/sidepanel.html")).toBe(false);
+    // The old getContexts glob is not a real document URL.
+    expect(isWalletPopupDocumentUrl("chrome-extension://id/popup.html*")).toBe(false);
+  });
+});
+
 describe("selectResizableWalletWindow", () => {
   it("focuses the wallet window and leaves an approve prompt alone", () => {
     expect(selectResizableWalletWindow([
@@ -38,5 +52,13 @@ describe("selectResizableWalletWindow", () => {
     expect(selectResizableWalletWindow([
       { documentUrl: "chrome-extension://id/popup.html#/approve/abc", windowId: 2 },
     ])).toBeUndefined();
+  });
+
+  it("dedupes stacked copies of the same wallet window", () => {
+    expect(listResizableWalletWindowIds([
+      { documentUrl: "chrome-extension://id/popup.html#/dashboard", windowId: 4 },
+      { documentUrl: "chrome-extension://id/popup.html#/dashboard", windowId: 4 },
+      { documentUrl: "chrome-extension://id/popup.html#/tokens", windowId: 8 },
+    ])).toEqual([4, 8]);
   });
 });

@@ -29,20 +29,49 @@ export const DEFAULT_POPUP_BOUNDS: PopupBounds = {
 };
 
 /**
+ * True for the standalone wallet UI (`popup.html`), including HashRouter
+ * routes like `#/dashboard`. Approve prompts live in the same document
+ * with `#/approve/:id` and are excluded — those are one-shot consent
+ * windows, not the window the toolbar icon should focus.
+ */
+export function isWalletPopupDocumentUrl(url: string | undefined | null): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    if (path !== "/popup.html" && !path.endsWith("/popup.html")) return false;
+    if (parsed.hash.startsWith("#/approve/")) return false;
+    return true;
+  } catch {
+    if (!url.includes("/popup.html")) return false;
+    if (url.includes("#/approve/")) return false;
+    return true;
+  }
+}
+
+export function listResizableWalletWindowIds(
+  contexts: ReadonlyArray<{ documentUrl?: string; windowId?: number }>,
+): number[] {
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  for (const ctx of contexts) {
+    if (!isWalletPopupDocumentUrl(ctx.documentUrl)) continue;
+    if (ctx.windowId == null || ctx.windowId < 0) continue;
+    if (seen.has(ctx.windowId)) continue;
+    seen.add(ctx.windowId);
+    ids.push(ctx.windowId);
+  }
+  return ids;
+}
+
+/**
  * The wallet window to focus when the toolbar icon is clicked again.
  * Approve prompts are separate windows and must not steal that click.
  */
 export function selectResizableWalletWindow(
   contexts: ReadonlyArray<{ documentUrl?: string; windowId?: number }>,
 ): number | undefined {
-  for (const ctx of contexts) {
-    const url = ctx.documentUrl ?? "";
-    if (!url.includes("/popup.html")) continue;
-    if (url.includes("#/approve/")) continue;
-    if (ctx.windowId == null || ctx.windowId < 0) continue;
-    return ctx.windowId;
-  }
-  return undefined;
+  return listResizableWalletWindowIds(contexts)[0];
 }
 
 /** Drop sizes that would open a window off the usable range. */

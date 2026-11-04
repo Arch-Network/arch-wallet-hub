@@ -14,6 +14,7 @@
  */
 
 import { readPopupBounds } from "./popup-bounds";
+import { rememberWalletWindowId } from "./wallet-window";
 
 const SIDE_PANEL_DATA_ATTR = "sidepanel";
 
@@ -43,17 +44,25 @@ export function isInSidePanel(): boolean {
  * windows are not dismissed on focus loss — they survive the trip
  * through the external wallet's UI and can re-render at /dashboard.
  *
- * Detection: `chrome.windows.getCurrent()` reports `type: "popup"` for
- * windows we opened via `chrome.windows.create({ type: "popup" })`, and
- * `type: "normal"` for the regular browser windows that host both the
- * toolbar popup view and the side panel. Side-panel callers should
- * gate on `isInSidePanel()` instead.
+ * Detection: Chrome reports `type: "popup"` for windows we opened via
+ * `chrome.windows.create({ type: "popup" })`. Brave often reports those
+ * same windows as `type: "normal"`, which is also what hosts the
+ * toolbar bubble — so we additionally treat a document with a real tab
+ * (`chrome.tabs.getCurrent()`) as already rehosted. Side-panel callers
+ * should gate on `isInSidePanel()` instead.
  */
 export async function isInStandalonePopupWindow(): Promise<boolean> {
   try {
-    if (typeof chrome === "undefined" || !chrome.windows?.getCurrent) return false;
+    if (typeof chrome === "undefined" || !chrome.windows?.getCurrent) {
+      return !isInSidePanel() && (await survivesFocusLoss());
+    }
     const win = await chrome.windows.getCurrent();
-    return win?.type === "popup";
+    if (win?.type === "popup" || win?.type === "panel") return true;
+    // Brave (and some Chromium forks) report `windows.create({ type:
+    // "popup" })` as `type: "normal"`. The toolbar bubble has no tab,
+    // so `tabs.getCurrent()` is undefined there; a real window does.
+    if (isInSidePanel()) return false;
+    return await survivesFocusLoss();
   } catch {
     return false;
   }
@@ -128,11 +137,14 @@ export async function openWalletPopup(opts: OpenWalletPopupOpts): Promise<void> 
     );
   }
   const bounds = await readPopupBounds();
-  await chrome.windows.create({
+  const win = await chrome.windows.create({
     url: buildPopupUrl(opts),
     type: "popup",
     width: opts.width ?? bounds.width,
     height: opts.height ?? bounds.height,
     focused: true,
   });
+  if (win?.id != null && !opts.path.includes("/approve/")) {
+    await rememberWalletWindowId(win.id);
+  }
 }
