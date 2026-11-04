@@ -72,6 +72,10 @@ import {
   DEFAULT_HUB_BASE_URL,
   type WalletAccount,
 } from "../../state/types";
+import {
+  effectivePasskeyRpId,
+  passkeyCreationSelection,
+} from "../../session/passkey-webauthn";
 
 type Step = "email" | "otp" | "pick" | "password" | "done";
 
@@ -530,10 +534,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
         }
         const client = await buildClient();
         const config = await client.getTurnkeyConfig();
-        const rpId =
-          globalThis.location?.hostname === "localhost"
-            ? "localhost"
-            : globalThis.location?.hostname ?? "localhost";
+        const rpId = effectivePasskeyRpId();
 
         const recovered = decryptRecoveryBundle({
           credentialBundle: verifyResult.credentialBundle,
@@ -554,6 +555,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
                 name: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
                 displayName,
               },
+              authenticatorSelection: passkeyCreationSelection(),
             },
           }),
           30_000,
