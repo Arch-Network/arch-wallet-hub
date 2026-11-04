@@ -4,6 +4,7 @@ import {
   extractTapKeySigFromPsbtHex,
   hexToBytes,
 } from "../utils/psbt-signature";
+import { withWalletWindowHeld } from "../utils/wallet-autoclose";
 import { BridgeError } from "./bridge/errors";
 import type { BridgeConnectResult, BridgeRequest, BridgeResponse } from "./bridge/protocol";
 
@@ -63,10 +64,14 @@ function hexToBase64(hex: string): string {
 
 /** Throws `BridgeError` carrying the bridge's code, so callers can tell a rejection from a wrong network. */
 async function requestExternalWallet<T>(request: BridgeRequest): Promise<T> {
-  const response: BridgeResponse<T> | undefined = await chrome.runtime.sendMessage({
-    type: "EXTERNAL_WALLET_REQUEST",
-    request,
-  });
+  // The connector window takes focus. Hold the wallet window open until
+  // the bridge returns, or the blur dismiss would kill this call.
+  const response: BridgeResponse<T> | undefined = await withWalletWindowHeld(() =>
+    chrome.runtime.sendMessage({
+      type: "EXTERNAL_WALLET_REQUEST",
+      request,
+    }),
+  );
   if (!response) throw new BridgeError("PROVIDER_ERROR", "The wallet connection didn't respond. Try again.");
   if (!response.success) throw new BridgeError(response.code ?? "PROVIDER_ERROR", response.error);
   return response.data;
