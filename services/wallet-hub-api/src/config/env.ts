@@ -151,6 +151,24 @@ const EnvSchema = z.object({
   // Platform admin (bootstrap apps + API keys)
   PLATFORM_ADMIN_API_KEY: z.string().optional(),
 
+  // Social login (routes/authOAuth.ts). Comma-separated OAuth client ids
+  // this Hub accepts as the id token's `aud`: the web client id, and the
+  // extension's if it differs. Empty = Google sign-in is off and the route
+  // answers 404-ish "provider not configured". The id is public (it ships
+  // in every client); the secret is never needed for the OIDC id-token
+  // flow and is not read here.
+  GOOGLE_OAUTH_CLIENT_IDS: z.string().default(""),
+
+  // The Arch ID token (auth/idToken.ts): ES256 signing key as a P-256
+  // private JWK (JSON string). Required outside dev/test; in dev/test an
+  // ephemeral key is generated at boot so a fresh checkout works, and
+  // tokens die with the process. ID_TOKEN_PREVIOUS_JWKS may hold a JSON
+  // array of retired PUBLIC JWKs that stay in /.well-known/jwks.json
+  // through a rotation.
+  ID_TOKEN_ISSUER: z.string().min(1).default("https://wallet-hub.arch.network"),
+  ID_TOKEN_PRIVATE_JWK: optionalString,
+  ID_TOKEN_PREVIOUS_JWKS: optionalString,
+
   // Tamper-evidence HMAC key for the audit-log chain (migration 014).
   // Every audit row stores hash = HMAC-SHA256(secret, prev_hash || row).
   // Without this secret, a DB-write attacker can't recompute valid
@@ -272,6 +290,14 @@ export function getEnv(rawEnv: NodeJS.ProcessEnv): Env {
     if (!env.AUDIT_HMAC_SECRET) {
       throw new Error(
         "Invalid environment: AUDIT_HMAC_SECRET (>=32 chars) is required in production for audit-log tamper-evidence",
+      );
+    }
+    // The ID token's signing key has the same shape of risk: an ephemeral
+    // key in production would mean every deploy invalidates every token
+    // a consumer has cached the JWKS for.
+    if (!env.ID_TOKEN_PRIVATE_JWK) {
+      throw new Error(
+        "Invalid environment: ID_TOKEN_PRIVATE_JWK (P-256 private JWK) is required in production to sign Arch ID tokens",
       );
     }
   }
