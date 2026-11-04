@@ -251,6 +251,9 @@ export class WalletHubStack extends cdk.Stack {
         // would boot but POST /v1/auth/oauth would 503.
         GOOGLE_OAUTH_CLIENT_IDS:
           "539309018243-0v5ne7a4af4dgh415c3fgt9nj93jlc2j.apps.googleusercontent.com",
+        // Sign in with Apple (#149): the web Services ID the token's `aud`
+        // must name. Public, like the Google client id.
+        APPLE_OAUTH_CLIENT_IDS: "network.arch.prime.web",
         // Must match the public Hub origin verifiers will check as `iss`.
         // The API default is https://wallet-hub.arch.network; prod is
         // hub.arch.network, so this cannot be omitted on the live task def.
