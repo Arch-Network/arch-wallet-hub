@@ -23,6 +23,7 @@ import {
   effectivePasskeyRpId,
   passkeyCreationSelection,
 } from "../../session/passkey-webauthn";
+import { withWalletWindowHeld } from "../../utils/wallet-autoclose";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 import ArchLogoAnimated from "../../components/ArchLogoAnimated";
 import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
@@ -373,15 +374,17 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       const displayName = walletName.trim() || "Arch Wallet";
       const passkey = await withTimeout(
-        tk.passkeyClient().createUserPasskey({
-          publicKey: {
-            rp: { id: rpId, name: "Arch Wallet" },
-            user: { name: `${externalUserId}-${Date.now()}`, displayName },
-            // SECURITY: UV required. requireResidentKey is explicitly
-            // false so Turnkey's default `true` does not hide 1Password.
-            authenticatorSelection: passkeyCreationSelection(),
-          },
-        }),
+        withWalletWindowHeld(() =>
+          tk.passkeyClient().createUserPasskey({
+            publicKey: {
+              rp: { id: rpId, name: "Arch Wallet" },
+              user: { name: `${externalUserId}-${Date.now()}`, displayName },
+              // SECURITY: UV required. requireResidentKey is explicitly
+              // false so Turnkey's default `true` does not hide 1Password.
+              authenticatorSelection: passkeyCreationSelection(),
+            },
+          }),
+        ),
         30_000,
         "Creating passkey",
       );

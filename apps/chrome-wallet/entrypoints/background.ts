@@ -24,6 +24,12 @@ import {
   forgetWalletWindowId,
   openOrFocusWalletWindow,
 } from "../src/utils/wallet-window";
+import {
+  CLOSE_THIS_WINDOW_MESSAGE,
+  SHOULD_CLOSE_WALLET_WINDOW_MESSAGE,
+  suppressWalletAutoClose,
+  walletDismissAllowed,
+} from "../src/utils/wallet-autoclose";
 
 const AUTO_LOCK_ALARM = "arch-wallet-auto-lock";
 const PENDING_GC_ALARM = "arch-wallet-pending-gc";
@@ -378,10 +384,34 @@ async function relinkExternalAddresses(accountId: string): Promise<BridgeRespons
  * we're about to close. Called both on chrome.windows.onRemoved and on
  * the alarms-based GC sweep.
  */
+/** How long the "Approved" checkmark stays up before the prompt window closes. */
+const APPROVAL_DISMISS_MS = 1_500;
+
+/**
+ * Close a window we opened. `window.close()` from the page is a no-op
+ * on Brave for these windows, so the service worker removes it.
+ * Already-closed ids reject; that's fine.
+ */
+function closeOwnedWindow(windowId: number | undefined, delayMs = 0): void {
+  if (typeof windowId !== "number" || windowId < 0 || !chrome.windows?.remove) return;
+  const run = () => {
+    void Promise.resolve()
+      .then(() => chrome.windows.remove(windowId))
+      .catch(() => {
+        /* already closed */
+      });
+  };
+  if (delayMs > 0) setTimeout(run, delayMs);
+  else run();
+}
+
 async function rejectAndCleanup(requestId: string, reason: string): Promise<void> {
   const pending = await pendingRequestsStore.get(requestId);
   await pendingRequestsStore.remove(requestId);
   deliverResponseToTab(pending?.sourceTabId, requestId, { success: false, error: reason });
+  // Pending is gone before the window closes, so onRemoved does not
+  // deliver a second rejection.
+  closeOwnedWindow(pending?.windowId);
 }
 
 export default defineBackground(() => {
@@ -389,7 +419,12 @@ export default defineBackground(() => {
   syncOpenAsFromStorage();
 
   chrome.action.onClicked.addListener(() => {
+    // Synchronous: the click already blurred the wallet window. The
+    // in-memory flag is set before the listener yields, so the blur
+    // check cannot dismiss the window and have us open a second one.
+    const suppressed = suppressWalletAutoClose();
     void (async () => {
+      await suppressed;
       const saved = await readOpenAsPreference();
       const mode = saved ?? (await walletStore.getState()).openAs;
       if (mode === "sidepanel") return;
@@ -558,6 +593,38 @@ export default defineBackground(() => {
         return true;
       }
 
+      // Brave ignores window.close() on windows we created. The page
+      // asks us to remove its own window; the id comes from the sender,
+      // not the message body.
+      if (message?.type === SHOULD_CLOSE_WALLET_WINDOW_MESSAGE) {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ close: false });
+          return false;
+        }
+        walletDismissAllowed().then(
+          (close) => sendResponse({ close }),
+          () => sendResponse({ close: false }),
+        );
+        return true;
+      }
+
+      if (message?.type === CLOSE_THIS_WINDOW_MESSAGE) {
+        if (!isInternalUiSender(sender)) {
+          sendResponse({ ok: false, error: "Not authorized" });
+          return false;
+        }
+        const windowId = sender.tab?.windowId;
+        if (typeof windowId !== "number") {
+          sendResponse({ ok: false, error: "No window" });
+          return false;
+        }
+        void Promise.resolve()
+          .then(() => chrome.windows.remove(windowId))
+          .then(() => sendResponse({ ok: true }))
+          .catch(() => sendResponse({ ok: false }));
+        return true;
+      }
+
       if (message?.type === "APPROVE_CONNECT") {
         if (!isInternalUiSender(sender)) {
           sendResponse({ ok: false, error: "Not authorized" });
@@ -602,6 +669,7 @@ export default defineBackground(() => {
             success: true,
             data: message.account,
           });
+          closeOwnedWindow(pending.windowId, APPROVAL_DISMISS_MS);
           sendResponse({ ok: true });
         })();
         return true;
@@ -627,6 +695,7 @@ export default defineBackground(() => {
             success: true,
             data: message.result,
           });
+          closeOwnedWindow(pending.windowId, APPROVAL_DISMISS_MS);
           sendResponse({ ok: true });
         })();
         return true;

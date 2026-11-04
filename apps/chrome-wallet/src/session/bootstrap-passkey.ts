@@ -34,6 +34,7 @@
 import { Turnkey } from "@turnkey/sdk-browser";
 import type { WalletAccount } from "../state/types";
 import { TURNKEY_API_BASE_URL } from "./constants";
+import { withWalletWindowHeld } from "../utils/wallet-autoclose";
 import { effectivePasskeyRpId } from "./passkey-webauthn";
 import type { SessionBootstrap } from "./types";
 
@@ -72,15 +73,19 @@ export class PasskeyBootstrap implements SessionBootstrap {
     // option"). Turnkey still rejects a passkey that is not on this
     // sub-org, so picking the wrong discoverable credential fails
     // closed.
-    await tk.passkeyClient({
-      userVerification: "required",
-    } as any).stampLogin({
-      publicKey: args.publicKeyHex,
-      expirationSeconds: String(args.expirationSeconds),
-      // Don't invalidate prior keys -- if we did, recovering on a
-      // second device would lock out the first. Stale keys age out
-      // on their own via expirationSeconds.
-    });
+    // 1Password and the system passkey sheet take focus. Without the
+    // hold, the wallet window would dismiss itself mid-prompt.
+    await withWalletWindowHeld(() =>
+      tk.passkeyClient({
+        userVerification: "required",
+      } as any).stampLogin({
+        publicKey: args.publicKeyHex,
+        expirationSeconds: String(args.expirationSeconds),
+        // Don't invalidate prior keys -- if we did, recovering on a
+        // second device would lock out the first. Stale keys age out
+        // on their own via expirationSeconds.
+      }),
+    );
   }
 }
 

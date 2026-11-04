@@ -14,6 +14,7 @@
  */
 
 import { readPopupBounds } from "./popup-bounds";
+import { suppressWalletAutoClose } from "./wallet-autoclose";
 import { rememberWalletWindowId } from "./wallet-window";
 
 const SIDE_PANEL_DATA_ATTR = "sidepanel";
@@ -136,6 +137,9 @@ export async function openWalletPopup(opts: OpenWalletPopupOpts): Promise<void> 
       "Popup window unavailable: chrome.windows API is missing from this context.",
     );
   }
+  // The new window can blur for a moment while it takes focus. Don't
+  // treat that as the user clicking away.
+  await suppressWalletAutoClose();
   const bounds = await readPopupBounds();
   const win = await chrome.windows.create({
     url: buildPopupUrl(opts),

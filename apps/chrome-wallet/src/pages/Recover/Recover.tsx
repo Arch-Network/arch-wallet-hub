@@ -76,6 +76,7 @@ import {
   effectivePasskeyRpId,
   passkeyCreationSelection,
 } from "../../session/passkey-webauthn";
+import { withWalletWindowHeld } from "../../utils/wallet-autoclose";
 
 type Step = "email" | "otp" | "pick" | "password" | "done";
 
@@ -548,16 +549,18 @@ export default function Recover({ onRecovered }: RecoverProps) {
           rpId,
         });
         const passkey = await withTimeout(
-          tk.passkeyClient().createUserPasskey({
-            publicKey: {
-              rp: { id: rpId, name: "Arch Wallet" },
-              user: {
-                name: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
-                displayName,
+          withWalletWindowHeld(() =>
+            tk.passkeyClient().createUserPasskey({
+              publicKey: {
+                rp: { id: rpId, name: "Arch Wallet" },
+                user: {
+                  name: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
+                  displayName,
+                },
+                authenticatorSelection: passkeyCreationSelection(),
               },
-              authenticatorSelection: passkeyCreationSelection(),
-            },
-          }),
+            }),
+          ),
           30_000,
           "Creating passkey",
         );

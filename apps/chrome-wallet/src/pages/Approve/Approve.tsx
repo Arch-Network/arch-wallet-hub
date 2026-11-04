@@ -38,6 +38,7 @@ import {
 } from "../../utils/amount-display";
 import { lookupKnownToken, type KnownTokenMeta } from "../../utils/known-tokens";
 import { interpretMessage } from "../../utils/sign-message";
+import { closeThisExtensionWindow } from "../../utils/wallet-autoclose";
 import {
   parsePsbt,
   psbtEncoding,
@@ -1310,9 +1311,12 @@ export default function Approve() {
 
   const sendApproved = useCallback(
     (result: unknown) => {
-      chrome.runtime.sendMessage({ type: "APPROVE_REQUEST", requestId, result });
       setSuccess(true);
-      setTimeout(() => window.close(), 1500);
+      // Wait until the service worker has dropped the pending request,
+      // then close. Closing first makes onRemoved treat it as a reject.
+      chrome.runtime.sendMessage({ type: "APPROVE_REQUEST", requestId, result }, () => {
+        setTimeout(() => void closeThisExtensionWindow(), 1500);
+      });
     },
     [requestId],
   );
@@ -1661,8 +1665,9 @@ export default function Approve() {
   }, []);
 
   const handleReject = useCallback(() => {
-    chrome.runtime.sendMessage({ type: "REJECT_REQUEST", requestId });
-    window.close();
+    chrome.runtime.sendMessage({ type: "REJECT_REQUEST", requestId }, () => {
+      void closeThisExtensionWindow();
+    });
   }, [requestId]);
 
   if (success) {
