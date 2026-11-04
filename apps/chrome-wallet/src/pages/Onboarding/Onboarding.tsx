@@ -19,7 +19,10 @@ import {
 } from "../../state/types";
 import { readHubToken } from "../../utils/hub-session-store";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
-import { PASSKEY_RP_ID } from "../../session/constants";
+import {
+  effectivePasskeyRpId,
+  passkeyCreationSelection,
+} from "../../session/passkey-webauthn";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 import ArchLogoAnimated from "../../components/ArchLogoAnimated";
 import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
@@ -356,10 +359,9 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         "Fetching server configuration",
       );
 
-      // SECURITY: use the pinned PASSKEY_RP_ID constant; never derive
-      // rpId from `location.hostname` (would silently rebind passkeys
-      // across extension-id changes / popup vs tab contexts).
-      const rpId = PASSKEY_RP_ID;
+      // Extension pages must use the extension id as rpId so 1Password
+      // sees a matching origin. Hosted pages use wallet.arch.network.
+      const rpId = effectivePasskeyRpId();
 
       setStatusMessage("Creating passkey - follow the browser prompt...");
 
@@ -375,14 +377,9 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
           publicKey: {
             rp: { id: rpId, name: "Arch Wallet" },
             user: { name: `${externalUserId}-${Date.now()}`, displayName },
-            // SECURITY: enforce user verification (biometric / PIN /
-            // device-PIN) on the registration ceremony. Presence-only
-            // authenticators (button-tap-only security keys) are
-            // rejected.
-            authenticatorSelection: {
-              userVerification: "required",
-              residentKey: "preferred",
-            },
+            // SECURITY: UV required. requireResidentKey is explicitly
+            // false so Turnkey's default `true` does not hide 1Password.
+            authenticatorSelection: passkeyCreationSelection(),
           },
         }),
         30_000,

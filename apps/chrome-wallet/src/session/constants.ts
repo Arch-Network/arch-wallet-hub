@@ -30,19 +30,15 @@ export const MAX_SESSION_TTL_SECONDS = 60 * 60; // 1 hour
 /**
  * WebAuthn relying-party id used for ALL passkey ceremonies.
  *
- * We pin this to a constant so the rpId can never drift with the
- * hosting context: extension popups, side panels, full-page render in
- * a tab, or test harnesses all use the same value. The previous
- * implementation derived rpId from `globalThis.location.hostname`,
- * which made the rpId equal to the extension id in the popup but
- * could become a tab's hostname if the popup HTML ever loaded in a
- * tab -- silently rebinding new passkeys to the dapp's origin (RP
- * confusion). It also broke existing passkeys when the extension id
- * changed (sideload, CWS re-publish).
+ * Hosted https / mobile associated-domains RP. Extension documents
+ * cannot use this value: password managers compare rpId to the page
+ * origin and will refuse `wallet.arch.network` from
+ * `chrome-extension://<id>/`. Call `effectivePasskeyRpId()` at the
+ * ceremony so the extension id is used in the popup / side panel and
+ * this constant is used on the hosted wallet origin.
  *
- * In production we use the publisher-controlled origin
- * `wallet.arch.network`. In dev the wallet runs against `localhost`.
- * The choice is driven by `import.meta.env.MODE`.
+ * In production this is `wallet.arch.network`. In dev it is
+ * `localhost`. The choice is driven by `import.meta.env.MODE`.
  */
 const PASSKEY_RP_ID_PROD = "wallet.arch.network";
 const PASSKEY_RP_ID_DEV = "localhost";

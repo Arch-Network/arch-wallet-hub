@@ -19,7 +19,11 @@ import {
   installGlobalErrorHandlers,
 } from "../src/utils/log";
 import { installNotificationClickHandler } from "../src/utils/notifications";
-import { readPopupBounds, selectResizableWalletWindow } from "../src/utils/popup-bounds";
+import { readPopupBounds } from "../src/utils/popup-bounds";
+import {
+  forgetWalletWindowId,
+  openOrFocusWalletWindow,
+} from "../src/utils/wallet-window";
 
 const AUTO_LOCK_ALARM = "arch-wallet-auto-lock";
 const PENDING_GC_ALARM = "arch-wallet-pending-gc";
@@ -97,33 +101,6 @@ async function applyOpenAsPreference(mode: OpenAsMode): Promise<void> {
   } catch (err) {
     console.warn("[arch-wallet] applyOpenAsPreference failed", err);
   }
-}
-
-async function openOrFocusWalletWindow(): Promise<void> {
-  try {
-    const getContexts = chrome.runtime.getContexts as (
-      filter: chrome.runtime.ContextFilter,
-    ) => Promise<chrome.runtime.ExtensionContext[]>;
-    const contexts = await getContexts({
-      documentUrls: [`${chrome.runtime.getURL("/popup.html")}*`],
-    });
-    const existing = selectResizableWalletWindow(contexts);
-    if (existing != null) {
-      await chrome.windows.update(existing, { focused: true });
-      return;
-    }
-  } catch {
-    /* fall through and open a fresh window */
-  }
-
-  const bounds = await readPopupBounds();
-  await chrome.windows.create({
-    url: chrome.runtime.getURL("/popup.html"),
-    type: "popup",
-    width: bounds.width,
-    height: bounds.height,
-    focused: true,
-  });
 }
 
 let openAsSync = Promise.resolve();
@@ -483,6 +460,7 @@ export default defineBackground(() => {
 
   if (chrome.windows?.onRemoved) {
     chrome.windows.onRemoved.addListener(async (windowId) => {
+      void forgetWalletWindowId(windowId);
       if (connectorTab && connectorTab.windowId === windowId) {
         connectorTab = null;
         failConnectorInFlight(CONNECTOR_CLOSED);
