@@ -66,12 +66,10 @@ function RouteRestorer() {
       return;
     }
 
-    // Recovery checkpoint takes priority over the saved last-route:
-    // if the user is in the middle of OTP verification and stepped
-    // away to read their email, we want the popup to land back on
-    // /recover (not /dashboard) when they reopen it. The checkpoint
-    // is short-lived (10 min TTL) so this won't strand users who
-    // simply abandoned recovery a while ago.
+    // Recovery checkpoint takes priority over the saved last-route.
+    // A closed window in the middle of the code, the wallet picker,
+    // or the password step (after the code was accepted) should land
+    // back on /recover. The checkpoint expires after 10 minutes.
     hasActiveRecoveryCheckpoint().then((hasCheckpoint) => {
       if (hasCheckpoint) {
         // Preserve any pinnedExternalUserId we encoded in the

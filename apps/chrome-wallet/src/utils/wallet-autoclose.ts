@@ -61,8 +61,14 @@ export function isApprovalHash(hash: string): boolean {
   return hash.startsWith("#/approve");
 }
 
+/** Recovery asks the user to read email and copy a password in another app. */
+export function isRecoveryHash(hash: string): boolean {
+  return hash.startsWith("#/recover");
+}
+
 /**
- * `stay` — focused, or an approve prompt (those close only after a decision).
+ * `stay` — focused, an approve prompt (those close only after a decision),
+ * or recovery (the user is in Mail or a password manager on purpose).
  * `wait` — unfocused, but a passkey, connector, or toolbar click still needs it.
  * `close` — the user has moved on.
  */
@@ -71,7 +77,7 @@ export function walletAutoCloseAction(input: {
   hash: string;
   blocked: boolean;
 }): AutoCloseAction {
-  if (input.hasFocus || isApprovalHash(input.hash)) return "stay";
+  if (input.hasFocus || isApprovalHash(input.hash) || isRecoveryHash(input.hash)) return "stay";
   if (input.blocked) return "wait";
   return "close";
 }
@@ -283,7 +289,7 @@ export function installWalletWindowAutoClose(): void {
     }
   });
   window.addEventListener("blur", () => {
-    if (isApprovalHash(window.location.hash)) return;
+    if (isApprovalHash(window.location.hash) || isRecoveryHash(window.location.hash)) return;
     arm();
   });
 }
