@@ -11,6 +11,11 @@
  * button and the WebAuthn call so the request cannot drift from the
  * Turnkey attestation / stamp shapes below. The click is the user
  * gesture those prompts require.
+ *
+ * 1Password will not inject into the XML error document S3 returns
+ * when passkey.html is missing. public/rules/passkey-page.json forces
+ * that response to text/html so the content script still attaches.
+ * The real HTML file should still be published when the bucket is writable.
  */
 
 import { Turnkey, TurnkeyPasskeyClient, type TStamper } from "@turnkey/sdk-browser";
