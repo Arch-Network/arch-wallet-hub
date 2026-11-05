@@ -49,6 +49,8 @@ export interface RecoveryVerifiedMaterial {
   organizationId: string;
   rootUserId: string | null;
   walletId: string | null;
+  /** Hub resource id. Null on checkpoints written before it was returned. */
+  resourceId: string | null;
   defaultAddress: string | null;
   defaultPublicKeyHex: string | null;
   externalUserId: string | null;
@@ -108,6 +110,7 @@ function readVerified(value: unknown): RecoveryVerifiedMaterial | null {
     organizationId: v.organizationId,
     rootUserId: nullableString(v.rootUserId),
     walletId: nullableString(v.walletId),
+    resourceId: nullableString(v.resourceId),
     defaultAddress: nullableString(v.defaultAddress),
     defaultPublicKeyHex: nullableString(v.defaultPublicKeyHex),
     externalUserId: nullableString(v.externalUserId),

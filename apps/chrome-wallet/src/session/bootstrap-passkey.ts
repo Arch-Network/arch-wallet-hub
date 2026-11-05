@@ -36,6 +36,7 @@ import type { WalletAccount } from "../state/types";
 import { TURNKEY_API_BASE_URL } from "./constants";
 import { withWalletWindowHeld } from "../utils/wallet-autoclose";
 import { effectivePasskeyRpId } from "./passkey-webauthn";
+import { hostedPasskeyClient, usesHostedPasskeyPage } from "./passkey-hosted";
 import type { SessionBootstrap } from "./types";
 
 function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
@@ -54,6 +55,23 @@ export class PasskeyBootstrap implements SessionBootstrap {
     publicKeyHex: string;
     expirationSeconds: number;
   }): Promise<void> {
+    // Production runs the assertion on https://wallet.arch.network.
+    // 1Password never sees chrome-extension:// prompts, and iCloud
+    // Keychain will not take an extension id as rpId. Dev stays in
+    // the extension page (rpId localhost / extension id).
+    // Don't invalidate prior keys -- if we did, recovering on a
+    // second device would lock out the first. Stale keys age out
+    // on their own via expirationSeconds.
+    const login = {
+      publicKey: args.publicKeyHex,
+      expirationSeconds: String(args.expirationSeconds),
+    };
+    if (usesHostedPasskeyPage()) {
+      await hostedPasskeyClient(args.account.organizationId, TURNKEY_API_BASE_URL).stampLogin(
+        login,
+      );
+      return;
+    }
     const tk = buildPasskeyTurnkey(args.account);
     // The passkey client stamps every activity it sends with a
     // WebAuthn assertion against the user's already-registered
@@ -78,13 +96,7 @@ export class PasskeyBootstrap implements SessionBootstrap {
     await withWalletWindowHeld(() =>
       tk.passkeyClient({
         userVerification: "required",
-      } as any).stampLogin({
-        publicKey: args.publicKeyHex,
-        expirationSeconds: String(args.expirationSeconds),
-        // Don't invalidate prior keys -- if we did, recovering on a
-        // second device would lock out the first. Stale keys age out
-        // on their own via expirationSeconds.
-      }),
+      } as any).stampLogin(login),
     );
   }
 }

@@ -66,6 +66,7 @@ const verified: RecoveryVerifiedMaterial = {
   organizationId: "org",
   rootUserId: "root",
   walletId: "wallet",
+  resourceId: "hub-resource",
   defaultAddress: "bc1qexample",
   defaultPublicKeyHex: "aa",
   externalUserId: "user",

@@ -43,7 +43,7 @@
  *     │  returns HPKE-encrypted credentialBundle
  *     ├─ mark challenge consumed
  *     └─ return { credentialBundle, organizationId, walletId,
- *                  defaultAddress, defaultPublicKeyHex,
+ *                  resourceId, defaultAddress, defaultPublicKeyHex,
  *                  externalUserId, authMethod, expiresInSeconds }
  *
  * Security posture:
@@ -229,6 +229,8 @@ const VerifyResponse = Type.Object({
    *  CREATE_AUTHENTICATORS with the recovered API key. */
   rootUserId: Type.Union([Type.String(), Type.Null()]),
   walletId: Type.Union([Type.String(), Type.Null()]),
+  /** Hub resource primary key. Distinct from `walletId`. */
+  resourceId: Type.String(),
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   externalUserId: Type.Union([Type.String(), Type.Null()]),
@@ -1451,6 +1453,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           organizationId: candidate.organizationId,
           rootUserId: candidate.rootUserId,
           walletId: candidate.walletId,
+          resourceId: candidate.resourceId,
           defaultAddress: candidate.defaultAddress,
           defaultPublicKeyHex: candidate.defaultPublicKeyHex,
           externalUserId: candidate.externalUserId,

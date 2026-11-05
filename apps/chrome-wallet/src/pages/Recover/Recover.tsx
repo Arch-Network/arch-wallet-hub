@@ -55,7 +55,6 @@ import {
   WalletHubClient,
   type RecoveryEmailCandidate,
 } from "@arch-network/wallet-hub-sdk";
-import { Turnkey } from "@turnkey/sdk-browser";
 import { TurnkeyClient } from "@turnkey/http";
 import { ApiKeyStamper } from "@turnkey/api-key-stamper";
 import { walletStore } from "../../state/wallet-store";
@@ -76,11 +75,8 @@ import {
   DEFAULT_HUB_BASE_URL,
   type WalletAccount,
 } from "../../state/types";
-import {
-  effectivePasskeyRpId,
-  passkeyCreationSelection,
-} from "../../session/passkey-webauthn";
-import { withWalletWindowHeld } from "../../utils/wallet-autoclose";
+import { createArchPasskey } from "../../session/passkey-hosted";
+import { resolveRecoveredHubResourceId } from "../../utils/hub-resource";
 
 type Step = "email" | "otp" | "pick" | "password" | "done";
 
@@ -223,6 +219,8 @@ export default function Recover({ onRecovered }: RecoverProps) {
         organizationId: string;
         rootUserId: string | null;
         walletId: string | null;
+        /** Hub resource primary key. Older hubs omit it. */
+        resourceId: string | null;
         defaultAddress: string | null;
         defaultPublicKeyHex: string | null;
         externalUserId: string | null;
@@ -294,6 +292,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
           organizationId: verified.organizationId,
           rootUserId: verified.rootUserId,
           walletId: verified.walletId,
+          resourceId: verified.resourceId,
           defaultAddress: verified.defaultAddress,
           defaultPublicKeyHex: verified.defaultPublicKeyHex,
           externalUserId: verified.externalUserId,
@@ -333,6 +332,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
           organizationId: verifyResult.organizationId,
           rootUserId: verifyResult.rootUserId,
           walletId: verifyResult.walletId,
+          resourceId: verifyResult.resourceId,
           defaultAddress: verifyResult.defaultAddress,
           defaultPublicKeyHex: verifyResult.defaultPublicKeyHex,
           externalUserId: verifyResult.externalUserId,
@@ -538,6 +538,8 @@ export default function Recover({ onRecovered }: RecoverProps) {
         organizationId: res.organizationId,
         rootUserId: res.rootUserId,
         walletId: res.walletId,
+        resourceId:
+          (res as { resourceId?: string | null }).resourceId ?? null,
         defaultAddress: res.defaultAddress,
         defaultPublicKeyHex: res.defaultPublicKeyHex,
         externalUserId: res.externalUserId,
@@ -595,10 +597,16 @@ export default function Recover({ onRecovered }: RecoverProps) {
         verifyResult.defaultAddress
           ? `Recovered ${verifyResult.defaultAddress.slice(-6)}`
           : "Recovered wallet";
-      const resourceId =
-        verifyResult.walletId ??
-        verifyResult.defaultPublicKeyHex ??
-        `recovered-${Date.now().toString(36)}`;
+      // Hub session and signing look this up as a resource primary key.
+      // Turnkey's wallet id is a different column and 400s with
+      // InvalidResource.
+      const resourceId = await resolveRecoveredHubResourceId({
+        resourceId: verifyResult.resourceId,
+        walletId: verifyResult.walletId,
+        organizationId: verifyResult.organizationId,
+        publicKeyHex: verifyResult.defaultPublicKeyHex,
+        externalUserId: verifyResult.externalUserId,
+      });
       const baseAccount: WalletAccount = {
         id: resourceId,
         label: displayName,
@@ -625,33 +633,21 @@ export default function Recover({ onRecovered }: RecoverProps) {
         }
         const client = await buildClient();
         const config = await client.getTurnkeyConfig();
-        const rpId = effectivePasskeyRpId();
 
         const recovered = decryptRecoveryBundle({
           credentialBundle: verifyResult.credentialBundle,
           ephemeralPrivateKeyHex,
         });
 
-        setStatusMessage("Creating new passkey - follow the browser prompt...");
-        const tk = new Turnkey({
-          apiBaseUrl: config.apiBaseUrl,
-          defaultOrganizationId: verifyResult.organizationId,
-          rpId,
-        });
+        setStatusMessage("Follow the passkey prompt.");
         const passkey = await withTimeout(
-          withWalletWindowHeld(() =>
-            tk.passkeyClient().createUserPasskey({
-              publicKey: {
-                rp: { id: rpId, name: "Arch Wallet" },
-                user: {
-                  name: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
-                  displayName,
-                },
-                authenticatorSelection: passkeyCreationSelection(),
-              },
-            }),
-          ),
-          30_000,
+          createArchPasskey({
+            apiBaseUrl: config.apiBaseUrl,
+            organizationId: verifyResult.organizationId,
+            userName: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
+            displayName,
+          }),
+          180_000,
           "Creating passkey",
         );
 
