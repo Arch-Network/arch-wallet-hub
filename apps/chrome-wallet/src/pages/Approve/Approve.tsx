@@ -61,6 +61,7 @@ import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import { signerInfo, supports } from "../../wallets/capabilities";
 import { signArchMessageHashWithExternalWallet } from "../../utils/external-arch-message-hash";
 import { buildSessionSigner } from "../../utils/hub-session";
+import { reconcileHubResourceId } from "../../utils/hub-resource";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
   ensureSigningSessionForAccount,
@@ -1408,6 +1409,10 @@ export default function Approve() {
       // signer so the SDK can transparently re-mint if the token
       // expires mid-flight.
       if (needsHubSession) {
+        // Recovery used to store Turnkey's wallet id here. Signing
+        // looks up a Hub resource id, so correct it before the
+        // session signer snapshots the value.
+        await reconcileHubResourceId(selectedAccount);
         client.setSessionSigner(
           buildSessionSigner(selectedAccount, externalUserId, state.network),
         );

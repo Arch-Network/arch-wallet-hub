@@ -53,6 +53,7 @@ import ArchIcon from "../../components/ArchIcon";
 import { SignerBadge } from "../../components/AccountSwitcher";
 import { TokenIcon } from "../../components/TokenIcon";
 import { buildSessionSigner } from "../../utils/hub-session";
+import { reconcileHubResourceId } from "../../utils/hub-resource";
 import { hubIntentFee, verifyHubSigningRequest } from "../../utils/hub-signing-request-verify";
 import { feeChargedTo } from "../../utils/arch-fee";
 import { parseU64DecimalString } from "../../utils/u64-amount";
@@ -719,6 +720,7 @@ export default function Send({ networkStatus }: SendProps) {
       await ensureSigningSessionForAccount(activeAccount);
       const client = await getClient();
       const externalUserId = await getExternalUserId();
+      await reconcileHubResourceId(activeAccount);
       client.setSessionSigner(
         buildSessionSigner(activeAccount, externalUserId, state.network),
       );

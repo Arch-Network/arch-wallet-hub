@@ -28,14 +28,11 @@ export const MIN_SESSION_TTL_SECONDS = 60;
 export const MAX_SESSION_TTL_SECONDS = 60 * 60; // 1 hour
 
 /**
- * WebAuthn relying-party id used for ALL passkey ceremonies.
+ * WebAuthn relying-party id for passkeys.
  *
- * Hosted https / mobile associated-domains RP. Extension documents
- * cannot use this value: password managers compare rpId to the page
- * origin and will refuse `wallet.arch.network` from
- * `chrome-extension://<id>/`. Call `effectivePasskeyRpId()` at the
- * ceremony so the extension id is used in the popup / side panel and
- * this constant is used on the hosted wallet origin.
+ * Production ceremonies run on https://wallet.arch.network (see
+ * `passkey-hosted.ts`) so iCloud Keychain and 1Password can answer.
+ * `effectivePasskeyRpId()` is the dev / extension-page fallback.
  *
  * In production this is `wallet.arch.network`. In dev it is
  * `localhost`. The choice is driven by `import.meta.env.MODE`.
