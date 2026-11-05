@@ -38,7 +38,10 @@
  *
  *   - We always require a fresh password. The keystore is re-sealed;
  *     the previous keystore (if any) is overwritten by
- *     walletStore.completeOnboarding.
+ *     walletStore.completeOnboarding. The password is never written
+ *     to the recovery checkpoint. The verified bundle is, so a window
+ *     that still closes while the user copies a password reopens on
+ *     this step instead of asking for a code Turnkey already spent.
  *
  *   - A user who hits this screen with no externalUserId is in the
  *     fresh-device or forgot-password case. After completeOnboarding
@@ -64,6 +67,7 @@ import {
 } from "../../crypto/turnkey-bundle";
 import {
   clearRecoverySession,
+  isSpentRecoveryChallenge,
   loadRecoverySession,
   saveRecoverySession,
 } from "../../state/recovery-session";
@@ -207,9 +211,9 @@ export default function Recover({ onRecovered }: RecoverProps) {
   const [challengeId, setChallengeId] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<RecoveryEmailCandidate[]>([]);
   const [pickedToken, setPickedToken] = useState<string | null>(null);
-  // Ephemeral P-256 keypair the Hub-returned credentialBundle is
-  // encrypted to. Keep in component state until we decrypt; never
-  // persist it.
+  // Ephemeral P-256 key the Hub-returned credentialBundle is encrypted
+  // to. After verify it is also in the session checkpoint so this
+  // screen can reopen; cleared when recovery finishes or the user backs out.
   const [ephemeralPrivateKeyHex, setEphemeralPrivateKeyHex] = useState<
     string | null
   >(null);
@@ -251,12 +255,11 @@ export default function Recover({ onRecovered }: RecoverProps) {
     })();
   }, [pinnedExternalUserId]);
 
-  // Resume from a persisted checkpoint if the user popped out to read
-  // their email and reopened the popup. We deliberately restore only
-  // up to and including the `pick` step: any state past `password`
-  // would require re-persisting verifyResult + ephemeralPrivateKeyHex,
-  // which we keep in-memory only. The restoreAttempted ref protects
-  // against late-arriving useEffect updates clobbering user edits.
+  // Resume when the window closed mid-recovery. OTP and wallet-pick
+  // come back as they were. A verified password step comes back as
+  // the password form — the code is already spent, so restoring OTP
+  // would 410. The restoreAttempted ref protects against a late load
+  // clobbering something the user has started typing.
   const restoreAttempted = useRef(false);
   useEffect(() => {
     if (restoreAttempted.current) return;
@@ -283,6 +286,22 @@ export default function Recover({ onRecovered }: RecoverProps) {
       if (checkpoint.candidates?.length) setCandidates(checkpoint.candidates);
       if (checkpoint.emailMasked) setEmailMasked(checkpoint.emailMasked);
       if (checkpoint.pickedToken) setPickedToken(checkpoint.pickedToken);
+      if (checkpoint.step === "password" && checkpoint.verified) {
+        const verified = checkpoint.verified;
+        setEphemeralPrivateKeyHex(verified.ephemeralPrivateKeyHex);
+        setVerifyResult({
+          credentialBundle: verified.credentialBundle,
+          organizationId: verified.organizationId,
+          rootUserId: verified.rootUserId,
+          walletId: verified.walletId,
+          defaultAddress: verified.defaultAddress,
+          defaultPublicKeyHex: verified.defaultPublicKeyHex,
+          externalUserId: verified.externalUserId,
+          authMethod: verified.authMethod,
+        });
+        setStep("password");
+        return;
+      }
       if (checkpoint.step === "otp" || checkpoint.step === "pick") {
         if (checkpoint.candidates?.length) {
           setStep(checkpoint.step);
@@ -294,10 +313,35 @@ export default function Recover({ onRecovered }: RecoverProps) {
   }, [pinnedExternalUserId, pinnedResourceId]);
 
   // Persist the in-flight checkpoint whenever the resumable surface
-  // changes. We *don't* checkpoint at step="email" (nothing to resume)
-  // or step="password"/"done" (the OTP has already been spent and we
-  // hold credentialBundle + ephemeralPrivateKeyHex in-memory only).
+  // changes. Nothing to resume at email or done. The password the
+  // user is typing is not included. Writes are ordered inside
+  // saveRecoverySession so a slow OTP save cannot clobber this.
   useEffect(() => {
+    if (step === "password") {
+      if (!verifyResult || !ephemeralPrivateKeyHex) return;
+      void saveRecoverySession({
+        step,
+        email,
+        challengeId,
+        candidates,
+        emailMasked,
+        pickedToken,
+        pinnedExternalUserId,
+        pinnedResourceId,
+        verified: {
+          credentialBundle: verifyResult.credentialBundle,
+          organizationId: verifyResult.organizationId,
+          rootUserId: verifyResult.rootUserId,
+          walletId: verifyResult.walletId,
+          defaultAddress: verifyResult.defaultAddress,
+          defaultPublicKeyHex: verifyResult.defaultPublicKeyHex,
+          externalUserId: verifyResult.externalUserId,
+          authMethod: verifyResult.authMethod,
+          ephemeralPrivateKeyHex,
+        },
+      });
+      return;
+    }
     if (step !== "otp" && step !== "pick") return;
     if (!challengeId) return;
     if (candidates.length === 0) return;
@@ -311,7 +355,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
       pinnedExternalUserId,
       pinnedResourceId,
     });
-  }, [step, email, challengeId, candidates, emailMasked, pickedToken, pinnedExternalUserId, pinnedResourceId]);
+  }, [step, email, challengeId, candidates, emailMasked, pickedToken, pinnedExternalUserId, pinnedResourceId, verifyResult, ephemeralPrivateKeyHex]);
 
   const buildClient = useCallback(async () => {
     const state = await walletStore.getState().catch(() => null);
@@ -325,6 +369,21 @@ export default function Recover({ onRecovered }: RecoverProps) {
       baseUrl: state?.hubBaseUrl || DEFAULT_HUB_BASE_URL,
       ...(apiKey ? { apiKey } : {}),
     });
+  }, []);
+
+  const abandonSpentChallenge = useCallback(async () => {
+    await clearRecoverySession();
+    setChallengeId(null);
+    setCandidates([]);
+    setPickedToken(null);
+    setOtp("");
+    setVerifyResult(null);
+    setEphemeralPrivateKeyHex(null);
+    setEmailMasked("");
+    setStep("email");
+    setError(
+      "That code was already used. Request a new one. Your email is still filled in.",
+    );
   }, []);
 
   const startOtpForCandidate = useCallback(async (
@@ -346,11 +405,15 @@ export default function Recover({ onRecovered }: RecoverProps) {
       setOtp("");
       setStep("otp");
     } catch (e: any) {
+      if (isSpentRecoveryChallenge(e)) {
+        await abandonSpentChallenge();
+        return;
+      }
       setError(e?.message || "Failed to send verification code");
     } finally {
       setLoading(false);
     }
-  }, [buildClient, email]);
+  }, [buildClient, email, abandonSpentChallenge]);
 
   // Tick the resend cooldown down to zero.
   useEffect(() => {
@@ -379,6 +442,10 @@ export default function Recover({ onRecovered }: RecoverProps) {
       setOtp("");
       setResendCooldown(30);
     } catch (e: any) {
+      if (isSpentRecoveryChallenge(e)) {
+        await abandonSpentChallenge();
+        return;
+      }
       // Neutral 429 from the Hub when resends are too frequent / over
       // the cap: surface the message and keep the user on the OTP step.
       setError(e?.message || "Failed to resend verification code");
@@ -386,7 +453,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
     } finally {
       setResending(false);
     }
-  }, [challengeId, pickedToken, email, resending, resendCooldown, buildClient]);
+  }, [challengeId, pickedToken, email, resending, resendCooldown, buildClient, abandonSpentChallenge]);
 
   const initOtp = useCallback(async () => {
     setLoading(true);
@@ -457,7 +524,6 @@ export default function Recover({ onRecovered }: RecoverProps) {
     try {
       const client = await buildClient();
       const keypair = await generateRecoveryKeypair();
-      setEphemeralPrivateKeyHex(keypair.privateKeyHex);
       const res = await client.verifyRecoveryEmail({
         challengeId,
         candidateToken: token,
@@ -467,7 +533,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
           ? { externalUserId: pinnedExternalUserId }
           : {}),
       });
-      setVerifyResult({
+      const verified = {
         credentialBundle: res.credentialBundle,
         organizationId: res.organizationId,
         rootUserId: res.rootUserId,
@@ -477,15 +543,39 @@ export default function Recover({ onRecovered }: RecoverProps) {
         externalUserId: res.externalUserId,
         // Default to "passkey" for back-compat with Hubs predating
         // migration 011 that don't yet emit the field.
-        authMethod: (res as any).authMethod === "email" ? "email" : "passkey",
+        authMethod: ((res as any).authMethod === "email" ? "email" : "passkey") as
+          | "email"
+          | "passkey",
+      };
+      // Write the checkpoint before showing the password step. If the
+      // window still closes, the OTP effect must not be the last thing stored.
+      await saveRecoverySession({
+        step: "password",
+        email,
+        challengeId,
+        candidates,
+        emailMasked,
+        pickedToken: token,
+        pinnedExternalUserId,
+        pinnedResourceId,
+        verified: {
+          ...verified,
+          ephemeralPrivateKeyHex: keypair.privateKeyHex,
+        },
       });
+      setEphemeralPrivateKeyHex(keypair.privateKeyHex);
+      setVerifyResult(verified);
       setStep("password");
     } catch (e: any) {
+      if (isSpentRecoveryChallenge(e)) {
+        await abandonSpentChallenge();
+        return;
+      }
       setError(e?.message || "Invalid or expired code");
     } finally {
       setLoading(false);
     }
-  }, [challengeId, otp, pickedToken, candidates, pinnedExternalUserId, buildClient]);
+  }, [challengeId, otp, pickedToken, candidates, pinnedExternalUserId, pinnedResourceId, email, emailMasked, buildClient, abandonSpentChallenge]);
 
   const completeRecovery = useCallback(async () => {
     if (!verifyResult || !ephemeralPrivateKeyHex) return;
@@ -879,7 +969,8 @@ export default function Recover({ onRecovered }: RecoverProps) {
             }}
           >
             Email verified. Set a password to seal the wallet on this
-            device; you'll be asked to create a new passkey next.
+            device; you'll be asked to create a new passkey next. This
+            window stays open while you copy that password from another app.
           </p>
           <div style={{ marginBottom: 8, textAlign: "left", width: "100%" }}>
             <label className="input-label">New password</label>

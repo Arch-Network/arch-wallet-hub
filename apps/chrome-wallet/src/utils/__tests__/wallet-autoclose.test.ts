@@ -58,6 +58,13 @@ describe("walletAutoCloseAction", () => {
   it("waits out a passkey prompt or a toolbar click instead of closing", () => {
     expect(walletAutoCloseAction({ hasFocus: false, hash: "#/dashboard", blocked: true })).toBe("wait");
   });
+
+  it("stays open on recovery so a password manager can take focus", () => {
+    expect(walletAutoCloseAction({ hasFocus: false, hash: "#/recover", blocked: false })).toBe("stay");
+    expect(
+      walletAutoCloseAction({ hasFocus: false, hash: "#/recover?externalUserId=abc", blocked: false }),
+    ).toBe("stay");
+  });
 });
 
 describe("auto-close holds", () => {
