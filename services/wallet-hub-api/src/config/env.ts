@@ -65,6 +65,19 @@ const EnvSchema = z.object({
       "signing-requests.create,signing-requests.submit,btc.build,btc.estimate-fee"
     ),
 
+  // POST /turnkey/email-wallets creates an email wallet for whatever
+  // address the caller names, with no proof the caller owns it, and the
+  // app key that authorizes it ships inside the extension. Closed by
+  // default: POST /recovery/email/signin is the way to create an email
+  // wallet, and it reveals the wallet only after an OTP to that inbox.
+  // Set true only while a client still onboards through this route
+  // (Arch Wallet's extension does today) or to provision the
+  // review-login wallet.
+  EMAIL_WALLET_CREATE_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+
   // Postgres
   //
   // Two ways to configure the DB:
@@ -118,7 +131,7 @@ const EnvSchema = z.object({
   //
   // Provisioning (one-time, see deploy/README.md):
   //   1. Create the dummy email wallet on MAINNET via
-  //      POST /turnkey/email-wallets.
+  //      POST /turnkey/email-wallets (needs EMAIL_WALLET_CREATE_ENABLED=true).
   //   2. Run the real email-OTP recovery once to obtain a recovery key,
   //      then stamp CREATE_API_KEYS_V2 to register a permanent review API
   //      key on the sub-org root user.
