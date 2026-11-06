@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
-import { Turnkey } from "@turnkey/sdk-browser";
 import { walletStore } from "../../state/wallet-store";
 import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
@@ -19,7 +18,7 @@ import {
 } from "../../state/types";
 import { readHubToken } from "../../utils/hub-session-store";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
-import { PASSKEY_RP_ID } from "../../session/constants";
+import { createArchPasskey } from "../../session/passkey-hosted";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 import ArchLogoAnimated from "../../components/ArchLogoAnimated";
 import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
@@ -356,36 +355,17 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         "Fetching server configuration",
       );
 
-      // SECURITY: use the pinned PASSKEY_RP_ID constant; never derive
-      // rpId from `location.hostname` (would silently rebind passkeys
-      // across extension-id changes / popup vs tab contexts).
-      const rpId = PASSKEY_RP_ID;
-
-      setStatusMessage("Creating passkey - follow the browser prompt...");
-
-      const tk = new Turnkey({
-        apiBaseUrl: config.apiBaseUrl,
-        defaultOrganizationId: config.organizationId,
-        rpId,
-      });
-
       const displayName = walletName.trim() || "Arch Wallet";
+      setStatusMessage("Follow the passkey prompt.");
+
       const passkey = await withTimeout(
-        tk.passkeyClient().createUserPasskey({
-          publicKey: {
-            rp: { id: rpId, name: "Arch Wallet" },
-            user: { name: `${externalUserId}-${Date.now()}`, displayName },
-            // SECURITY: enforce user verification (biometric / PIN /
-            // device-PIN) on the registration ceremony. Presence-only
-            // authenticators (button-tap-only security keys) are
-            // rejected.
-            authenticatorSelection: {
-              userVerification: "required",
-              residentKey: "preferred",
-            },
-          },
+        createArchPasskey({
+          apiBaseUrl: config.apiBaseUrl,
+          organizationId: config.organizationId,
+          userName: `${externalUserId}-${Date.now()}`,
+          displayName,
         }),
-        30_000,
+        180_000,
         "Creating passkey",
       );
 

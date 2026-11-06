@@ -3,7 +3,7 @@ import bs58 from "bs58";
 import { MAINNET_CONFIG } from "@arch/swap-engine";
 
 import { valuatePortfolio } from "../prices";
-import { usdPerUnitForMint, usdPerUnitForSymbol } from "../token-usd";
+import { displayAmountUsd, usdPerUnitForMint, usdPerUnitForSymbol } from "../token-usd";
 
 /**
  * Regression tests for wrapped-BTC valuation.
@@ -73,6 +73,18 @@ describe("APL token pricing", () => {
 
     it("holds dollar-pegged assets at $1", () => {
       expect(usdPerUnitForSymbol("USDT", BTC_USD)).toBe(1);
+    });
+
+    it("values a typed aBTC amount at the BTC rate", () => {
+      expect(displayAmountUsd("0.00015891", BTC_USD)).toBeCloseTo(10.01133, 4);
+      expect(displayAmountUsd("0.001", usdPerUnitForMint(ABTC_MINT, "mainnet", BTC_USD))).toBe(63);
+    });
+
+    it("hides the fiat hint until the typed amount is a positive decimal", () => {
+      expect(displayAmountUsd("", BTC_USD)).toBeNull();
+      expect(displayAmountUsd("0.", BTC_USD)).toBeNull();
+      expect(displayAmountUsd("0", BTC_USD)).toBeNull();
+      expect(displayAmountUsd("0.001", null)).toBeNull();
     });
 
     it("prices nothing when no BTC price is available", () => {

@@ -363,6 +363,136 @@ export class TurnkeyService {
     };
   }
 
+  /**
+   * Social login sign-up: a sub-organization whose root user's only
+   * credential is an OIDC identity (`oauthProviders`), plus the wallet.
+   * Turnkey verifies `oidcToken` in the enclave and stores its
+   * `iss` / `sub` / `aud` as the identity; the token itself is not kept.
+   * No API key, no authenticator: every later session comes through
+   * OAUTH_LOGIN, stamped by the Hub's parent key, which can open a session
+   * for the user but never sign for them.
+   *
+   * V7 is the first CREATE_SUB_ORGANIZATION shape whose root user params
+   * carry `oauthProviders`; the result is read from whichever versioned
+   * result Turnkey answers with, as the V4 path does.
+   */
+  async createSubOrganizationWithOAuthWallet(params: {
+    subOrganizationName: string;
+    rootUser: { userName: string; userEmail?: string };
+    provider: { providerName: string; oidcToken: string };
+    wallet: {
+      walletName: string;
+      addressFormat: CreateBitcoinWalletParams["addressFormat"];
+      path: string;
+    };
+  }): Promise<CreateSubOrganizationWithWalletResult> {
+    const res = await (this.client as any).createSubOrganization({
+      type: "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V7",
+      timestampMs: nowMs(),
+      organizationId: this.organizationId,
+      parameters: {
+        subOrganizationName: params.subOrganizationName,
+        rootUsers: [
+          {
+            userName: params.rootUser.userName,
+            ...(params.rootUser.userEmail ? { userEmail: params.rootUser.userEmail } : {}),
+            apiKeys: [],
+            authenticators: [],
+            oauthProviders: [
+              {
+                providerName: params.provider.providerName,
+                oidcToken: params.provider.oidcToken,
+              },
+            ],
+          },
+        ],
+        rootQuorumThreshold: 1,
+        wallet: {
+          walletName: params.wallet.walletName,
+          accounts: [
+            {
+              curve: "CURVE_SECP256K1",
+              pathFormat: "PATH_FORMAT_BIP32",
+              path: params.wallet.path,
+              addressFormat: params.wallet.addressFormat,
+            },
+          ],
+        },
+      },
+    });
+
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey createSubOrganization (oauth) did not complete: ${activityId}`);
+    }
+    const result =
+      (activity.result as any).createSubOrganizationResultV7 ??
+      (activity.result as any).createSubOrganizationResultV6 ??
+      (activity.result as any).createSubOrganizationResultV5 ??
+      (activity.result as any).createSubOrganizationResultV4 ??
+      null;
+    if (!result?.subOrganizationId) {
+      throw new Error("Turnkey createSubOrganization (oauth) did not return subOrganizationId");
+    }
+    const walletId = result.wallet?.walletId;
+    const addresses = result.wallet?.addresses ?? [];
+    if (!walletId) throw new Error("Turnkey createSubOrganization (oauth) did not return walletId");
+    const rootUserId = Array.isArray(result.rootUserIds) ? (result.rootUserIds[0] ?? null) : null;
+    return { subOrganizationId: result.subOrganizationId, rootUserId, walletId, addresses, activityId };
+  }
+
+  /**
+   * Social login sign-in: register `publicKey` (the browser's compressed
+   * P-256 session key) as a login API key on the user's sub-organization,
+   * on the strength of an OIDC token whose `nonce` is sha256(publicKey).
+   * Stamped by the Hub's parent key. The returned session JWT is Turnkey's
+   * own; our clients hold the private half of `publicKey`, which is all
+   * they need to stamp activities, so it is passed back only for
+   * diagnostics.
+   */
+  async oauthLogin(params: {
+    organizationId: string;
+    oidcToken: string;
+    publicKey: string;
+    expirationSeconds: string;
+    invalidateExisting?: boolean;
+  }): Promise<{ session: string | null; activityId: string }> {
+    const res = await (this.client as any).oauthLogin({
+      type: "ACTIVITY_TYPE_OAUTH_LOGIN",
+      timestampMs: nowMs(),
+      organizationId: params.organizationId,
+      parameters: {
+        oidcToken: params.oidcToken,
+        publicKey: params.publicKey,
+        expirationSeconds: params.expirationSeconds,
+        ...(params.invalidateExisting !== undefined ? { invalidateExisting: params.invalidateExisting } : {}),
+      },
+    });
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId, params.organizationId, res.activity);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey oauthLogin did not complete: ${activityId}`);
+    }
+    const session = (activity.result as any)?.oauthLoginResult?.session;
+    return { session: typeof session === "string" ? session : null, activityId };
+  }
+
+  /**
+   * Sub-organizations under the Hub's parent org whose registered OAuth
+   * provider matches the token's `iss` / `sub` / `aud`. The Hub's own
+   * `user_identities` is the primary index; this is the belt-and-braces
+   * lookup that backfills it when a row is missing.
+   */
+  async getSubOrgIdsByOidcToken(params: { oidcToken: string }): Promise<string[]> {
+    const res = await (this.client as any).getSubOrgIds({
+      organizationId: this.organizationId,
+      filterType: "OIDC_TOKEN",
+      filterValue: params.oidcToken,
+    });
+    return Array.isArray(res?.organizationIds) ? res.organizationIds : [];
+  }
+
   async createApiKeyForUser(params: CreateApiKeyForUserParams): Promise<{ apiKeyIds: string[]; activityId: string }> {
     const res = await (this.client as any).createApiKeys({
       type: "ACTIVITY_TYPE_CREATE_API_KEYS_V2",

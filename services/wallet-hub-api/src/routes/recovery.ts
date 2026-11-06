@@ -43,7 +43,7 @@
  *     │  returns HPKE-encrypted credentialBundle
  *     ├─ mark challenge consumed
  *     └─ return { credentialBundle, organizationId, walletId,
- *                  defaultAddress, defaultPublicKeyHex,
+ *                  resourceId, defaultAddress, defaultPublicKeyHex,
  *                  externalUserId, authMethod, expiresInSeconds }
  *
  * Security posture:
@@ -230,6 +230,8 @@ const VerifyResponse = Type.Object({
    *  CREATE_AUTHENTICATORS with the recovered API key. */
   rootUserId: Type.Union([Type.String(), Type.Null()]),
   walletId: Type.Union([Type.String(), Type.Null()]),
+  /** Hub resource primary key. Distinct from `walletId`. */
+  resourceId: Type.String(),
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   externalUserId: Type.Union([Type.String(), Type.Null()]),
@@ -402,6 +404,12 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           // the parent org is a multi-user root org, so attempting
           // to recover into it would just fail. Skip silently.
           if (row.organization_id === rootOrgId) continue;
+          // A social-login wallet (migration 020) has no OTP bootstrap of
+          // its own yet: its session opens through OAUTH_LOGIN
+          // (routes/authOAuth.ts). Offering it here would surface it as a
+          // passkey wallet the code could never open. Linking an email
+          // code to it is the identity-link flow, not recovery.
+          if (row.auth_method === "oauth") continue;
           // Default NULL auth_method (legacy rows predating migration
           // 011) to "passkey" -- there were no email wallets before
           // that migration shipped.
@@ -1454,6 +1462,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           organizationId: candidate.organizationId,
           rootUserId: candidate.rootUserId,
           walletId: candidate.walletId,
+          resourceId: candidate.resourceId,
           defaultAddress: candidate.defaultAddress,
           defaultPublicKeyHex: candidate.defaultPublicKeyHex,
           externalUserId: candidate.externalUserId,

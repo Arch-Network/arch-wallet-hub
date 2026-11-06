@@ -1,0 +1,27 @@
+<!doctype html>
+<!--
+  Gets a Google id token bound to a Turnkey session key, for scripts/oauth-spike.ts.
+  Serve it (any static server; file:// will not do for Google Identity Services):
+    npx serve services/wallet-hub-api/scripts   -> http://localhost:3000/oauth-token.html
+  Add http://localhost:3000 to the OAuth client's authorized JavaScript origins.
+  Paste the client id and the nonce the spike printed, press the button, copy the token.
+-->
+<meta charset="utf-8" />
+<title>Google id token for the Turnkey spike</title>
+<style>body{font:14px system-ui;max-width:720px;margin:40px auto}input,textarea{width:100%;box-sizing:border-box;margin:4px 0 12px;padding:8px;font:inherit}textarea{height:140px;font-family:ui-monospace,monospace}</style>
+<label>Client id <input id="cid" placeholder="123-abc.apps.googleusercontent.com" /></label>
+<label>Nonce (from <code>oauth-spike.ts keypair</code>) <input id="nonce" /></label>
+<button id="go">Load Google button</button>
+<div id="btn" style="margin:16px 0"></div>
+<label>Id token <textarea id="out" readonly></textarea></label>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+  document.getElementById("go").onclick = () => {
+    google.accounts.id.initialize({
+      client_id: document.getElementById("cid").value.trim(),
+      nonce: document.getElementById("nonce").value.trim(),
+      callback: ({ credential }) => { document.getElementById("out").value = credential; },
+    });
+    google.accounts.id.renderButton(document.getElementById("btn"), { theme: "outline", size: "large", text: "continue_with" });
+  };
+</script>

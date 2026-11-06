@@ -16,7 +16,7 @@ export async function createUser(client: PoolClient): Promise<CreateUserRow> {
  * an OTP-derived recovery API key to bootstrap each session. NULL is a
  * legacy/parent-org row that the recovery route filters out anyway.
  */
-export type TurnkeyAuthMethod = "passkey" | "email";
+export type TurnkeyAuthMethod = "passkey" | "email" | "oauth";
 
 export type InsertTurnkeyResourceParams = {
   appId: string;

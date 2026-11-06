@@ -208,6 +208,7 @@ export interface ReviewVerifyResponse {
   organizationId: string;
   rootUserId: string | null;
   walletId: string | null;
+  resourceId: string;
   defaultAddress: string | null;
   defaultPublicKeyHex: string | null;
   externalUserId: string | null;
@@ -227,6 +228,7 @@ export function buildReviewVerifyResponse(
     organizationId: cfg.organizationId,
     rootUserId: cfg.rootUserId,
     walletId: cfg.walletId,
+    resourceId: REVIEW_RESOURCE_ID,
     defaultAddress: cfg.defaultAddress,
     defaultPublicKeyHex: cfg.defaultPublicKeyHex,
     externalUserId: cfg.externalUserId,
