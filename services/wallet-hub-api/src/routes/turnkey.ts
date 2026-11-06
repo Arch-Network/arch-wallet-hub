@@ -1,7 +1,14 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
+import type { Pool } from "pg";
+import {
+  acquireEmailWalletSlot,
+  emailWalletLimitError,
+  getAppEmailWalletLimit,
+  releaseEmailWalletClaim
+} from "../db/emailWalletLimit.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import {
   getTurnkeyResourceByIdForApp,
@@ -132,6 +139,66 @@ const ListWalletsResponse = Type.Object({
   wallets: Type.Array(GetWalletResponse)
 });
 
+type EmailWalletHold = { proceed: false } | { proceed: true; claimId: string | null };
+
+/**
+ * Take the app's per-email slot before Turnkey is called. Unlimited apps
+ * (`email_wallet_limit` null) pass through without a reservation.
+ */
+async function acquireCreateSlot(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  params: {
+    db: Pool;
+    appId: string;
+    userId: string;
+    email: string | null | undefined;
+    idempotencyId: string;
+  }
+): Promise<EmailWalletHold> {
+  const slot = await acquireEmailWalletSlot(params.db, {
+    appId: params.appId,
+    userId: params.userId,
+    email: params.email
+  });
+  if (slot.kind !== "rejected") {
+    return { proceed: true, claimId: slot.kind === "reserved" ? slot.claimId : null };
+  }
+
+  await withDbTransaction(params.db, async (client) => {
+    await auditEvent({
+      client,
+      appId: params.appId,
+      requestId: request.id,
+      userId: params.userId,
+      eventType: "turnkey.wallet.create",
+      entityType: "user",
+      entityId: params.userId,
+      turnkeyActivityId: null,
+      turnkeyRequestId: null,
+      payloadJson: { code: slot.code },
+      outcome: "failed"
+    });
+    await markIdempotencyFailed(client, params.idempotencyId, {
+      message: slot.message,
+      error: slot.code
+    });
+  });
+  await reply.code(409).send({ message: slot.message, error: slot.code });
+  return { proceed: false };
+}
+
+async function releaseCreateSlot(db: Pool, request: FastifyRequest, claimId: string) {
+  try {
+    await withDbTransaction(db, (client) => releaseEmailWalletClaim(client, claimId));
+  } catch (err: any) {
+    request.log.error(
+      { err: String(err?.message ?? err), claimId },
+      "Failed to release email wallet claim"
+    );
+  }
+}
+
 export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/passkey-wallets/import",
@@ -163,6 +230,16 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       if (organizationId === server.config.TURNKEY_ORGANIZATION_ID) {
         return reply.badRequest("Cannot import a wallet from the Hub's root organization");
       }
+      // Import never records a recovery email, so it cannot consume a slot.
+      // Refuse it while the app is locked; the in-transaction check below
+      // covers a limit set after this read.
+      const emailWalletLimit = await withDbTransaction(db, (client) => getAppEmailWalletLimit(client, appId));
+      if (emailWalletLimit != null) {
+        return reply.code(409).send({
+          message: emailWalletLimitError.email_wallet_import_locked,
+          error: "email_wallet_import_locked"
+        });
+      }
       let verified: { walletId: string } | null;
       try {
         verified = await findTurnkeyWalletAccount(getTurnkeyClient(), {
@@ -184,6 +261,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       }
 
       const response = await withDbTransaction(db, async (client) => {
+        const emailWalletLimit = await getAppEmailWalletLimit(client, appId);
+        if (emailWalletLimit != null) return { locked: true as const };
         const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
         const resource = await insertTurnkeyResource(client, {
           appId,
@@ -224,16 +303,25 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         });
 
         return {
-          resourceId: resource.id,
-          userId: user.id,
-          externalUserId,
-          organizationId,
-          defaultAddress,
-          defaultPublicKeyHex
+          locked: false as const,
+          body: {
+            resourceId: resource.id,
+            userId: user.id,
+            externalUserId,
+            organizationId,
+            defaultAddress,
+            defaultPublicKeyHex
+          }
         };
       });
 
-      return response;
+      if (response.locked) {
+        return reply.code(409).send({
+          message: emailWalletLimitError.email_wallet_import_locked,
+          error: "email_wallet_import_locked"
+        });
+      }
+      return response.body;
     }
   );
 
@@ -294,6 +382,15 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       const derivationPath = (body as any).derivationPath ??
         (isMainnet ? "m/86'/0'/0'/0/0" : "m/86'/1'/0'/0/0");
 
+      const hold = await acquireCreateSlot(request, reply, {
+        db,
+        appId,
+        userId,
+        email: userEmail,
+        idempotencyId: (consumed as { row: { id: string } }).row.id
+      });
+      if (!hold.proceed) return;
+
       await withDbTransaction(db, async (client) => {
         await auditEvent({
           client,
@@ -315,6 +412,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         });
       });
 
+      let slotSettled = false;
       try {
         const turnkey = getTurnkeyClient();
         const subOrganizationName = `arch-${appId}-${externalUserId}`;
@@ -371,6 +469,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
               email: userEmail
             });
           }
+          if (hold.claimId) await releaseEmailWalletClaim(client, hold.claimId);
           const resource = await insertTurnkeyResource(client, {
             appId,
             userId,
@@ -426,6 +525,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           return responseBody;
         });
 
+        slotSettled = true;
         return response;
       } catch (err: any) {
         await withDbTransaction(db, async (client) => {
@@ -445,6 +545,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           await markIdempotencyFailed(client, consumed.row.id, { message: String(err?.message ?? err) });
         });
         throw err;
+      } finally {
+        if (!slotSettled && hold.claimId) await releaseCreateSlot(db, request, hold.claimId);
       }
     }
   );
@@ -528,6 +630,15 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         body.derivationPath ??
         (isMainnet ? "m/86'/0'/0'/0/0" : "m/86'/1'/0'/0/0");
 
+      const hold = await acquireCreateSlot(request, reply, {
+        db,
+        appId,
+        userId,
+        email: userEmail,
+        idempotencyId: (consumed as { row: { id: string } }).row.id
+      });
+      if (!hold.proceed) return;
+
       await withDbTransaction(db, async (client) => {
         await auditEvent({
           client,
@@ -549,6 +660,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         });
       });
 
+      let slotSettled = false;
       try {
         const turnkey = getTurnkeyClient();
         const subOrganizationName = `arch-${appId}-${externalUserId}-email`;
@@ -602,6 +714,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             userId,
             email: userEmail,
           });
+          if (hold.claimId) await releaseEmailWalletClaim(client, hold.claimId);
           const resource = await insertTurnkeyResource(client, {
             appId,
             userId,
@@ -658,6 +771,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           return responseBody;
         });
 
+        slotSettled = true;
         return response;
       } catch (err: any) {
         await withDbTransaction(db, async (client) => {
@@ -679,6 +793,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           });
         });
         throw err;
+      } finally {
+        if (!slotSettled && hold.claimId) await releaseCreateSlot(db, request, hold.claimId);
       }
     },
   );

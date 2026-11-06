@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
   verifyChallengeSignature: vi.fn((_p: { defaultPublicKeyHex: string }) => false),
   mintSession: vi.fn(async () => ({ token: "whs_v1_x", sessionId: "s", expiresAt: "2030-01-01" })),
   resolveSessionToken: vi.fn(async (): Promise<any> => null),
+  getAppEmailWalletLimit: vi.fn(async () => null as number | null),
   turnkey: {
     getWalletsForOrganization: vi.fn(async () => ({ wallets: [{ walletId: "wallet-1" }] })),
     getWalletAccountsForOrganization: vi.fn(async (): Promise<any> => ({ accounts: [] })),
@@ -36,6 +37,19 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../db/pool.js", () => ({ getDbPool: () => ({}) }));
+vi.mock("../../db/emailWalletLimit.js", () => ({
+  acquireEmailWalletSlot: async () => ({ kind: "skip" }),
+  releaseEmailWalletClaim: async () => undefined,
+  getAppEmailWalletLimit: mocks.getAppEmailWalletLimit,
+  emailWalletLimitError: {
+    email_wallet_limit_reached: "This app allows a limited number of wallets per email",
+    recovery_email_locked: "Recovery email is already set for this user",
+    email_required: "This app requires an email address to create a wallet",
+    email_wallet_import_locked:
+      "This app locks wallet creation to an email quota; import is not available",
+    email_wallet_limit_exceeds_existing: "Existing wallets for an email already exceed this limit",
+  },
+}));
 vi.mock("../../db/tx.js", () => ({
   withDbTransaction: async (_pool: unknown, cb: (client: unknown) => Promise<unknown>) => cb({}),
 }));
@@ -105,6 +119,7 @@ describe("passkey wallet import", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.userHasCredentials.mockResolvedValue(false);
+    mocks.getAppEmailWalletLimit.mockResolvedValue(null);
   });
 
   it("rejects an address/key pair Turnkey does not hold for the sub-org", async () => {
@@ -136,6 +151,17 @@ describe("passkey wallet import", () => {
     const app = await buildServer();
     const res = await app.inject({ method: "POST", url: "/v1/turnkey/passkey-wallets/import", payload: importPayload() });
     expect(res.statusCode).toBe(400);
+    expect(mocks.insertTurnkeyResource).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("refuses import when the app locks wallets per email", async () => {
+    mocks.getAppEmailWalletLimit.mockResolvedValue(1);
+    const app = await buildServer();
+    const res = await app.inject({ method: "POST", url: "/v1/turnkey/passkey-wallets/import", payload: importPayload() });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "email_wallet_import_locked" });
+    expect(mocks.turnkey.getWalletAccountsForOrganization).not.toHaveBeenCalled();
     expect(mocks.insertTurnkeyResource).not.toHaveBeenCalled();
     await app.close();
   });

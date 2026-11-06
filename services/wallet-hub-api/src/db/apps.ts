@@ -5,6 +5,8 @@ export type AppRow = {
   name: string;
   disabled_at: string | null;
   created_at: string;
+  /** Null means unlimited wallets per recovery email. */
+  email_wallet_limit: number | null;
 };
 
 export type AppApiKeyRow = {
@@ -20,10 +22,17 @@ export type AppApiKeyRow = {
   app_disabled_at?: string | null;
 };
 
-export async function createApp(client: PoolClient, params: { name: string }): Promise<AppRow> {
+export async function createApp(
+  client: PoolClient,
+  params: { name: string; emailWalletLimit?: number | null }
+): Promise<AppRow> {
   const res = await client.query<AppRow>(
-    `INSERT INTO apps (name) VALUES ($1) RETURNING id, name, disabled_at, created_at`,
-    [params.name]
+    `
+      INSERT INTO apps (name, email_wallet_limit)
+      VALUES ($1, $2)
+      RETURNING id, name, disabled_at, created_at, email_wallet_limit
+    `,
+    [params.name, params.emailWalletLimit ?? null]
   );
   return res.rows[0]!;
 }
