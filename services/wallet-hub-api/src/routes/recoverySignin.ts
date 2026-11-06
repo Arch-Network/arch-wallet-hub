@@ -16,7 +16,9 @@
  *     │  (a Google sign-up), else its wallet from before sign-in existed,
  *     │  else a new person and wallet -- pinned to the email
  *     │  (turnkey_resources.verified_email), the email verified on the person
- *     └─ { verificationToken, organizationId, walletId, ... }
+ *     ├─ a Hub session and an Arch ID token (amr ["email"]) for that person,
+ *     │  as /recovery/email/verify and the OAuth route answer
+ *     └─ { verificationToken, organizationId, walletId, ..., sessionToken, idToken, ... }
  *
  *   POST /recovery/email/signin/session
  *       { challengeId, verificationToken, publicKey, clientSignature }
@@ -43,7 +45,9 @@ import type { VerificationToken } from "@turnkey/sdk-types";
 import { Type } from "@sinclair/typebox";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
-import { createPerson, getPersonByVerifiedEmail, insertIdentity, setVerifiedPrimaryEmail, type PersonRow } from "../db/identities.js";
+import { createPerson, getPerson, getPersonByVerifiedEmail, insertIdentity, setVerifiedPrimaryEmail, type PersonRow } from "../db/identities.js";
+import { mintSessionForUser } from "../auth/sessionToken.js";
+import { mintIdentityToken } from "../auth/idToken.js";
 import {
   findEmailWalletByRecoveryEmail,
   findEmailWalletByVerifiedEmail,
@@ -99,7 +103,14 @@ const VerifyResponse = Type.Object({
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   externalUserId: Type.Union([Type.String(), Type.Null()]),
-  authMethod: Type.Literal("email")
+  authMethod: Type.Literal("email"),
+  /** The person the code attested: a Hub session (whs_v1_, 24 h) and an Arch ID token (15 min, amr ["email"]). */
+  sessionToken: Type.String(),
+  sessionExpiresAt: Type.String(),
+  idToken: Type.String(),
+  idTokenExpiresAt: Type.String(),
+  email: Type.Union([Type.String(), Type.Null()]),
+  emailVerified: Type.Boolean()
 });
 
 const SessionBody = Type.Object({
@@ -416,7 +427,7 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
       // Turnkey create (up to its 30 s activity poll), so a replica runs at
       // most pool-size first sign-ins at once. If bursts outgrow that,
       // commit a claim row under a short lock and have waiters poll it.
-      const wallet = await withDbTransaction(db, async (client) => {
+      const { row: wallet, attested } = await withDbTransaction(db, async (client) => {
         await lockEmailWallets(client, { appId, email });
         let row = await findEmailWalletByVerifiedEmail(client, { appId, email });
         let created = false;
@@ -442,10 +453,32 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
           issuer: null, audience: null, emailAtLink: email, verified: true
         });
         await setVerifiedPrimaryEmail(client, { appId, userId: row.user_id!, email });
+        const person = await getPerson(client, { appId, userId: row.user_id! });
+        if (!person) throw new Error("Email wallet's user no longer exists");
+        const emailVerified = person.email_verified_at !== null;
+        const session = await mintSessionForUser(client, { appId, userId: person.id });
+        const idToken = await mintIdentityToken(client, server.idTokenSigner, {
+          appId,
+          userId: person.id,
+          externalUserId: person.external_user_id ?? person.id,
+          email: person.primary_email ?? email,
+          emailVerified,
+          amr: ["email"]
+        });
         await updateRecoveryChallengeCandidates(client, { id: challenge.id, candidates: [toCandidate(row)] });
         await markRecoveryChallengeStatus(client, { id: challenge.id, status: "consumed" });
-        await audit(client, "succeeded", { resourceId: row.id, created }, row.user_id);
-        return row;
+        await audit(client, "succeeded", { resourceId: row.id, created, sessionId: session.sessionId, emailVerified }, row.user_id);
+        return {
+          row,
+          attested: {
+            sessionToken: session.token,
+            sessionExpiresAt: session.expiresAt,
+            idToken: idToken.token,
+            idTokenExpiresAt: idToken.expiresAt,
+            email: person.primary_email ?? email,
+            emailVerified
+          }
+        };
       });
 
       return {
@@ -456,7 +489,8 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
         defaultAddress: wallet.default_address,
         defaultPublicKeyHex: wallet.default_public_key_hex,
         externalUserId: wallet.external_user_id,
-        authMethod: "email" as const
+        authMethod: "email" as const,
+        ...attested
       };
     }
   );

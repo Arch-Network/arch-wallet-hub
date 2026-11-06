@@ -86,6 +86,14 @@ const mocks = vi.hoisted(() => {
     getPersonByVerifiedEmail: vi.fn(async (_c: unknown, _p: any): Promise<any> => null),
     listTurnkeyResourcesForUserForApp: vi.fn(async (_c: unknown, p: { userId: string }) => wallets.filter((w) => w.user_id === p.userId)),
     insertIdentity: vi.fn(async () => null),
+    getPerson: vi.fn(async (_c: unknown, p: { userId: string }) => ({
+      id: p.userId,
+      external_user_id: p.userId === "new-user" ? "usr_" + "0".repeat(32) : `ext-${p.userId}`,
+      primary_email: EMAIL,
+      email_verified_at: "2026-11-06T00:00:00Z",
+    })),
+    mintSessionForUser: vi.fn(async () => ({ token: "whs_v1_test", sessionId: "s-1", expiresAt: "2026-11-07T00:00:00.000Z" })),
+    mintIdentityToken: vi.fn(async () => ({ token: "id-token", expiresAt: "2026-11-06T00:15:00.000Z" })),
     setVerifiedPrimaryEmail: vi.fn(async () => undefined),
     countRecentChallenges: vi.fn(async () => 0),
     recovery: {
@@ -153,8 +161,11 @@ vi.mock("../../db/identities.js", async (orig) => ({
   createPerson: mocks.createPerson,
   getPersonByVerifiedEmail: mocks.getPersonByVerifiedEmail,
   insertIdentity: mocks.insertIdentity,
+  getPerson: mocks.getPerson,
   setVerifiedPrimaryEmail: mocks.setVerifiedPrimaryEmail,
 }));
+vi.mock("../../auth/sessionToken.js", () => ({ mintSessionForUser: mocks.mintSessionForUser }));
+vi.mock("../../auth/idToken.js", () => ({ mintIdentityToken: mocks.mintIdentityToken }));
 vi.mock("../../db/queries.js", async (orig) => ({
   ...(await orig<typeof import("../../db/queries.js")>()),
   findEmailWalletByVerifiedEmail: mocks.findEmailWalletByVerifiedEmail,
@@ -193,6 +204,7 @@ function walletRow(overrides: Record<string, unknown> = {}) {
 async function buildServer() {
   const app = Fastify();
   app.decorate("config", { TURNKEY_ORGANIZATION_ID: ROOT_ORG } as never);
+  app.decorate("idTokenSigner", {} as never);
   app.addHook("onRequest", async (request) => {
     (request as any).app = { appId: "app", apiKeyId: "key", apiKeyPrefix: "p" };
   });
@@ -309,6 +321,23 @@ describe("email sign-in", () => {
       expect.objectContaining({ userId: "new-user", kind: "email", subject: EMAIL, verified: true }),
     );
     expect(mocks.setVerifiedPrimaryEmail).toHaveBeenCalledWith(expect.anything(), { appId: "app", userId: "new-user", email: EMAIL });
+    expect(res.json()).toMatchObject({
+      sessionToken: "whs_v1_test",
+      sessionExpiresAt: "2026-11-07T00:00:00.000Z",
+      idToken: "id-token",
+      idTokenExpiresAt: "2026-11-06T00:15:00.000Z",
+      email: EMAIL,
+      emailVerified: true,
+    });
+    expect(mocks.mintSessionForUser).toHaveBeenCalledWith(expect.anything(), { appId: "app", userId: "new-user" });
+    expect(mocks.mintIdentityToken).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      appId: "app",
+      userId: "new-user",
+      externalUserId: "usr_" + "0".repeat(32),
+      email: EMAIL,
+      emailVerified: true,
+      amr: ["email"],
+    });
     expect(mocks.challenges.get(challengeId).status).toBe("consumed");
   });
 
@@ -383,6 +412,8 @@ describe("email sign-in", () => {
     expect(res.payload).not.toMatch(LEAK_PATTERN);
     expect(mocks.lockEmailWallets).not.toHaveBeenCalled();
     expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
+    expect(mocks.mintSessionForUser).not.toHaveBeenCalled();
+    expect(mocks.mintIdentityToken).not.toHaveBeenCalled();
     expect(mocks.challenges.get(challengeId)).toMatchObject({ status: "pending", attempts: 1 });
   });
 
