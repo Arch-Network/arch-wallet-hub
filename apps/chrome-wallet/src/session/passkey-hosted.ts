@@ -12,10 +12,11 @@
  * Turnkey attestation / stamp shapes below. The click is the user
  * gesture those prompts require.
  *
- * 1Password will not inject into the XML error document S3 returns
- * when passkey.html is missing. public/rules/passkey-page.json forces
- * that response to text/html so the content script still attaches.
- * The real HTML file should still be published when the bucket is writable.
+ * S3 still answers passkey.html with an XML error document. On that
+ * document, document.createElement() returns an element with no style
+ * object, and the first cssText assignment throws, so the popup stays
+ * on the AccessDenied tree. HTML-namespace elements render the button
+ * and keep 1Password's content script attached.
  */
 
 import { Turnkey, TurnkeyPasskeyClient, type TStamper } from "@turnkey/sdk-browser";
@@ -323,28 +324,32 @@ function delay(ms: number): Promise<void> {
  * extension modules: Chrome calls this function in the page world.
  */
 function installPasskeyCeremony(request: CeremonyRequest): void {
-  const root = document.createElement("div");
+  // XMLDocument.createElement() has no CSSStyleDeclaration. The popup
+  // stays on the S3 error tree if this throws.
+  const element = (tag: string): HTMLElement =>
+    document.createElementNS("http://www.w3.org/1999/xhtml", tag) as HTMLElement;
+  const root = element("div");
   root.style.cssText =
     "font-family:system-ui,sans-serif;background:#0e0f12;color:#f4f4f5;min-height:100vh;margin:0;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;";
-  const card = document.createElement("div");
+  const card = element("div");
   card.style.cssText = "max-width:380px;";
-  const title = document.createElement("h1");
+  const title = element("h1");
   title.textContent = "Confirm your passkey";
   title.style.cssText = "font-size:20px;margin:0 0 8px;";
-  const copy = document.createElement("p");
+  const copy = element("p");
   copy.textContent =
     "Choose iCloud Keychain, 1Password, or a security key. This page is wallet.arch.network, which those providers require.";
   copy.style.cssText = "font-size:14px;line-height:1.45;margin:0 0 16px;color:#d4d4d8;";
-  const button = document.createElement("button");
+  const button = element("button") as HTMLButtonElement;
   button.type = "button";
   button.textContent = "Continue";
   button.style.cssText =
     "background:#f97316;color:#111;border:0;border-radius:10px;padding:10px 16px;font-size:14px;font-weight:650;cursor:pointer;";
-  const error = document.createElement("p");
+  const error = element("p");
   error.style.cssText = "font-size:13px;color:#fca5a5;min-height:1.2em;margin:12px 0 0;";
   card.append(title, copy, button, error);
   if (request.allowExtensionFallback) {
-    const fallback = document.createElement("button");
+    const fallback = element("button") as HTMLButtonElement;
     fallback.type = "button";
     fallback.textContent = "Use a security key saved in the extension";
     fallback.style.cssText =
@@ -357,7 +362,7 @@ function installPasskeyCeremony(request: CeremonyRequest): void {
   }
   root.append(card);
   if (!document.body) {
-    document.documentElement.append(document.createElement("body"));
+    document.documentElement.append(element("body"));
   }
   document.body.replaceChildren(root);
   document.body.style.margin = "0";
