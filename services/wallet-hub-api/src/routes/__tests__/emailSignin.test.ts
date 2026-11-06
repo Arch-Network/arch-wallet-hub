@@ -82,8 +82,11 @@ const mocks = vi.hoisted(() => {
       wallets.push(row);
       return row;
     }),
-    getOrCreateUserByExternalId: vi.fn(async () => ({ id: "new-user" })),
-    updateUserRecoveryEmail: vi.fn(async () => undefined),
+    createPerson: vi.fn(async (_c: unknown, _p: any) => ({ id: "new-user", external_user_id: "usr_" + "0".repeat(32) })),
+    getPersonByVerifiedEmail: vi.fn(async (_c: unknown, _p: any): Promise<any> => null),
+    listTurnkeyResourcesForUserForApp: vi.fn(async (_c: unknown, p: { userId: string }) => wallets.filter((w) => w.user_id === p.userId)),
+    insertIdentity: vi.fn(async () => null),
+    setVerifiedPrimaryEmail: vi.fn(async () => undefined),
     countRecentChallenges: vi.fn(async () => 0),
     recovery: {
       insertRecoveryChallenge: vi.fn(async (_c: unknown, p: any) => {
@@ -145,10 +148,12 @@ vi.mock("../../db/tx.js", () => ({
 }));
 vi.mock("../../audit/audit.js", () => ({ auditEvent: async () => undefined }));
 vi.mock("../../turnkey/store.js", () => ({ getTurnkeyClient: () => mocks.turnkey }));
-vi.mock("../../db/apps.js", async (orig) => ({
-  ...(await orig<typeof import("../../db/apps.js")>()),
-  getOrCreateUserByExternalId: mocks.getOrCreateUserByExternalId,
-  updateUserRecoveryEmail: mocks.updateUserRecoveryEmail,
+vi.mock("../../db/identities.js", async (orig) => ({
+  ...(await orig<typeof import("../../db/identities.js")>()),
+  createPerson: mocks.createPerson,
+  getPersonByVerifiedEmail: mocks.getPersonByVerifiedEmail,
+  insertIdentity: mocks.insertIdentity,
+  setVerifiedPrimaryEmail: mocks.setVerifiedPrimaryEmail,
 }));
 vi.mock("../../db/queries.js", async (orig) => ({
   ...(await orig<typeof import("../../db/queries.js")>()),
@@ -156,6 +161,7 @@ vi.mock("../../db/queries.js", async (orig) => ({
   findEmailWalletByRecoveryEmail: mocks.findEmailWalletByRecoveryEmail,
   pinVerifiedEmail: mocks.pinVerifiedEmail,
   insertTurnkeyResource: mocks.insertTurnkeyResource,
+  listTurnkeyResourcesForUserForApp: mocks.listTurnkeyResourcesForUserForApp,
   lockEmailWallets: mocks.lockEmailWallets,
 }));
 vi.mock("../../db/recovery.js", async (orig) => ({
@@ -296,8 +302,42 @@ describe("email sign-in", () => {
       defaultAddress: "tb1p-new-address",
       authMethod: "email",
     });
-    expect(res.json().externalUserId).toMatch(/^email-[0-9a-f-]{36}$/);
+    expect(res.json().externalUserId).toMatch(/^usr_[0-9a-f]{32}$/);
+    expect(mocks.createPerson).toHaveBeenCalledWith(expect.anything(), { appId: "app", email: EMAIL, emailVerified: true });
+    expect(mocks.insertIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userId: "new-user", kind: "email", subject: EMAIL, verified: true }),
+    );
+    expect(mocks.setVerifiedPrimaryEmail).toHaveBeenCalledWith(expect.anything(), { appId: "app", userId: "new-user", email: EMAIL });
     expect(mocks.challenges.get(challengeId).status).toBe("consumed");
+  });
+
+  it("signs in to the wallet of the person a Google sign-up already verified the email on", async () => {
+    const app = await buildServer();
+    const google = walletRow({ id: "google-resource", user_id: "google-user", organization_id: "google-sub-org", auth_method: "oauth" });
+    mocks.wallets.push(google);
+    mocks.getPersonByVerifiedEmail.mockResolvedValueOnce({ id: "google-user", external_user_id: "usr_google" });
+
+    const res = await verify(app, (await signin(app)).json().challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ organizationId: "google-sub-org", externalUserId: "usr_google" });
+    expect(google.verified_email).toBe(EMAIL);
+    expect(mocks.findEmailWalletByRecoveryEmail).not.toHaveBeenCalled();
+    expect(mocks.createPerson).not.toHaveBeenCalled();
+    expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
+  });
+
+  it("makes a wallet for the verified person who has none, without a second person", async () => {
+    const app = await buildServer();
+    mocks.getPersonByVerifiedEmail.mockResolvedValueOnce({ id: "residue-user", external_user_id: "usr_residue" });
+
+    const res = await verify(app, (await signin(app)).json().challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().externalUserId).toBe("usr_residue");
+    expect(mocks.createPerson).not.toHaveBeenCalled();
+    expect(mocks.insertTurnkeyResource).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ userId: "residue-user" }));
   });
 
   it("returns the email's pinned wallet on every later sign-in without creating another", async () => {

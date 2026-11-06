@@ -52,6 +52,8 @@ export type TurnkeyResourceRow = {
   default_derivation_path: string | null;
   auth_method: TurnkeyAuthMethod | null;
   key_verified_at: string | null;
+  /** Migration 021: the email that signs in to this wallet. */
+  verified_email: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -266,7 +268,7 @@ export async function lockEmailWallets(
   ]);
 }
 
-/** The wallet `email` signs in to within `appId` (unique, migration 019). */
+/** The wallet `email` signs in to within `appId` (unique, migration 021). */
 export async function findEmailWalletByVerifiedEmail(
   client: PoolClient,
   params: { appId: string; email: string }

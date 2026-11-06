@@ -12,8 +12,10 @@
  *     │  the code and its session public key to Turnkey's enclave; the
  *     │  Hub never sees the code.
  *     ├─ under the per-(app, email) lock: the wallet the email already
- *     │  signs in to, else its wallet from before sign-in existed, else
- *     │  a new one -- pinned to the email (turnkey_resources.verified_email)
+ *     │  signs in to, else the wallet of the person who verified the email
+ *     │  (a Google sign-up), else its wallet from before sign-in existed,
+ *     │  else a new person and wallet -- pinned to the email
+ *     │  (turnkey_resources.verified_email), the email verified on the person
  *     └─ { verificationToken, organizationId, walletId, ... }
  *
  *   POST /recovery/email/signin/session
@@ -30,22 +32,23 @@
  *   - /session opens only the wallet its challenge resolved, never one
  *     looked up from the (client-supplied) token's contact.
  *   - The caller's own externalUserId is never accepted: a new wallet
- *     belongs to a fresh Hub user, so no existing user gains a credential
- *     without that user's session (requireSessionForExistingUser).
+ *     belongs to a fresh person, or to the person the email was already
+ *     verified on, so no other user gains a credential without that user's
+ *     session (requireSessionForExistingUser).
  */
 
 import type { FastifyInstance } from "fastify";
 import type { PoolClient } from "pg";
 import type { VerificationToken } from "@turnkey/sdk-types";
 import { Type } from "@sinclair/typebox";
-import { randomUUID } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
-import { getOrCreateUserByExternalId, updateUserRecoveryEmail } from "../db/apps.js";
+import { createPerson, getPersonByVerifiedEmail, insertIdentity, setVerifiedPrimaryEmail, type PersonRow } from "../db/identities.js";
 import {
   findEmailWalletByRecoveryEmail,
   findEmailWalletByVerifiedEmail,
   insertTurnkeyResource,
+  listTurnkeyResourcesForUserForApp,
   lockEmailWallets,
   pinVerifiedEmail,
   type EmailWalletRow
@@ -160,19 +163,18 @@ function networkDefaults(networkHint: string | undefined): NetworkDefaults {
     : { addressFormat: "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR", derivationPath: "m/86'/1'/0'/0/0" };
 }
 
-async function createEmailWalletForNewUser(
+async function createEmailWallet(
   client: PoolClient,
   params: {
     appId: string;
+    person: PersonRow;
     email: string;
     network: NetworkDefaults;
     log: { warn: (obj: object, msg: string) => void };
   }
 ): Promise<EmailWalletRow> {
-  const externalUserId = `email-${randomUUID()}`;
-  const user = await getOrCreateUserByExternalId(client, { appId: params.appId, externalUserId });
-  await updateUserRecoveryEmail(client, { appId: params.appId, userId: user.id, email: params.email });
-
+  const user = params.person;
+  const externalUserId = user.external_user_id!;
   const turnkey = getTurnkeyClient() as any;
   const created = await turnkey.createSubOrganizationWithEmailWallet({
     subOrganizationName: `arch-${params.appId}-${externalUserId}-email`,
@@ -219,6 +221,21 @@ async function createEmailWalletForNewUser(
     keyVerified: defaultPublicKeyHex !== null
   });
   return { ...resource, external_user_id: externalUserId };
+}
+
+/** The OTP-capable wallet of the person `email` is verified on (a Google sign-up), or that person with none. */
+async function findVerifiedPersonWallet(
+  client: PoolClient,
+  params: { appId: string; email: string; rootOrganizationId: string }
+): Promise<{ person: PersonRow; wallet: EmailWalletRow | null } | null> {
+  const person = await getPersonByVerifiedEmail(client, params);
+  if (!person) return null;
+  const resources = await listTurnkeyResourcesForUserForApp(client, { appId: params.appId, userId: person.id });
+  const usable = resources.filter(
+    (r) => r.organization_id !== params.rootOrganizationId && r.turnkey_root_user_id && r.default_address && r.verified_email === null
+  );
+  const wallet = usable.find((r) => r.auth_method === "email") ?? usable.find((r) => r.auth_method === "oauth") ?? usable[0];
+  return { person, wallet: wallet ? { ...wallet, external_user_id: person.external_user_id } : null };
 }
 
 function toCandidate(row: EmailWalletRow): RecoveryCandidate {
@@ -404,14 +421,14 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
         let row = await findEmailWalletByVerifiedEmail(client, { appId, email });
         let created = false;
         if (!row) {
-          row = await findEmailWalletByRecoveryEmail(client, {
-            appId,
-            email,
-            rootOrganizationId: server.config.TURNKEY_ORGANIZATION_ID
-          });
+          const rootOrganizationId = server.config.TURNKEY_ORGANIZATION_ID;
+          const verified = await findVerifiedPersonWallet(client, { appId, email, rootOrganizationId });
+          row = verified ? verified.wallet : await findEmailWalletByRecoveryEmail(client, { appId, email, rootOrganizationId });
           if (!row) {
-            row = await createEmailWalletForNewUser(client, {
+            const person = verified?.person ?? (await createPerson(client, { appId, email, emailVerified: true }));
+            row = await createEmailWallet(client, {
               appId,
+              person,
               email,
               network: networkDefaults(request.headers["x-network"] as string | undefined),
               log: request.log
@@ -420,6 +437,11 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
           }
           await pinVerifiedEmail(client, { appId, resourceId: row.id, email });
         }
+        await insertIdentity(client, {
+          appId, userId: row.user_id!, kind: "email", subject: email.toLowerCase(),
+          issuer: null, audience: null, emailAtLink: email, verified: true
+        });
+        await setVerifiedPrimaryEmail(client, { appId, userId: row.user_id!, email });
         await updateRecoveryChallengeCandidates(client, { id: challenge.id, candidates: [toCandidate(row)] });
         await markRecoveryChallengeStatus(client, { id: challenge.id, status: "consumed" });
         await audit(client, "succeeded", { resourceId: row.id, created }, row.user_id);
