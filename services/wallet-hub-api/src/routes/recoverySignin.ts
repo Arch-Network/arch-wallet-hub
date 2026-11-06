@@ -41,11 +41,10 @@
 
 import type { FastifyInstance } from "fastify";
 import type { PoolClient } from "pg";
-import type { VerificationToken } from "@turnkey/sdk-types";
 import { Type } from "@sinclair/typebox";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
-import { createPerson, getPerson, getPersonByVerifiedEmail, insertIdentity, setVerifiedPrimaryEmail, type PersonRow } from "../db/identities.js";
+import { claimEmailIdentity, createPerson, getIdentity, getPerson, getPersonByVerifiedEmail, setVerifiedPrimaryEmail, type PersonRow } from "../db/identities.js";
 import { mintSessionForUser } from "../auth/sessionToken.js";
 import { mintIdentityToken } from "../auth/idToken.js";
 import {
@@ -55,7 +54,8 @@ import {
   listTurnkeyResourcesForUserForApp,
   lockEmailWallets,
   pinVerifiedEmail,
-  type EmailWalletRow
+  type EmailWalletRow,
+  type TurnkeyResourceRow
 } from "../db/queries.js";
 import {
   countRecentChallenges,
@@ -153,22 +153,50 @@ function initOtpEmailParams(settings: Record<string, unknown> | undefined) {
   };
 }
 
+type OtpVerification = {
+  contact: string;
+  tokenId: string;
+  expiresAtMs: number;
+  /** The key the bundle bound, when the token carries one. */
+  publicKey: string | null;
+};
+
 /**
- * The email a verification token attests. Only for tokens the Hub just
- * received from VERIFY_OTP_V2 itself: the signature is not checked here.
+ * Claims in a Turnkey verification token. The signature is not checked:
+ * verify only parses a token Turnkey just returned, and session compares
+ * these claims with the challenge before Turnkey checks the signature.
  */
-function verifiedContact(verificationToken: string): string {
-  const payload = verificationToken.split(".")[1] ?? "";
-  const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as VerificationToken;
-  if (typeof claims.contact !== "string" || !claims.contact) {
+function readVerification(verificationToken: string): OtpVerification {
+  let claims: Record<string, unknown>;
+  try {
+    const payload = verificationToken.split(".")[1] ?? "";
+    claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
+  } catch {
+    throw new Error("Turnkey verification token is unreadable");
+  }
+  if (typeof claims.contact !== "string" || !claims.contact.trim()) {
     throw new Error("Turnkey verification token has no contact");
   }
-  return claims.contact.trim();
+  if (typeof claims.id !== "string" || !claims.id) {
+    throw new Error("Turnkey verification token has no id");
+  }
+  if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp)) {
+    throw new Error("Turnkey verification token has no exp");
+  }
+  const publicKey = typeof claims.public_key === "string"
+    ? claims.public_key
+    : typeof claims.publicKey === "string"
+      ? claims.publicKey
+      : null;
+  return { contact: claims.contact.trim(), tokenId: claims.id, expiresAtMs: claims.exp * 1000, publicKey };
 }
 
 type NetworkDefaults = { addressFormat: string; derivationPath: string };
 
 function networkDefaults(networkHint: string | undefined): NetworkDefaults {
+  // The first verified sign-in pins this wallet for the email. Callers send
+  // x-network: mainnet for a mainnet address; every other value is testnet,
+  // matching POST /turnkey/email-wallets.
   return networkHint?.toLowerCase() === "mainnet"
     ? { addressFormat: "ADDRESS_FORMAT_BITCOIN_MAINNET_P2TR", derivationPath: "m/86'/0'/0'/0/0" }
     : { addressFormat: "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR", derivationPath: "m/86'/1'/0'/0/0" };
@@ -182,6 +210,7 @@ async function createEmailWallet(
     email: string;
     network: NetworkDefaults;
     log: { warn: (obj: object, msg: string) => void };
+    onSubOrgCreated?: (created: { subOrganizationId: string; walletId: string; activityId: string }) => void;
   }
 ): Promise<EmailWalletRow> {
   const user = params.person;
@@ -195,6 +224,11 @@ async function createEmailWallet(
       addressFormat: params.network.addressFormat,
       path: params.network.derivationPath
     }
+  });
+  params.onSubOrgCreated?.({
+    subOrganizationId: created.subOrganizationId,
+    walletId: created.walletId,
+    activityId: created.activityId
   });
 
   const defaultAddress: string | null = created.addresses[0] ?? null;
@@ -234,7 +268,24 @@ async function createEmailWallet(
   return { ...resource, external_user_id: externalUserId };
 }
 
-/** The OTP-capable wallet of the person `email` is verified on (a Google sign-up), or that person with none. */
+/**
+ * An email or OAuth wallet this person can open with OTP_LOGIN. Passkey
+ * wallets are not reusable here: pinning one is permanent, and the passkey
+ * sub-org's user email is not this inbox.
+ */
+function selectSignInWallet(resources: TurnkeyResourceRow[], rootOrganizationId: string): TurnkeyResourceRow | null {
+  const usable = resources.filter(
+    (r) =>
+      (r.auth_method === "email" || r.auth_method === "oauth") &&
+      r.organization_id !== rootOrganizationId &&
+      r.turnkey_root_user_id &&
+      r.default_address &&
+      r.verified_email === null
+  );
+  return usable.find((r) => r.auth_method === "email") ?? usable.find((r) => r.auth_method === "oauth") ?? null;
+}
+
+/** The person `email` is already verified on, and their sign-in wallet if they have one. */
 async function findVerifiedPersonWallet(
   client: PoolClient,
   params: { appId: string; email: string; rootOrganizationId: string }
@@ -242,10 +293,20 @@ async function findVerifiedPersonWallet(
   const person = await getPersonByVerifiedEmail(client, params);
   if (!person) return null;
   const resources = await listTurnkeyResourcesForUserForApp(client, { appId: params.appId, userId: person.id });
-  const usable = resources.filter(
-    (r) => r.organization_id !== params.rootOrganizationId && r.turnkey_root_user_id && r.default_address && r.verified_email === null
-  );
-  const wallet = usable.find((r) => r.auth_method === "email") ?? usable.find((r) => r.auth_method === "oauth") ?? usable[0];
+  const wallet = selectSignInWallet(resources, params.rootOrganizationId);
+  return { person, wallet: wallet ? { ...wallet, external_user_id: person.external_user_id } : null };
+}
+
+async function walletForVerifiedIdentity(
+  client: PoolClient,
+  params: { appId: string; email: string; rootOrganizationId: string }
+): Promise<{ person: PersonRow; wallet: EmailWalletRow | null } | null> {
+  const identity = await getIdentity(client, { appId: params.appId, kind: "email", subject: params.email.trim().toLowerCase() });
+  if (!identity?.verified_at) return null;
+  const person = await getPerson(client, { appId: params.appId, userId: identity.user_id });
+  if (!person) throw new Error("Verified email identity has no person");
+  const resources = await listTurnkeyResourcesForUserForApp(client, { appId: params.appId, userId: person.id });
+  const wallet = selectSignInWallet(resources, params.rootOrganizationId);
   return { person, wallet: wallet ? { ...wallet, external_user_id: person.external_user_id } : null };
 }
 
@@ -418,7 +479,8 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
         return reply.unauthorized("Invalid or expired code");
       }
 
-      const email = verifiedContact(verificationToken);
+      const verification = readVerification(verificationToken);
+      const email = verification.contact;
       if (hashEmailForRateLimit(email) !== challenge.email_hash) {
         throw new Error("Turnkey verified a different email than this challenge was sent to");
       }
@@ -427,59 +489,123 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
       // Turnkey create (up to its 30 s activity poll), so a replica runs at
       // most pool-size first sign-ins at once. If bursts outgrow that,
       // commit a claim row under a short lock and have waiters poll it.
-      const { row: wallet, attested } = await withDbTransaction(db, async (client) => {
-        await lockEmailWallets(client, { appId, email });
-        let row = await findEmailWalletByVerifiedEmail(client, { appId, email });
-        let created = false;
-        if (!row) {
-          const rootOrganizationId = server.config.TURNKEY_ORGANIZATION_ID;
-          const verified = await findVerifiedPersonWallet(client, { appId, email, rootOrganizationId });
-          row = verified ? verified.wallet : await findEmailWalletByRecoveryEmail(client, { appId, email, rootOrganizationId });
+      const orphanedSubOrg: { current: { subOrganizationId: string; walletId: string; activityId: string } | null } = {
+        current: null
+      };
+      let wallet: EmailWalletRow;
+      let attested: {
+        sessionToken: string;
+        sessionExpiresAt: string;
+        idToken: string;
+        idTokenExpiresAt: string;
+        email: string;
+        emailVerified: boolean;
+      };
+      try {
+        ({ row: wallet, attested } = await withDbTransaction(db, async (client) => {
+          await lockEmailWallets(client, { appId, email });
+          let row = await findEmailWalletByVerifiedEmail(client, { appId, email });
+          let created = false;
+          const alreadyPinned = row !== null;
           if (!row) {
-            const person = verified?.person ?? (await createPerson(client, { appId, email, emailVerified: true }));
-            row = await createEmailWallet(client, {
-              appId,
-              person,
-              email,
-              network: networkDefaults(request.headers["x-network"] as string | undefined),
-              log: request.log
-            });
-            created = true;
+            const rootOrganizationId = server.config.TURNKEY_ORGANIZATION_ID;
+            // A verified primary wins, then a verified email identity whose
+            // primary was never set. An unverified backfill identity does
+            // not: it is the oldest recovery_email, which was never proved.
+            const verified =
+              (await findVerifiedPersonWallet(client, { appId, email, rootOrganizationId })) ??
+              (await walletForVerifiedIdentity(client, { appId, email, rootOrganizationId }));
+            row = verified?.wallet ?? (verified ? null : await findEmailWalletByRecoveryEmail(client, { appId, email, rootOrganizationId }));
+            if (!row) {
+              const person = verified?.person ?? (await createPerson(client, { appId, email, emailVerified: true }));
+              row = await createEmailWallet(client, {
+                appId,
+                person,
+                email,
+                network: networkDefaults(request.headers["x-network"] as string | undefined),
+                log: request.log,
+                onSubOrgCreated: (createdOrg) => {
+                  orphanedSubOrg.current = createdOrg;
+                }
+              });
+              created = true;
+            }
+            await pinVerifiedEmail(client, { appId, resourceId: row.id, email });
           }
-          await pinVerifiedEmail(client, { appId, resourceId: row.id, email });
-        }
-        await insertIdentity(client, {
-          appId, userId: row.user_id!, kind: "email", subject: email.toLowerCase(),
-          issuer: null, audience: null, emailAtLink: email, verified: true
-        });
-        await setVerifiedPrimaryEmail(client, { appId, userId: row.user_id!, email });
-        const person = await getPerson(client, { appId, userId: row.user_id! });
-        if (!person) throw new Error("Email wallet's user no longer exists");
-        const emailVerified = person.email_verified_at !== null;
-        const session = await mintSessionForUser(client, { appId, userId: person.id });
-        const idToken = await mintIdentityToken(client, server.idTokenSigner, {
-          appId,
-          userId: person.id,
-          externalUserId: person.external_user_id ?? person.id,
-          email: person.primary_email ?? email,
-          emailVerified,
-          amr: ["email"]
-        });
-        await updateRecoveryChallengeCandidates(client, { id: challenge.id, candidates: [toCandidate(row)] });
-        await markRecoveryChallengeStatus(client, { id: challenge.id, status: "consumed" });
-        await audit(client, "succeeded", { resourceId: row.id, created, sessionId: session.sessionId, emailVerified }, row.user_id);
-        return {
-          row,
-          attested: {
-            sessionToken: session.token,
-            sessionExpiresAt: session.expiresAt,
-            idToken: idToken.token,
-            idTokenExpiresAt: idToken.expiresAt,
+          // A wallet that is already this email's sign-in stays that way.
+          // A pin written in this transaction must also get the identity and
+          // the verified primary; otherwise the transaction rolls back.
+          let identityOk = true;
+          try {
+            const claim = await claimEmailIdentity(client, { appId, userId: row.user_id!, email });
+            identityOk = claim.ok;
+          } catch (err) {
+            if (!alreadyPinned) throw err;
+            identityOk = false;
+            request.log.error(
+              { appId, userId: row.user_id, err: String((err as { message?: string })?.message ?? err) },
+              "recovery.signin.identity_claim_failed"
+            );
+          }
+          const primaryWritten = await setVerifiedPrimaryEmail(client, { appId, userId: row.user_id!, email });
+          if (!alreadyPinned && (!identityOk || !primaryWritten)) {
+            throw new Error("Verified email identity belongs to another person");
+          }
+          const person = await getPerson(client, { appId, userId: row.user_id! });
+          if (!person) throw new Error("Email wallet's user no longer exists");
+          const emailVerified = person.email_verified_at !== null;
+          const session = await mintSessionForUser(client, { appId, userId: person.id });
+          const idToken = await mintIdentityToken(client, server.idTokenSigner, {
+            appId,
+            userId: person.id,
+            externalUserId: person.external_user_id ?? person.id,
             email: person.primary_email ?? email,
-            emailVerified
+            emailVerified,
+            amr: ["email"]
+          });
+          const candidate = toCandidate(row);
+          candidate.verificationTokenId = verification.tokenId;
+          await updateRecoveryChallengeCandidates(client, { id: challenge.id, candidates: [candidate] });
+          // The code's 10-minute window started at /signin. Session has until
+          // the verification token itself expires, which is measured from verify.
+          await markRecoveryChallengeStatus(client, {
+            id: challenge.id,
+            status: "consumed",
+            expiresAt: new Date(verification.expiresAtMs)
+          });
+          await audit(client, "succeeded", { resourceId: row.id, created, sessionId: session.sessionId, emailVerified }, row.user_id);
+          return {
+            row,
+            attested: {
+              sessionToken: session.token,
+              sessionExpiresAt: session.expiresAt,
+              idToken: idToken.token,
+              idTokenExpiresAt: idToken.expiresAt,
+              email: person.primary_email ?? email,
+              emailVerified
+            }
+          };
+        }));
+      } catch (err) {
+        if (orphanedSubOrg.current) {
+          const orphan = orphanedSubOrg.current;
+          request.log.error(
+            { appId, ...orphan, err: String((err as { message?: string })?.message ?? err) },
+            "recovery.signin.suborg_orphaned"
+          );
+          try {
+            await withDbTransaction(db, (client) =>
+              audit(client, "failed", { reason: "suborg_orphaned", ...orphan })
+            );
+          } catch (auditErr) {
+            request.log.error(
+              { appId, err: String((auditErr as { message?: string })?.message ?? auditErr) },
+              "recovery.signin.suborg_orphaned_audit_failed"
+            );
           }
-        };
-      });
+        }
+        throw err;
+      }
 
       return {
         verificationToken,
@@ -489,6 +615,9 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
         defaultAddress: wallet.default_address,
         defaultPublicKeyHex: wallet.default_public_key_hex,
         externalUserId: wallet.external_user_id,
+        // Always email: the client finishes with /signin/session even when the
+        // wallet was first opened with Google. authMethod here is the bootstrap,
+        // not the sub-org's original method.
         authMethod: "email" as const,
         ...attested
       };
@@ -514,11 +643,31 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
       const challenge = await withDbTransaction(db, (client) =>
         getRecoveryChallenge(client, { appId, id: body.challengeId })
       );
-      const wallet =
-        challenge?.otp_id && challenge.status === "consumed" && Date.parse(challenge.expires_at) > Date.now()
-          ? challenge.candidates[0]
-          : undefined;
+      if (!challenge?.otp_id || challenge.status !== "consumed" || !(Date.parse(challenge.expires_at) > Date.now())) {
+        return reply.unauthorized("Sign-in expired; request a new code");
+      }
+      const wallet = challenge.candidates[0];
       if (!wallet) return reply.unauthorized("Sign-in expired; request a new code");
+      if (body.publicKey !== body.clientSignature.publicKey) {
+        return reply.unauthorized("Invalid verification");
+      }
+      let presented: OtpVerification;
+      try {
+        presented = readVerification(body.verificationToken);
+      } catch {
+        return reply.unauthorized("Invalid verification");
+      }
+      // Parent-issued tokens are not scoped to one sub-org. The signature
+      // proves the key bound into the token, so the contact and token id
+      // have to be this challenge's or a different inbox's token would open it.
+      if (
+        hashEmailForRateLimit(presented.contact) !== challenge.email_hash ||
+        presented.tokenId !== wallet.verificationTokenId ||
+        (presented.publicKey !== null && presented.publicKey !== body.publicKey) ||
+        presented.expiresAtMs <= Date.now()
+      ) {
+        return reply.unauthorized("Invalid verification");
+      }
 
       const audit = (outcome: "succeeded" | "failed", payloadJson: object, turnkeyActivityId: string | null) =>
         withDbTransaction(db, (client) =>

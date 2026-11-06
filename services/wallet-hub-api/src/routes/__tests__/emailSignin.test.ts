@@ -15,8 +15,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const ROOT_ORG = "root-org";
 const EMAIL = "victim@example.com";
 
-function tokenFor(contact: string): string {
-  const claims = { contact, exp: 4102444800, id: "token-1", public_key: "02" + "ee".repeat(32), verification_type: "OTP_TYPE_EMAIL" };
+function tokenFor(contact: string, id = "token-1"): string {
+  const claims = { contact, exp: 4102444800, id, public_key: "02" + "ee".repeat(32), verification_type: "OTP_TYPE_EMAIL" };
   return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
 }
 
@@ -86,6 +86,8 @@ const mocks = vi.hoisted(() => {
     getPersonByVerifiedEmail: vi.fn(async (_c: unknown, _p: any): Promise<any> => null),
     listTurnkeyResourcesForUserForApp: vi.fn(async (_c: unknown, p: { userId: string }) => wallets.filter((w) => w.user_id === p.userId)),
     insertIdentity: vi.fn(async () => null),
+    getIdentity: vi.fn(async (): Promise<any> => null),
+    claimEmailIdentity: vi.fn(async (): Promise<{ ok: true } | { ok: false; ownerUserId: string }> => ({ ok: true })),
     getPerson: vi.fn(async (_c: unknown, p: { userId: string }) => ({
       id: p.userId,
       external_user_id: p.userId === "new-user" ? "usr_" + "0".repeat(32) : `ext-${p.userId}`,
@@ -94,7 +96,8 @@ const mocks = vi.hoisted(() => {
     })),
     mintSessionForUser: vi.fn(async () => ({ token: "whs_v1_test", sessionId: "s-1", expiresAt: "2026-11-07T00:00:00.000Z" })),
     mintIdentityToken: vi.fn(async () => ({ token: "id-token", expiresAt: "2026-11-06T00:15:00.000Z" })),
-    setVerifiedPrimaryEmail: vi.fn(async () => undefined),
+    setVerifiedPrimaryEmail: vi.fn(async () => true),
+    auditEvent: vi.fn(async () => undefined),
     countRecentChallenges: vi.fn(async () => 0),
     recovery: {
       insertRecoveryChallenge: vi.fn(async (_c: unknown, p: any) => {
@@ -124,7 +127,9 @@ const mocks = vi.hoisted(() => {
         return structuredClone(row);
       },
       markRecoveryChallengeStatus: async (_c: unknown, p: any) => {
-        challenges.get(p.id).status = p.status;
+        const row = challenges.get(p.id);
+        row.status = p.status;
+        if (p.expiresAt) row.expires_at = new Date(p.expiresAt).toISOString();
       },
     },
     turnkey: {
@@ -154,13 +159,15 @@ vi.mock("../../db/tx.js", () => ({
     }
   },
 }));
-vi.mock("../../audit/audit.js", () => ({ auditEvent: async () => undefined }));
+vi.mock("../../audit/audit.js", () => ({ auditEvent: mocks.auditEvent }));
 vi.mock("../../turnkey/store.js", () => ({ getTurnkeyClient: () => mocks.turnkey }));
 vi.mock("../../db/identities.js", async (orig) => ({
   ...(await orig<typeof import("../../db/identities.js")>()),
   createPerson: mocks.createPerson,
   getPersonByVerifiedEmail: mocks.getPersonByVerifiedEmail,
   insertIdentity: mocks.insertIdentity,
+  getIdentity: mocks.getIdentity,
+  claimEmailIdentity: mocks.claimEmailIdentity,
   getPerson: mocks.getPerson,
   setVerifiedPrimaryEmail: mocks.setVerifiedPrimaryEmail,
 }));
@@ -228,13 +235,13 @@ const verify = (app: App, challengeId: string) =>
     payload: { challengeId, encryptedOtpBundle: "encrypted-otp-bundle" },
   });
 
-const session = (app: App, challengeId: string) =>
+const sessionWith = (app: App, challengeId: string, verificationToken: string) =>
   app.inject({
     method: "POST",
     url: "/v1/recovery/email/signin/session",
     payload: {
       challengeId,
-      verificationToken: tokenFor(EMAIL),
+      verificationToken,
       publicKey: "02" + "ee".repeat(32),
       clientSignature: {
         scheme: "CLIENT_SIGNATURE_SCHEME_API_P256",
@@ -244,6 +251,8 @@ const session = (app: App, challengeId: string) =>
       },
     },
   });
+
+const session = (app: App, challengeId: string) => sessionWith(app, challengeId, tokenFor(EMAIL));
 
 describe("email sign-in", () => {
   beforeEach(() => {
@@ -316,10 +325,12 @@ describe("email sign-in", () => {
     });
     expect(res.json().externalUserId).toMatch(/^usr_[0-9a-f]{32}$/);
     expect(mocks.createPerson).toHaveBeenCalledWith(expect.anything(), { appId: "app", email: EMAIL, emailVerified: true });
-    expect(mocks.insertIdentity).toHaveBeenCalledWith(
+    expect(mocks.claimEmailIdentity).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ userId: "new-user", kind: "email", subject: EMAIL, verified: true }),
+      expect.objectContaining({ userId: "new-user", email: EMAIL }),
     );
+    expect(mocks.challenges.get(challengeId).expires_at).toBe(new Date(4102444800 * 1000).toISOString());
+    expect(mocks.challenges.get(challengeId).candidates[0].verificationTokenId).toBe("token-1");
     expect(mocks.setVerifiedPrimaryEmail).toHaveBeenCalledWith(expect.anything(), { appId: "app", userId: "new-user", email: EMAIL });
     expect(res.json()).toMatchObject({
       sessionToken: "whs_v1_test",
@@ -355,6 +366,110 @@ describe("email sign-in", () => {
     expect(mocks.findEmailWalletByRecoveryEmail).not.toHaveBeenCalled();
     expect(mocks.createPerson).not.toHaveBeenCalled();
     expect(mocks.turnkey.createSubOrganizationWithEmailWallet).not.toHaveBeenCalled();
+  });
+
+  it("creates an email wallet for a verified person whose only wallet is a passkey", async () => {
+    const app = await buildServer();
+    const passkey = walletRow({
+      id: "passkey-resource",
+      user_id: "passkey-user",
+      organization_id: "passkey-sub-org",
+      auth_method: "passkey",
+    });
+    mocks.wallets.push(passkey);
+    mocks.getPersonByVerifiedEmail.mockResolvedValueOnce({ id: "passkey-user", external_user_id: "usr_passkey" });
+
+    const res = await verify(app, (await signin(app)).json().challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(passkey.verified_email).toBeNull();
+    expect(mocks.createPerson).not.toHaveBeenCalled();
+    expect(mocks.insertTurnkeyResource).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userId: "passkey-user", authMethod: "email" }),
+    );
+    expect(res.json().organizationId).toBe("new-sub-org");
+  });
+
+  it("signs in to the person who already has a verified email identity when primary email does not say so", async () => {
+    const app = await buildServer();
+    const identified = walletRow({
+      id: "ident-resource",
+      user_id: "ident-user",
+      organization_id: "ident-sub-org",
+      auth_method: "oauth",
+    });
+    mocks.wallets.push(identified);
+    mocks.getIdentity.mockResolvedValueOnce({
+      user_id: "ident-user",
+      verified_at: "2026-01-01T00:00:00Z",
+      kind: "email",
+      subject: EMAIL,
+    });
+
+    const res = await verify(app, (await signin(app)).json().challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().organizationId).toBe("ident-sub-org");
+    expect(mocks.createPerson).not.toHaveBeenCalled();
+    expect(mocks.findEmailWalletByRecoveryEmail).not.toHaveBeenCalled();
+    expect(mocks.claimEmailIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userId: "ident-user", email: EMAIL }),
+    );
+  });
+
+  it("does not treat an unverified recovery-email identity as the owner", async () => {
+    const app = await buildServer();
+    mocks.getIdentity.mockResolvedValueOnce({
+      user_id: "squatter",
+      verified_at: null,
+      kind: "email",
+      subject: EMAIL,
+    });
+
+    const res = await verify(app, (await signin(app)).json().challengeId);
+
+    expect(res.statusCode).toBe(200);
+    expect(mocks.createPerson).toHaveBeenCalled();
+    expect(mocks.claimEmailIdentity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ userId: "new-user" }),
+    );
+  });
+
+  it("rolls back a new pin when the verified email belongs to someone else", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    mocks.claimEmailIdentity.mockResolvedValueOnce({ ok: false, ownerUserId: "other-user" });
+
+    const res = await verify(app, challengeId);
+
+    expect(res.statusCode).toBe(500);
+    expect(mocks.challenges.get(challengeId).status).toBe("pending");
+    expect(mocks.mintSessionForUser).not.toHaveBeenCalled();
+    expect(mocks.mintIdentityToken).not.toHaveBeenCalled();
+  });
+
+  it("audits a Turnkey sub-org left behind when the pin transaction rolls back", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    mocks.insertTurnkeyResource.mockRejectedValueOnce(new Error("db down"));
+
+    const res = await verify(app, challengeId);
+
+    expect(res.statusCode).toBe(500);
+    expect(mocks.challenges.get(challengeId).status).toBe("pending");
+    expect(mocks.auditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        payloadJson: expect.objectContaining({
+          reason: "suborg_orphaned",
+          subOrganizationId: "new-sub-org",
+          walletId: "new-wallet",
+        }),
+      }),
+    );
   });
 
   it("makes a wallet for the verified person who has none, without a second person", async () => {
@@ -510,6 +625,20 @@ describe("email sign-in", () => {
     expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
   });
 
+  it("/session refuses a token for a different email or a different verification", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    await verify(app, challengeId);
+
+    const otherEmail = await sessionWith(app, challengeId, tokenFor("other@example.com"));
+    expect(otherEmail.statusCode).toBe(401);
+    expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
+
+    const swapped = await sessionWith(app, challengeId, tokenFor(EMAIL, "token-2"));
+    expect(swapped.statusCode).toBe(401);
+    expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
+  });
+
   it("/session answers 401 when Turnkey refuses the token or signature", async () => {
     const app = await buildServer();
     const { challengeId } = (await signin(app)).json();
@@ -566,7 +695,7 @@ describe("email sign-in SQL", () => {
 
     const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
     expect(params).toEqual(["app-a", "victim@example.com"]);
-    expect(sql).toMatch(/r\.app_id = \$1 AND r\.verified_email = \$2/);
+    expect(sql).toMatch(/r\.app_id = \$1 AND lower\(r\.verified_email\) = \$2/);
   });
 
   it("never re-pins a wallet another email already signs in to", async () => {
@@ -579,5 +708,17 @@ describe("email sign-in SQL", () => {
     const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
     expect(sql).toMatch(/verified_email IS NULL/);
     expect(params).toEqual(["r-1", "app-a", "victim@example.com"]);
+  });
+
+  it("keeps a consumed challenge open until the verification token expires", async () => {
+    const { markRecoveryChallengeStatus } = await vi.importActual<typeof import("../../db/recovery.js")>("../../db/recovery.js");
+    const query = vi.fn(async () => ({ rows: [] }));
+    const expiresAt = new Date("2100-01-01T00:00:00.000Z");
+
+    await markRecoveryChallengeStatus({ query } as never, { id: "c-1", status: "consumed", expiresAt });
+
+    const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(sql).toContain("expires_at = COALESCE($3::timestamptz, expires_at)");
+    expect(params).toEqual(["c-1", "consumed", expiresAt]);
   });
 });
