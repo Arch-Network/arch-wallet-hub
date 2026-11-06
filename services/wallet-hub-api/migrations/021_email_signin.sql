@@ -15,6 +15,8 @@ ALTER TABLE recovery_challenges
 ALTER TABLE turnkey_resources
   ADD COLUMN IF NOT EXISTS verified_email TEXT;
 
+-- lower() so User@x.com and user@x.com cannot pin two wallets. Writers
+-- store the lowercased address; the expression is what makes that stick.
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_turnkey_resources_app_verified_email
-  ON turnkey_resources (app_id, verified_email)
+  ON turnkey_resources (app_id, lower(verified_email))
   WHERE verified_email IS NOT NULL;

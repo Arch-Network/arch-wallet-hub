@@ -92,6 +92,41 @@ export async function insertIdentity(
   return res.rows[0] ?? null;
 }
 
+/**
+ * Record that `userId` proved this email. Refreshes their own row, and moves
+ * an UNVERIFIED row (the migration-020 backfill of `recovery_email`) onto
+ * them: that row was never a proof. A verified row owned by someone else is
+ * left where it is. `{ ok: false }` means the caller must roll back: that
+ * person already proved the inbox, and a second wallet must not be pinned.
+ */
+export async function claimEmailIdentity(
+  client: PoolClient,
+  params: { appId: string; userId: string; email: string }
+): Promise<{ ok: true } | { ok: false; ownerUserId: string }> {
+  const subject = params.email.trim().toLowerCase();
+  const res = await client.query<UserIdentityRow>(
+    `
+      INSERT INTO user_identities (app_id, user_id, kind, subject, issuer, audience, email_at_link, verified_at, last_login_at)
+      VALUES ($1, $2, 'email', $3, NULL, NULL, $4, NOW(), NOW())
+      ON CONFLICT (app_id, kind, subject) DO UPDATE
+        SET user_id = EXCLUDED.user_id,
+            last_login_at = NOW(),
+            email_at_link = EXCLUDED.email_at_link,
+            verified_at = COALESCE(user_identities.verified_at, EXCLUDED.verified_at)
+        WHERE user_identities.user_id = EXCLUDED.user_id
+           OR user_identities.verified_at IS NULL
+      RETURNING *
+    `,
+    [params.appId, params.userId, subject, params.email.trim()]
+  );
+  if (res.rows[0]) return { ok: true };
+  const existing = await getIdentity(client, { appId: params.appId, kind: "email", subject });
+  if (existing?.verified_at && existing.user_id !== params.userId) {
+    return { ok: false, ownerUserId: existing.user_id };
+  }
+  throw new Error("Email identity could not be recorded");
+}
+
 export async function touchIdentityLogin(client: PoolClient, params: { id: string }): Promise<void> {
   await client.query(`UPDATE user_identities SET last_login_at = NOW() WHERE id = $1`, [params.id]);
 }
@@ -146,8 +181,8 @@ export async function createPerson(
 export async function setVerifiedPrimaryEmail(
   client: PoolClient,
   params: { appId: string; userId: string; email: string },
-): Promise<void> {
-  await client.query(
+): Promise<boolean> {
+  const res = await client.query(
     `
       UPDATE users
          SET primary_email = COALESCE(primary_email, $3),
@@ -161,6 +196,7 @@ export async function setVerifiedPrimaryEmail(
     `,
     [params.appId, params.userId, params.email],
   );
+  return res.rowCount === 1;
 }
 
 /** Replay guard for id tokens: true if this token was already accepted. */

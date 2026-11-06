@@ -35,6 +35,11 @@ export interface RecoveryCandidate {
   defaultPublicKeyHex: string | null;
   createdAt: string;
   /**
+   * Set by email sign-in when the challenge is consumed. /signin/session
+   * accepts only the verification token verify just received.
+   */
+  verificationTokenId?: string;
+  /**
    * "passkey" if the sub-org has WebAuthn authenticators registered;
    * "email" if it was created with API keys only. Drives the
    * post-verify branch on the client (WebAuthn re-enrol vs
@@ -214,16 +219,17 @@ export async function updateRecoveryChallengeCandidates(
 
 export async function markRecoveryChallengeStatus(
   client: PoolClient,
-  params: { id: string; status: "consumed" | "expired" | "failed" }
+  params: { id: string; status: "consumed" | "expired" | "failed"; expiresAt?: Date }
 ): Promise<void> {
   await client.query(
     `
       UPDATE recovery_challenges
       SET status = $2,
-          consumed_at = CASE WHEN $2 = 'consumed' THEN NOW() ELSE consumed_at END
+          consumed_at = CASE WHEN $2 = 'consumed' THEN NOW() ELSE consumed_at END,
+          expires_at = COALESCE($3::timestamptz, expires_at)
       WHERE id = $1
     `,
-    [params.id, params.status]
+    [params.id, params.status, params.expiresAt ?? null]
   );
 }
 

@@ -278,7 +278,7 @@ export async function findEmailWalletByVerifiedEmail(
       SELECT r.*, u.external_user_id
       FROM turnkey_resources r
       JOIN users u ON u.id = r.user_id AND u.app_id = r.app_id
-      WHERE r.app_id = $1 AND r.verified_email = $2
+      WHERE r.app_id = $1 AND lower(r.verified_email) = $2
     `,
     [params.appId, params.email.trim().toLowerCase()]
   );
