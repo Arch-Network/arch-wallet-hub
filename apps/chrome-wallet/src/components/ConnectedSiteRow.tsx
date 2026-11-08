@@ -218,7 +218,7 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
           style={{
             marginTop: 10,
             padding: 10,
-            background: "var(--bg-elevated, rgba(0,0,0,0.18))",
+            background: "var(--surface-card)",
             borderRadius: 8,
             border: "1px solid var(--border-primary)",
           }}
@@ -311,7 +311,7 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
                 style={{
                   marginTop: 4,
                   fontSize: 11,
-                  color: "var(--text-danger, #ff5252)",
+                  color: "var(--color-negative-text)",
                 }}
               >
                 {capError}
@@ -360,7 +360,7 @@ export function ConnectedSiteRow({ origin, site, onDisconnect }: Props) {
                 style={{
                   marginTop: 4,
                   fontSize: 11,
-                  color: "var(--text-danger, #ff5252)",
+                  color: "var(--color-negative-text)",
                 }}
               >
                 {btcCapError}

@@ -68,13 +68,13 @@ export function psbtHasOpReturnOutput(psbt: bitcoin.Psbt): boolean {
 }
 
 /**
- * Sign every input of `psbt` in place using `sign32` for each
- * input's BIP-341 key-path sighash. Returns the same PSBT (now
- * carrying `tapKeySig` on every input).
+ * Sign every input of `psbt` (or only `inputsToSign`) in place using
+ * `sign32` for each input's BIP-341 key-path sighash. Returns the same
+ * PSBT (now carrying `tapKeySig` on every signed input).
  *
  * Preconditions:
  *   - Every input has a `witnessUtxo` set (script + value).
- *   - Every input's prevout script is a 34-byte P2TR
+ *   - Every signed input's prevout script is a 34-byte P2TR
  *     (`OP_1 OP_PUSH32 <x-only pubkey>`) controlled by the same
  *     key `sign32` will use to sign. We don't try to detect
  *     mixed-script inputs or remix sighash types -- callers
@@ -88,12 +88,14 @@ export function psbtHasOpReturnOutput(psbt: bitcoin.Psbt): boolean {
  */
 export async function signPsbtViaRawSighash(
   psbt: bitcoin.Psbt,
-  sign32: Sign32ByteDigest
+  sign32: Sign32ByteDigest,
+  inputsToSign?: readonly number[]
 ): Promise<bitcoin.Psbt> {
   const inputCount = psbt.inputCount;
   if (inputCount === 0) {
     throw new Error("signPsbtViaRawSighash: PSBT has no inputs");
   }
+  const toSign = inputsToSign ?? Array.from({ length: inputCount }, (_, i) => i);
 
   // BIP-341 key-path sighash commits to ALL prevout scripts and
   // ALL prevout values, not just the input being signed. Walk
@@ -114,16 +116,22 @@ export async function signPsbtViaRawSighash(
         `signPsbtViaRawSighash: input ${i} missing witnessUtxo (script/value as BigInt)`
       );
     }
+    prevoutScripts.push(wu.script);
+    prevoutValues.push(wu.value);
+  }
+  for (const i of toSign) {
+    const script = prevoutScripts[i];
+    if (!script) {
+      throw new Error(`signPsbtViaRawSighash: input ${i} is out of range`);
+    }
     // Be strict about script shape so we never accidentally sign a
     // non-P2TR input with the wrong sighash family. P2TR script is
     // OP_1 (0x51) + push 32 (0x20) + 32-byte x-only key = 34 bytes.
-    if (wu.script.length !== 34 || wu.script[0] !== 0x51 || wu.script[1] !== 0x20) {
+    if (script.length !== 34 || script[0] !== 0x51 || script[1] !== 0x20) {
       throw new Error(
         `signPsbtViaRawSighash: input ${i} is not P2TR -- raw-sighash path supports key-path taproot only`
       );
     }
-    prevoutScripts.push(wu.script);
-    prevoutValues.push(wu.value);
   }
 
   // Reach into the PSBT's cached unsigned transaction. We use the
@@ -139,7 +147,7 @@ export async function signPsbtViaRawSighash(
     );
   }
 
-  for (let i = 0; i < inputCount; i++) {
+  for (const i of toSign) {
     // SIGHASH_DEFAULT (0x00) -- matches what Turnkey produces for
     // a Schnorr signature over a 32-byte digest, and what we want
     // anyway because it's the cheapest taproot sighash (no

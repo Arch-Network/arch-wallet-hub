@@ -17,13 +17,10 @@ import {
 } from "../db/apps.js";
 import {
   computeRequestHash,
-  consumeIdempotencyKey,
-  sha256Hex
+  consumeIdempotencyKey
 } from "../idempotency/idempotency.js";
 import { auditEvent } from "../audit/audit.js";
-import {
-  computeBip322ToSignTaprootSighash
-} from "../bitcoin/bip322.js";
+import { findTurnkeyWalletAccount } from "../turnkey/walletAccountVerification.js";
 
 const CreateWalletBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
@@ -115,12 +112,16 @@ const GetWalletResponse = Type.Object({
    *   - "passkey": sub-org with WebAuthn authenticators registered.
    *   - "email":   sub-org with API keys only; requires OTP per
    *                session bootstrap.
+   *   - "oauth":   sub-org whose root user is an OIDC identity (Google,
+   *                Apple); sessions open through OAUTH_LOGIN
+   *                (routes/authOAuth.ts).
    *   - null:      legacy parent-org row from the deprecated
    *                custodial model.
    */
   authMethod: Type.Union([
     Type.Literal("passkey"),
     Type.Literal("email"),
+    Type.Literal("oauth"),
     Type.Null()
   ])
 });
@@ -131,33 +132,14 @@ const ListWalletsResponse = Type.Object({
   wallets: Type.Array(GetWalletResponse)
 });
 
-const SignMessageBody = Type.Object({
-  externalUserId: Type.String({ minLength: 1 }),
-  resourceId: Type.String({ minLength: 1 }),
-  message: Type.String({ minLength: 1 }),
-  encoding: Type.Optional(
-    Type.Union([
-      Type.Literal("PAYLOAD_ENCODING_TEXT_UTF8"),
-      Type.Literal("PAYLOAD_ENCODING_HEXADECIMAL")
-    ])
-  ),
-  hashFunction: Type.Optional(
-    Type.Union([Type.Literal("HASH_FUNCTION_NO_OP"), Type.Literal("HASH_FUNCTION_SHA256")])
-  )
-});
-
-const SignMessageResponse = Type.Object({
-  resourceId: Type.String(),
-  signedWith: Type.String(),
-  activityId: Type.String(),
-  signature64Hex: Type.String()
-});
-
 export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/passkey-wallets/import",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.passkey-wallets.import"),
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.passkey-wallets.import"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary: "Register an existing passkey wallet metadata row for this Hub app",
         tags: ["turnkey"],
@@ -176,6 +158,31 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
       const defaultPublicKeyHex = String(body.defaultPublicKeyHex);
       const db = getDbPool();
 
+      // The Hub's API key can sign for parent-org wallets, so a parent-org
+      // row must never be caller-creatable.
+      if (organizationId === server.config.TURNKEY_ORGANIZATION_ID) {
+        return reply.badRequest("Cannot import a wallet from the Hub's root organization");
+      }
+      let verified: { walletId: string } | null;
+      try {
+        verified = await findTurnkeyWalletAccount(getTurnkeyClient(), {
+          organizationId,
+          address: defaultAddress,
+          publicKeyHex: defaultPublicKeyHex
+        });
+      } catch (err: any) {
+        request.log.warn(
+          { organizationId, err: String(err?.message ?? err) },
+          "turnkey.wallet.import.lookup_failed"
+        );
+        verified = null;
+      }
+      if (!verified) {
+        return reply.badRequest(
+          "defaultAddress/defaultPublicKeyHex is not a wallet account of this Turnkey sub-organization"
+        );
+      }
+
       const response = await withDbTransaction(db, async (client) => {
         const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
         const resource = await insertTurnkeyResource(client, {
@@ -183,7 +190,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           userId: user.id,
           organizationId,
           turnkeyRootUserId: null,
-          walletId: null,
+          walletId: verified.walletId,
           vaultId: null,
           keyId: null,
           policyId: null,
@@ -193,7 +200,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           defaultDerivationPath: null,
           // Import path is only reachable for sub-org passkey wallets
           // (custodial parent-org "imports" were never supported).
-          authMethod: "passkey"
+          authMethod: "passkey",
+          keyVerified: true
         });
 
         await auditEvent({
@@ -232,7 +240,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/passkey-wallets",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.passkey-wallets.create"),
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.passkey-wallets.create"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary: "Create a non-custodial embedded wallet (sub-org + passkey root user + wallet)",
         tags: ["turnkey"],
@@ -263,18 +274,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
 
         if (res.kind !== "created") return res;
         const externalUserId = (body as any).externalUserId;
-        const userEmail = (body as any).userEmail;
         const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
-        // Phase 1.10: persist the recovery email at sign-up so the
-        // /recovery/email/init endpoint can resolve this user without
-        // trusting client-supplied email values at recovery time.
-        if (typeof userEmail === "string" && userEmail.trim().length > 0) {
-          await updateUserRecoveryEmail(client, {
-            appId,
-            userId: user.id,
-            email: userEmail
-          });
-        }
         return { ...res, userId: user.id };
       });
 
@@ -359,6 +359,18 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         }
 
         const response = await withDbTransaction(db, async (client) => {
+          // Phase 1.10: persist the recovery email so /recovery/email/init
+          // can resolve this user without trusting client-supplied email
+          // values at recovery time. Written only once the sub-org exists,
+          // in the same tx as the resource, so a failed create leaves any
+          // previous recovery_email untouched.
+          if (typeof userEmail === "string" && userEmail.trim().length > 0) {
+            await updateUserRecoveryEmail(client, {
+              appId,
+              userId,
+              email: userEmail
+            });
+          }
           const resource = await insertTurnkeyResource(client, {
             appId,
             userId,
@@ -373,7 +385,8 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             defaultAddressFormat: addressFormat,
             defaultDerivationPath: derivationPath,
             // Sub-org-with-authenticators creation path.
-            authMethod: "passkey"
+            authMethod: "passkey",
+            keyVerified: defaultPublicKeyHex !== null
           });
 
           await auditEvent({
@@ -446,7 +459,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.post(
     "/turnkey/email-wallets",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.email-wallets.create"),
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.email-wallets.create"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary:
           "Create a non-custodial email-only embedded wallet (sub-org + email root user + wallet)",
@@ -479,15 +495,9 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         if (res.kind !== "created") return res;
 
         const externalUserId = body.externalUserId;
-        const userEmail = body.userEmail;
         const user = await getOrCreateUserByExternalId(client, {
           appId,
           externalUserId,
-        });
-        await updateUserRecoveryEmail(client, {
-          appId,
-          userId: user.id,
-          email: userEmail,
         });
         return { ...res, userId: user.id };
       });
@@ -584,6 +594,14 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         }
 
         const response = await withDbTransaction(db, async (client) => {
+          // Written only once the sub-org exists, in the same tx as the
+          // resource, so a failed create leaves any previous
+          // recovery_email untouched.
+          await updateUserRecoveryEmail(client, {
+            appId,
+            userId,
+            email: userEmail,
+          });
           const resource = await insertTurnkeyResource(client, {
             appId,
             userId,
@@ -600,6 +618,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             // Email-only sub-org: no authenticator, recovery happens
             // via OTP-derived API key bootstrap.
             authMethod: "email",
+            keyVerified: defaultPublicKeyHex !== null,
           });
 
           await auditEvent({
@@ -768,155 +787,6 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         isCustodial: row.organization_id === rootOrgId,
         authMethod: row.auth_method ?? null
       };
-    }
-  );
-
-  server.post(
-    "/turnkey/sign-message",
-    {
-      preHandler: server.enforceSessionForRoute("turnkey.sign-message"),
-      schema: {
-        summary: "Sign a message via Turnkey (Phase 0)",
-        tags: ["turnkey"],
-        body: SignMessageBody,
-        response: { 200: SignMessageResponse }
-      }
-    },
-    async (request, reply) => {
-      const appId = request.app?.appId;
-      if (!appId) return reply.unauthorized("Missing app context");
-
-      const idempotencyKey = request.headers["idempotency-key"]?.toString();
-      if (!idempotencyKey) {
-        return reply.badRequest("Missing Idempotency-Key header");
-      }
-
-      const db = getDbPool();
-      const body = request.body as any;
-      const route = "POST /v1/turnkey/sign-message";
-      const requestHash = computeRequestHash(body);
-
-      const consumed = await withDbTransaction(db, async (client) => {
-        return await consumeIdempotencyKey({
-          client,
-          appId,
-          key: idempotencyKey,
-          route,
-          requestHash
-        });
-      });
-
-      if (consumed.kind === "replayed") return consumed.response;
-      if (consumed.kind === "conflict") return reply.conflict(consumed.reason);
-      if (consumed.kind === "in_progress") return reply.conflict(consumed.reason);
-      if (consumed.kind === "failed")
-        return reply.code(409).send({ message: consumed.reason, error: consumed.error });
-
-      const { externalUserId, resourceId, message } = body;
-      const encoding = body.encoding ?? "PAYLOAD_ENCODING_TEXT_UTF8";
-      const hashFunction = body.hashFunction ?? "HASH_FUNCTION_SHA256";
-
-      const user = await withDbTransaction(db, (client) =>
-        getOrCreateUserByExternalId(client, { appId, externalUserId })
-      );
-      const resource = await withDbTransaction(db, (client) =>
-        getTurnkeyResourceByIdForApp(client, { id: resourceId, appId })
-      );
-      if (!resource) return reply.notFound("Unknown resourceId");
-      if (resource.user_id !== user.id) return reply.forbidden("Resource does not belong to user");
-      if (!resource.default_address) {
-        return reply.badRequest("Resource has no default address to sign with");
-      }
-
-      const messageHash = sha256Hex(`${encoding}:${hashFunction}:${message}`);
-
-      await withDbTransaction(db, async (client) => {
-        await auditEvent({
-          client,
-          appId,
-          requestId: request.id,
-          userId: resource.user_id,
-          eventType: "turnkey.sign.message",
-          entityType: "turnkey_resource",
-          entityId: resourceId,
-          turnkeyActivityId: null,
-          turnkeyRequestId: null,
-          payloadJson: { encoding, hashFunction, messageHash },
-          outcome: "requested"
-        });
-      });
-
-      try {
-        const turnkey = getTurnkeyClient();
-        const sighash = computeBip322ToSignTaprootSighash({
-          signerAddress: resource.default_address,
-          message
-        });
-
-        const signed = await turnkey.signRawPayload({
-          signWith: resource.default_address,
-          payload: Buffer.from(sighash).toString("hex"),
-          encoding: "PAYLOAD_ENCODING_HEXADECIMAL",
-          hashFunction: "HASH_FUNCTION_NO_OP"
-        });
-
-        const signature64Hex = `${signed.r}${signed.s}`;
-        request.log.info(
-          { activityId: signed.activityId, resourceId, userId: resource.user_id },
-          "turnkey.sign_message.completed"
-        );
-
-        const responseBody = await withDbTransaction(db, async (client) => {
-          await auditEvent({
-            client,
-            appId,
-            requestId: request.id,
-            userId: resource.user_id,
-            eventType: "turnkey.sign.message",
-            entityType: "turnkey_resource",
-            entityId: resourceId,
-            turnkeyActivityId: signed.activityId,
-            turnkeyRequestId: null,
-            // Persist only a hash of the signature in the durable audit
-            // row; the raw signature is a sensitive artifact and the
-            // hash is sufficient to correlate with the response.
-            payloadJson: { signatureSha256: sha256Hex(signature64Hex) },
-            outcome: "succeeded"
-          });
-
-          const out = {
-            resourceId,
-            signedWith: resource.default_address,
-            activityId: signed.activityId,
-            signature64Hex
-          };
-
-          await markIdempotencySucceeded(client, consumed.row.id, out);
-          return out;
-        });
-
-        return responseBody;
-      } catch (err: any) {
-        await withDbTransaction(db, async (client) => {
-          await auditEvent({
-            client,
-            appId,
-            requestId: request.id,
-            userId: resource.user_id,
-            eventType: "turnkey.sign.message",
-            entityType: "turnkey_resource",
-            entityId: resourceId,
-            turnkeyActivityId: null,
-            turnkeyRequestId: null,
-            payloadJson: { error: String(err?.message ?? err), messageHash },
-            outcome: "failed"
-          });
-          await markIdempotencyFailed(client, consumed.row.id, {
-            message: String(err?.message ?? err)
-          });
-        });
-        throw err;
-      }
     }
   );
 

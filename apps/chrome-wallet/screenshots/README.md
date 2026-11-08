@@ -31,9 +31,9 @@ npm run screenshots          # builds the extension, then captures
 HEADED=1 npm run screenshots
 ```
 
-Outputs: `apps/chrome-wallet/.screenshots/<screen>-<theme>.png` plus a
-`manifest.json` listing exactly which screens were captured vs skipped (and
-why).
+Outputs: `apps/chrome-wallet/.screenshots/<screen>-<theme>.png`, raw review
+captures in `.screenshots/review/`, and a `manifest.json` listing exactly which
+screens were captured vs skipped (and why).
 
 ## Screens
 
@@ -54,6 +54,31 @@ AES-GCM/PBKDF2 crypto as the app) with **no session key**. The data-rich
 screens use a separate encrypted synthetic wallet with a temporary session key
 and testnet fixture data. Neither state contains a real credential, private
 key, or live account.
+
+## Review captures
+
+Alongside the listing composites, the harness writes raw, uncomposited PNGs to
+`.screenshots/review/` for design review. The synthetic wallet holds one
+account of each kind (`screenshots/lib/fixtures.ts`), and each capture selects
+one of them as active:
+
+| Fixture          | Signer          | Bitcoin addresses (Testnet4)                       |
+| ---------------- | --------------- | -------------------------------------------------- |
+| `native-email`   | Arch, email     | One Taproot address, 250,000 sats                  |
+| `native-passkey` | Arch, passkey   | One Taproot address, empty                         |
+| `xverse`         | Xverse (linked) | Payment P2SH 120,000 + 15,000 pending; ordinals P2TR 30,000 (10,000 protected) |
+| `unisat`         | UniSat (linked) | One Taproot address for both purposes, 64,000 sats |
+| `watch`          | Watch-only      | One Taproot address, 1,500,000 sats                |
+
+Surfaces: the 400×600 toolbar popup, a 360×600 narrow side panel, and a
+1000×800 wide side panel. The popup is fixed at 400px wide, so 360px only
+occurs in the side panel. `history-failure` makes the Bitcoin history endpoint
+return 502 to capture the error state.
+
+Fixture responses follow each indexer endpoint's real shape: sub-routes
+(`/txs`, `/utxo`, `/runes`, `/inscriptions`) are matched before the address
+summary. CoinGecko is intercepted with a fixed BTC price and no ARCH entry,
+so the captures show how the wallet renders an unpriced asset.
 
 ## Uploading to the Chrome Web Store
 

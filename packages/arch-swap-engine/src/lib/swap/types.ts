@@ -24,6 +24,8 @@ export type Quote = {
   expiresAt: number;
   runtimeTx: RuntimeTransaction;
   source: AmmType;
+  /** PropAMM only: the server's RFQ id, required to submit via `/rfq/swap`. */
+  rfqQuoteId?: string;
 };
 
 export const QUOTE_TTL_MS = 30_000;

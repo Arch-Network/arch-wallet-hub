@@ -10,15 +10,33 @@ import {
   makeLockedKeystoreSeed,
   type StorageSeed,
 } from "./lib/seed";
+import {
+  FIXTURE_ACCOUNTS,
+  coingeckoResponse,
+  fixtureResponse,
+  type FixtureAccountId,
+  type FixtureMode,
+} from "./lib/fixtures";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.join(HERE, "..");
 const EXTENSION_DIR = path.join(APP_ROOT, ".output", "chrome-mv3");
 const OUTPUT_DIR = path.join(APP_ROOT, ".screenshots");
+const REVIEW_DIR = path.join(OUTPUT_DIR, "review");
 const THEME_STORAGE_KEY = "arch_wallet_theme"; // src/utils/theme.ts
 const THEMES: CanvasTheme[] = ["light", "dark"];
 
 const HEADED = process.env.HEADED === "1";
+
+interface Viewport {
+  width: number;
+  height: number;
+}
+// The toolbar popup is fixed at 400px (global.css), so 360px only occurs
+// in a narrow side panel, which fills its width.
+const POPUP_400: Viewport = { width: 400, height: 600 };
+const PANEL_NARROW: Viewport = { width: 360, height: 600 };
+const PANEL_WIDE: Viewport = { width: 1000, height: 800 };
 
 interface ScreenDef {
   name: string;
@@ -41,6 +59,38 @@ const SCREENS: ScreenDef[] = [
   { name: "settings", route: "/settings", requiresSeed: true, settleMs: 1600, description: "Settings" },
 ];
 
+/**
+ * Uncomposited captures for design review: every account kind, the
+ * popup, narrow and wide side panels, and the history failure state.
+ */
+interface ReviewCapture {
+  name: string;
+  account: FixtureAccountId | null;
+  route: string;
+  theme: CanvasTheme;
+  viewport: Viewport;
+  surface: "popup" | "sidepanel";
+  mode?: Partial<FixtureMode>;
+  settleMs?: number;
+}
+
+const ACCOUNT_IDS: FixtureAccountId[] = ["native-email", "native-passkey", "xverse", "unisat", "watch"];
+
+const REVIEW_CAPTURES: ReviewCapture[] = [
+  ...ACCOUNT_IDS.flatMap((account): ReviewCapture[] => [
+    { name: `dashboard-${account}`, account, route: "/dashboard", theme: "dark", viewport: POPUP_400, surface: "popup" },
+    { name: `receive-${account}`, account, route: "/receive", theme: "dark", viewport: POPUP_400, surface: "popup" },
+  ]),
+  { name: "dashboard-xverse-light", account: "xverse", route: "/dashboard", theme: "light", viewport: POPUP_400, surface: "popup" },
+  { name: "send-xverse-light", account: "xverse", route: "/send", theme: "light", viewport: POPUP_400, surface: "popup" },
+  { name: "settings-xverse", account: "xverse", route: "/settings", theme: "dark", viewport: POPUP_400, surface: "popup" },
+  { name: "history-failure", account: "native-email", route: "/history", theme: "dark", viewport: POPUP_400, surface: "popup", mode: { btcHistory: "fail" } },
+  { name: "dashboard-xverse-panel-narrow", account: "xverse", route: "/dashboard", theme: "dark", viewport: PANEL_NARROW, surface: "sidepanel" },
+  { name: "receive-xverse-panel-narrow", account: "xverse", route: "/receive", theme: "light", viewport: PANEL_NARROW, surface: "sidepanel" },
+  { name: "dashboard-xverse-panel-wide", account: "xverse", route: "/dashboard", theme: "light", viewport: PANEL_WIDE, surface: "sidepanel" },
+  { name: "onboarding-panel-narrow", account: null, route: "", theme: "dark", viewport: PANEL_NARROW, surface: "sidepanel", settleMs: 1600 },
+];
+
 interface CaptureResult {
   screen: string;
   theme: CanvasTheme;
@@ -49,6 +99,8 @@ interface CaptureResult {
   file?: string;
 }
 
+const DEFAULT_MODE: FixtureMode = { btcHistory: "ok" };
+
 async function resolveExtensionId(context: BrowserContext): Promise<string> {
   let [sw] = context.serviceWorkers();
   if (!sw) sw = await context.waitForEvent("serviceworker", { timeout: 30_000 });
@@ -56,50 +108,28 @@ async function resolveExtensionId(context: BrowserContext): Promise<string> {
   return new URL(sw.url()).host;
 }
 
-async function installDeterministicFixtures(context: BrowserContext): Promise<void> {
+async function installDeterministicFixtures(
+  context: BrowserContext,
+  currentMode: () => FixtureMode,
+): Promise<void> {
   await context.route("https://screenshots.arch.network/**", async (route) => {
-    const pathName = new URL(route.request().url()).pathname;
-    const json = (body: unknown) =>
-      route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
-
-    if (pathName.endsWith("/fee-estimates")) return json({ "1": 2, "3": 5, "6": 8 });
-    if (pathName.endsWith("/utxo")) {
-      return json([
-        {
-          txid: "11".repeat(32),
-          vout: 0,
-          value: 250_000,
-          status: { confirmed: true },
-        },
-      ]);
-    }
-    if (pathName.includes("/btc/address/")) {
-      return json({
-        chain_stats: { funded_txo_sum: 250_000, spent_txo_sum: 0 },
-        mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0 },
-      });
-    }
-    if (pathName.endsWith("/tokens")) return json({ tokens: [] });
-    if (pathName.includes("/transactions")) return json({ transactions: [] });
-    if (pathName.includes("/accounts/")) {
-      return json({
-        address: "11111111111111111111111111111111",
-        lamports_balance: 42_000_000_000,
-        transaction_count: 0,
-      });
-    }
-    return json({});
+    const { status, body } = fixtureResponse(new URL(route.request().url()).pathname, currentMode());
+    await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  await context.route("https://api.coingecko.com/**", async (route) => {
+    const { status, body } = coingeckoResponse();
+    await route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
   });
 }
 
 /** Reset extension storage, inject the seed for this screen, and reload. */
 async function primePage(
   page: Page,
-  baseUrl: string,
+  url: string,
   theme: CanvasTheme,
   seed: StorageSeed | undefined,
 ): Promise<void> {
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.goto(url, { waitUntil: "domcontentloaded" });
   const payload: StorageSeed = {
     local: { [THEME_STORAGE_KEY]: theme, ...(seed?.local ?? {}) },
     session: seed?.session ?? {},
@@ -121,21 +151,33 @@ async function isUnlockedShell(page: Page): Promise<boolean> {
   return page.evaluate(() => !!document.querySelector(".app-container"));
 }
 
-async function captureScreen(
+async function renderScreen(
+  page: Page,
+  url: string,
+  route: string,
+  theme: CanvasTheme,
+  seed: StorageSeed | undefined,
+  settleMs: number,
+): Promise<void> {
+  await primePage(page, url, theme, seed);
+  if (route) {
+    await page.evaluate((r) => {
+      window.location.hash = r;
+    }, route);
+  }
+  await page.waitForSelector("#root *", { timeout: 15_000 }).catch(() => {});
+  await page.waitForTimeout(settleMs);
+}
+
+async function captureListingScreen(
   page: Page,
   baseUrl: string,
   screen: ScreenDef,
   theme: CanvasTheme,
   seed: StorageSeed | undefined,
 ): Promise<CaptureResult> {
-  await primePage(page, baseUrl, theme, seed);
-  if (screen.route) {
-    await page.evaluate((r) => {
-      window.location.hash = r;
-    }, screen.route);
-  }
-  await page.waitForSelector("#root *", { timeout: 15_000 }).catch(() => {});
-  await page.waitForTimeout(screen.settleMs);
+  await page.setViewportSize(POPUP_400);
+  await renderScreen(page, baseUrl, screen.route, theme, seed, screen.settleMs);
 
   if (screen.requiresSeed && !(await isUnlockedShell(page))) {
     return {
@@ -153,21 +195,45 @@ async function captureScreen(
   return { screen: screen.name, theme, status: "captured", file };
 }
 
-test("capture Chrome Web Store listing screenshots", async () => {
+async function captureReview(
+  page: Page,
+  extensionOrigin: string,
+  capture: ReviewCapture,
+  seeds: Record<FixtureAccountId, StorageSeed>,
+  setMode: (mode: FixtureMode) => void,
+): Promise<CaptureResult> {
+  setMode({ ...DEFAULT_MODE, ...capture.mode });
+  await page.setViewportSize(capture.viewport);
+  const url = `${extensionOrigin}/${capture.surface}.html`;
+  const seed = capture.account ? seeds[capture.account] : undefined;
+  await renderScreen(page, url, capture.route, capture.theme, seed, capture.settleMs ?? 3200);
+  if (capture.account && !(await isUnlockedShell(page))) {
+    return { screen: capture.name, theme: capture.theme, status: "skipped", reason: "wallet did not unlock" };
+  }
+  const file = path.join(REVIEW_DIR, `${capture.name}.png`);
+  writeFileSync(file, await page.screenshot());
+  return { screen: capture.name, theme: capture.theme, status: "captured", file };
+}
+
+test("capture listing and review screenshots", async () => {
   test.skip(
     !existsSync(EXTENSION_DIR),
     `Built extension not found at ${EXTENSION_DIR}. Run "npm run build" first.`,
   );
 
-  mkdirSync(OUTPUT_DIR, { recursive: true });
+  mkdirSync(REVIEW_DIR, { recursive: true });
 
-  const deterministicSeed = await makeDeterministicWalletSeed();
+  const allAccounts = ACCOUNT_IDS.map((id) => FIXTURE_ACCOUNTS[id]);
+  const seeds = {} as Record<FixtureAccountId, StorageSeed>;
+  for (const id of ACCOUNT_IDS) {
+    seeds[id] = await makeDeterministicWalletSeed(allAccounts, String(FIXTURE_ACCOUNTS[id].id));
+  }
   const lockedSeed = await makeLockedKeystoreSeed();
 
   console.log("\n=== Arch Wallet screenshot harness ===");
   console.log(`Extension: ${EXTENSION_DIR}`);
   console.log(`Output:    ${OUTPUT_DIR}`);
-  console.log("Data:      deterministic synthetic wallet + intercepted fixtures");
+  console.log("Data:      deterministic synthetic wallets + intercepted fixtures");
 
   const userDataDir = mkdtempSync(path.join(tmpdir(), "arch-wallet-screenshots-"));
   const context = await chromium.launchPersistentContext(userDataDir, {
@@ -175,7 +241,7 @@ test("capture Chrome Web Store listing screenshots", async () => {
     // The new headless mode (channel "chromium") is required to load MV3
     // extensions headlessly; headed runs use the default bundled build.
     ...(HEADED ? {} : { channel: "chromium" }),
-    viewport: { width: 400, height: 600 },
+    viewport: POPUP_400,
     deviceScaleFactor: 2,
     args: [
       `--disable-extensions-except=${EXTENSION_DIR}`,
@@ -184,37 +250,35 @@ test("capture Chrome Web Store listing screenshots", async () => {
     ],
   });
 
+  let mode: FixtureMode = DEFAULT_MODE;
   const results: CaptureResult[] = [];
   try {
-    await installDeterministicFixtures(context);
+    await installDeterministicFixtures(context, () => mode);
     const extensionId = await resolveExtensionId(context);
-    const baseUrl = `chrome-extension://${extensionId}/popup.html`;
+    const extensionOrigin = `chrome-extension://${extensionId}`;
+    const baseUrl = `${extensionOrigin}/popup.html`;
     console.log(`Extension id: ${extensionId}\n`);
 
     const page = await context.newPage();
 
     for (const screen of SCREENS) {
-      const seed = screen.requiresSeed ? deterministicSeed : undefined;
-      if (screen.name === "unlock") {
-        // Unlock needs a sealed-but-locked keystore (no secret involved).
-        for (const theme of THEMES) {
-          results.push(
-            await captureScreen(page, baseUrl, screen, theme, lockedSeed),
-          );
-        }
-        continue;
-      }
+      const seed = screen.name === "unlock"
+        ? lockedSeed
+        : screen.requiresSeed ? seeds["native-email"] : undefined;
       for (const theme of THEMES) {
         try {
-          results.push(await captureScreen(page, baseUrl, screen, theme, seed));
+          results.push(await captureListingScreen(page, baseUrl, screen, theme, seed));
         } catch (err) {
-          results.push({
-            screen: screen.name,
-            theme,
-            status: "skipped",
-            reason: `error: ${(err as Error).message}`,
-          });
+          results.push({ screen: screen.name, theme, status: "skipped", reason: `error: ${(err as Error).message}` });
         }
+      }
+    }
+
+    for (const capture of REVIEW_CAPTURES) {
+      try {
+        results.push(await captureReview(page, extensionOrigin, capture, seeds, (m) => { mode = m; }));
+      } catch (err) {
+        results.push({ screen: capture.name, theme: capture.theme, status: "skipped", reason: `error: ${(err as Error).message}` });
       }
     }
   } finally {
@@ -229,7 +293,7 @@ test("capture Chrome Web Store listing screenshots", async () => {
   const captured = results.filter((r) => r.status === "captured");
   const skipped = results.filter((r) => r.status === "skipped");
   console.log(`\n--- Capture summary ---`);
-  for (const r of captured) console.log(`  [captured] ${r.screen} (${r.theme}) -> ${path.basename(r.file!)}`);
+  for (const r of captured) console.log(`  [captured] ${r.screen} (${r.theme}) -> ${path.relative(OUTPUT_DIR, r.file!)}`);
   for (const r of skipped) console.log(`  [skipped]  ${r.screen} (${r.theme}): ${r.reason}`);
   console.log(`\n${captured.length} captured, ${skipped.length} skipped.`);
   console.log(`Output: ${OUTPUT_DIR}\n`);

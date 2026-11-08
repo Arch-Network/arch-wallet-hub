@@ -66,6 +66,8 @@ export type AuthChallengeRow = {
    */
   wallet_provider: string | null;
   address: string | null;
+  /** Turnkey challenges only (migration 018): the one resource whose key must sign. */
+  resource_id: string | null;
 };
 
 export type SessionPrincipal = {
@@ -129,11 +131,11 @@ export async function createChallenge(
   });
   const res = await client.query<{ id: string }>(
     `
-      INSERT INTO auth_challenges (app_id, user_id, payload_hex, message, expires_at)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO auth_challenges (app_id, user_id, payload_hex, message, expires_at, resource_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id
     `,
-    [params.appId, params.userId, payloadHex, message, expiresAt.toISOString()],
+    [params.appId, params.userId, payloadHex, message, expiresAt.toISOString(), params.resourceId],
   );
   return {
     challengeId: res.rows[0]!.id,
@@ -275,7 +277,7 @@ async function markChallengeConsumed(
  * Returns null when the input cannot be interpreted as a secp256k1
  * pubkey of a known length.
  */
-function toXOnlyPubkeyHex(publicKeyHex: string): string | null {
+export function toXOnlyPubkeyHex(publicKeyHex: string): string | null {
   const clean = publicKeyHex.replace(/^0x/i, "").toLowerCase();
   if (!/^[0-9a-f]+$/.test(clean)) return null;
   if (clean.length === 64) return clean;
@@ -382,6 +384,21 @@ export async function mintSession(
   client: PoolClient,
   params: { challengeId: string; appId: string; userId: string },
 ): Promise<{ token: string; sessionId: string; expiresAt: string }> {
+  const minted = await mintSessionForUser(client, params);
+  await markChallengeConsumed(client, params.challengeId);
+  return minted;
+}
+
+/**
+ * Mint a session with no challenge to consume: for flows whose proof of
+ * control is something other than a signed Hub challenge -- an OIDC token
+ * Turnkey has just accepted for OAUTH_LOGIN, or an OTP code the inbox
+ * answered. The caller decides the proof; this only records the session.
+ */
+export async function mintSessionForUser(
+  client: PoolClient,
+  params: { appId: string; userId: string },
+): Promise<{ token: string; sessionId: string; expiresAt: string }> {
   const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
   const random = crypto.randomBytes(32).toString("base64url");
   const token = `${SESSION_TOKEN_PREFIX}${random}`;
@@ -394,7 +411,6 @@ export async function mintSession(
     `,
     [params.appId, params.userId, tokenHash, expiresAt.toISOString()],
   );
-  await markChallengeConsumed(client, params.challengeId);
   return {
     token,
     sessionId: res.rows[0]!.id,

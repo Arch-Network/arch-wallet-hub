@@ -1,4 +1,4 @@
-import { PubkeyUtil } from "@saturnbtcio/arch-sdk";
+import { PubkeyUtil } from "@arch-network/arch-sdk";
 
 import { POSITION_ACCOUNT_SIZE, TOKEN_PROGRAM_ID } from "@/lib/clamm/constants";
 import { hexToBase58 } from "@/lib/arch/base58";

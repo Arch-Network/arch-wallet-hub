@@ -23,6 +23,7 @@ import History from "../../src/pages/History/History";
 import Collectibles from "../../src/pages/Collectibles/Collectibles";
 import TokenList from "../../src/pages/TokenList/TokenList";
 import TokenDetail from "../../src/pages/TokenDetail/TokenDetail";
+import RuneDetail from "../../src/pages/RuneDetail/RuneDetail";
 import Approve from "../../src/pages/Approve/Approve";
 import Settings from "../../src/pages/Settings/Settings";
 import Recover from "../../src/pages/Recover/Recover";
@@ -65,12 +66,10 @@ function RouteRestorer() {
       return;
     }
 
-    // Recovery checkpoint takes priority over the saved last-route:
-    // if the user is in the middle of OTP verification and stepped
-    // away to read their email, we want the popup to land back on
-    // /recover (not /dashboard) when they reopen it. The checkpoint
-    // is short-lived (10 min TTL) so this won't strand users who
-    // simply abandoned recovery a while ago.
+    // Recovery checkpoint takes priority over the saved last-route.
+    // A closed window in the middle of the code, the wallet picker,
+    // or the password step (after the code was accepted) should land
+    // back on /recover. The checkpoint expires after 10 minutes.
     hasActiveRecoveryCheckpoint().then((hasCheckpoint) => {
       if (hasCheckpoint) {
         // Preserve any pinnedExternalUserId we encoded in the
@@ -292,7 +291,18 @@ function AppRoutes() {
       <SideNav network={state.network} />
       <div className="app-main">
         <SidePanelDefaultNotice openAs={state.openAs} onChanged={refresh} />
-        <Header account={activeAccount} network={state.network} networkStatus={networkStatus} onLock={lock} onNetworkChange={setNetwork} />
+        <Header
+          account={activeAccount}
+          accounts={state.accounts}
+          network={state.network}
+          networkStatus={networkStatus}
+          onLock={lock}
+          onNetworkChange={setNetwork}
+          onSelectAccount={async (id) => {
+            await walletStore.setActiveAccount(id);
+            await refresh();
+          }}
+        />
         <ConnectionBanner status={networkStatus} onRetry={retryApi} showHubWarning={showHubWarning} />
         <div className={bodyClass}>
           <RouteRestorer />
@@ -300,6 +310,7 @@ function AppRoutes() {
           <Routes>
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/send" element={<Send networkStatus={networkStatus} />} />
+            <Route path="/rune/:runeId" element={<RuneDetail />} />
             <Route path="/send-rune/:runeId" element={<SendRune />} />
             <Route path="/send-inscription/:inscriptionId" element={<SendInscription />} />
             <Route path="/receive" element={<Receive />} />

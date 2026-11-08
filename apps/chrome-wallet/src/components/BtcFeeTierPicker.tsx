@@ -61,12 +61,12 @@ export default function BtcFeeTierPicker({
               padding: "10px 12px",
               borderRadius: 8,
               border: selected
-                ? "1px solid var(--accent, #d8a05c)"
-                : "1px solid var(--border)",
+                ? "1px solid var(--color-primary)"
+                : "1px solid var(--border-field)",
               background: selected
-                ? "rgba(216, 160, 92, 0.08)"
-                : "var(--bg-elevated, transparent)",
-              color: "var(--text)",
+                ? "var(--color-primary-tint)"
+                : "var(--surface-card)",
+              color: "var(--text-primary)",
               cursor: disabled ? "not-allowed" : "pointer",
               textAlign: "left",
               opacity: disabled ? 0.6 : 1,

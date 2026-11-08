@@ -17,12 +17,11 @@
  */
 
 import { getIndexer } from "./indexer";
-import { engineSymbolForMint, tokenUsdValue, tracksBtcPrice, usdPerUnitForSymbol } from "./token-usd";
+import { engineSymbolForMint, tokenUsdValue, usdPerUnitForSymbol } from "./token-usd";
 import type { NetworkId } from "../state/types";
 
 export interface PriceEntry {
   usd: number;
-  change24hPct?: number;
   updatedAt: number;
 }
 
@@ -39,17 +38,22 @@ export interface PortfolioValuation {
   btcUsd: number;
   archUsd: number;
   tokenUsd: number;
+  /** Sum of priced positions only; see `btcPriced` / `archPriced` / `tokenBreakdown` for gaps. */
   totalUsd: number;
-  /** Weighted 24h percent change across priced positions. Null if no priced positions. */
-  change24hPct: number | null;
+  btcPriced: boolean;
+  archPriced: boolean;
+  /** Time of the oldest price used, or null when nothing was priced. */
+  pricedAt: number | null;
+  /** True when a price used is past the cache TTL (the refresh failed). */
+  stale: boolean;
   /** Per-mint USD breakdown (mints with no price get 0 here). */
   tokenBreakdown: Record<string, { usd: number; rawAmount: string; decimals: number; unpriced: boolean }>;
 }
 
 const CACHE_KEY = "arch_wallet_price_cache_v1";
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const BTC_LAMPORTS = 1_0000_0000n;
-const ARCH_LAMPORTS = 1_0000_0000n;
+const SATS_PER_BTC = 100_000_000;
+const LAMPORTS_PER_ARCH = 1_000_000_000;
 
 interface CacheShape {
   btc?: PriceEntry;
@@ -79,16 +83,16 @@ function isFresh(entry: PriceEntry | undefined): boolean {
 }
 
 async function fetchCoinGecko(ids: string[]): Promise<Record<string, PriceEntry>> {
-  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd&include_24hr_change=true`;
+  const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(",")}&vs_currencies=usd`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`CoinGecko ${res.status}`);
-  const json = (await res.json()) as Record<string, { usd?: number; usd_24h_change?: number }>;
+  const json = (await res.json()) as Record<string, { usd?: number }>;
   const now = Date.now();
   const out: Record<string, PriceEntry> = {};
   for (const id of ids) {
     const row = json[id];
     if (!row?.usd) continue;
-    out[id] = { usd: row.usd, change24hPct: row.usd_24h_change, updatedAt: now };
+    out[id] = { usd: row.usd, updatedAt: now };
   }
   return out;
 }
@@ -125,18 +129,11 @@ export async function getBtcArchPrices(): Promise<{ btc: PriceEntry | null; arch
 export async function valuatePortfolio(input: PortfolioInput): Promise<PortfolioValuation> {
   const { btc, arch } = await getBtcArchPrices();
 
-  const btcWhole = Number(BigInt(input.btcSats) / 1n) / Number(BTC_LAMPORTS);
-  const btcUsd = btc ? btcWhole * btc.usd : 0;
-
-  const archLamportsBig = BigInt(input.archLamports);
-  const archWhole = Number(archLamportsBig) / Number(ARCH_LAMPORTS);
-  const archUsd = arch ? archWhole * arch.usd : 0;
+  const btcUsd = btc ? (input.btcSats / SATS_PER_BTC) * btc.usd : 0;
+  const archUsd = arch ? (Number(BigInt(input.archLamports)) / LAMPORTS_PER_ARCH) * arch.usd : 0;
 
   const tokenBreakdown: PortfolioValuation["tokenBreakdown"] = {};
   let tokenUsd = 0;
-  // BTC-pegged tokens move with BTC, so they carry its 24h change into
-  // the weighted average; dollar-pegged ones contribute 0.
-  let btcPeggedTokenUsd = 0;
 
   for (const t of input.tokens) {
     const raw = String(t.rawAmount);
@@ -150,22 +147,20 @@ export async function valuatePortfolio(input: PortfolioInput): Promise<Portfolio
     }
     tokenBreakdown[t.mint] = { usd, rawAmount: raw, decimals: t.decimals, unpriced: false };
     tokenUsd += usd;
-    if (symbol && tracksBtcPrice(symbol)) btcPeggedTokenUsd += usd;
   }
 
-  const change24Numerator =
-    (btc?.change24hPct ?? 0) * (btcUsd + btcPeggedTokenUsd) +
-    (arch?.change24hPct ?? 0) * archUsd;
-  const change24Denominator = btcUsd + archUsd + tokenUsd;
-  const change24hPct =
-    change24Denominator > 0 ? change24Numerator / change24Denominator : null;
+  const used = [btc, arch].filter((e): e is PriceEntry => e !== null);
+  const pricedAt = used.length > 0 ? Math.min(...used.map((e) => e.updatedAt)) : null;
 
   return {
     btcUsd,
     archUsd,
     tokenUsd,
     totalUsd: btcUsd + archUsd + tokenUsd,
-    change24hPct,
+    btcPriced: btc !== null,
+    archPriced: arch !== null,
+    pricedAt,
+    stale: used.some((e) => !isFresh(e)),
     tokenBreakdown,
   };
 }

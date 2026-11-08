@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useWallet } from "../../hooks/useWallet";
-import { getIndexer } from "../../utils/indexer";
-import { enrichIndexerToken } from "../../utils/enrich-token";
+import { getIndexer, isIndexerRateLimitError } from "../../utils/indexer";
+import { enrichIndexerToken, isNftToken } from "../../utils/enrich-token";
 import { addressForms } from "../../utils/arch-tx-summary";
 import { normalizeArchStatus } from "../../utils/tx-status";
 import CopyButton from "../../components/CopyButton";
 import ArchIcon from "../../components/ArchIcon";
 import { TokenIcon } from "../../components/TokenIcon";
 import { ActivityRow, type ActivityRowTx } from "../../components/ActivityRow";
+import { NftImagePreview } from "../../components/NftImagePreview";
 
 interface TokenDetailData {
   mint: string;
@@ -386,7 +387,7 @@ export default function TokenDetail() {
     })();
 
     return () => { cancelled = true; };
-  }, [activeAccount, mint, state.network]);
+  }, [activeAccount?.id, activeAccount?.archAddress, activeAccount?.btcAddress, mint, state.network]);
 
   useEffect(() => {
     if (!token?.tokenAccount) {
@@ -448,6 +449,10 @@ export default function TokenDetail() {
                 instructionsList = Array.isArray(ixs) ? ixs : [];
               } catch (e) {
                 console.debug("[TokenDetail] getTransactionTree failed", tx.txid, e);
+                if (isIndexerRateLimitError(e)) {
+                  instructionsList = [];
+                  return instructionsList;
+                }
                 // Fall back to the flat endpoint so direct transfers
                 // still resolve when the indexer's /tree route is
                 // unavailable (older indexer versions, or transient
@@ -589,6 +594,8 @@ export default function TokenDetail() {
     );
   }
 
+  const isNft = isNftToken(token);
+
   return (
     <>
       <div className="token-list-header">
@@ -600,12 +607,17 @@ export default function TokenDetail() {
         <div style={{ width: 60 }} />
       </div>
 
+      <div className="token-detail-container">
       <div className="token-detail-grid">
       <div className="token-detail-summary">
       <div className="token-detail-hero">
-        <div className="token-detail-icon">
-          <TokenIcon image={token.image} symbol={token.symbol || "?"} size={48} />
-        </div>
+        {isNft && token.image ? (
+          <NftImagePreview image={token.image} name={token.name} />
+        ) : (
+          <div className="token-detail-icon">
+            <TokenIcon image={token.image} symbol={token.symbol || "?"} size={48} />
+          </div>
+        )}
         <div className="token-detail-name">{token.name}</div>
         <div className="token-detail-balance">
           {token.uiAmount}
@@ -709,6 +721,7 @@ export default function TokenDetail() {
           </div>
         </div>
       )}
+      </div>
       </div>
       </div>
     </>

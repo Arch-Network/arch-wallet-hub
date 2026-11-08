@@ -13,6 +13,10 @@
  * shim so the call sites stay one-liners.
  */
 
+import { readPopupBounds } from "./popup-bounds";
+import { suppressWalletAutoClose } from "./wallet-autoclose";
+import { rememberWalletWindowId } from "./wallet-window";
+
 const SIDE_PANEL_DATA_ATTR = "sidepanel";
 
 /**
@@ -41,30 +45,56 @@ export function isInSidePanel(): boolean {
  * windows are not dismissed on focus loss — they survive the trip
  * through the external wallet's UI and can re-render at /dashboard.
  *
- * Detection: `chrome.windows.getCurrent()` reports `type: "popup"` for
- * windows we opened via `chrome.windows.create({ type: "popup" })`, and
- * `type: "normal"` for the regular browser windows that host both the
- * toolbar popup view and the side panel. Side-panel callers should
- * gate on `isInSidePanel()` instead.
+ * Detection: Chrome reports `type: "popup"` for windows we opened via
+ * `chrome.windows.create({ type: "popup" })`. Brave often reports those
+ * same windows as `type: "normal"`, which is also what hosts the
+ * toolbar bubble — so we additionally treat a document with a real tab
+ * (`chrome.tabs.getCurrent()`) as already rehosted. Side-panel callers
+ * should gate on `isInSidePanel()` instead.
  */
 export async function isInStandalonePopupWindow(): Promise<boolean> {
   try {
-    if (typeof chrome === "undefined" || !chrome.windows?.getCurrent) return false;
+    if (typeof chrome === "undefined" || !chrome.windows?.getCurrent) {
+      return !isInSidePanel() && (await survivesFocusLoss());
+    }
     const win = await chrome.windows.getCurrent();
-    return win?.type === "popup";
+    if (win?.type === "popup" || win?.type === "panel") return true;
+    // Brave (and some Chromium forks) report `windows.create({ type:
+    // "popup" })` as `type: "normal"`. The toolbar bubble has no tab,
+    // so `tabs.getCurrent()` is undefined there; a real window does.
+    if (isInSidePanel()) return false;
+    return await survivesFocusLoss();
   } catch {
     return false;
   }
 }
 
 /**
- * Default size for the popup window we spawn from the side panel. Kept
- * in sync with the standalone approve window dimensions used by
- * `background.ts::openApprovalPopup` so the user gets a familiar
- * popup shape regardless of which flow opened it.
+ * Whether this surface survives another window taking focus. The toolbar
+ * popup doesn't: Chrome closes it, and `chrome.tabs.getCurrent()` is
+ * undefined there. Standalone popup windows and full-page tabs are tabs;
+ * the side panel isn't a tab but stays open.
  */
-const DEFAULT_POPUP_WIDTH = 400;
-const DEFAULT_POPUP_HEIGHT = 640;
+export async function survivesFocusLoss(): Promise<boolean> {
+  if (isInSidePanel()) return true;
+  try {
+    return Boolean(await chrome.tabs?.getCurrent?.());
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * External signers (Xverse, UniSat) take focus and would close the
+ * toolbar popup mid-signature. Reopen `path` in a standalone window
+ * instead; send forms restore their saved fields there. Returns true
+ * when it reopened, so the caller stops.
+ */
+export async function reopenForExternalSigning(path: string): Promise<boolean> {
+  if (await survivesFocusLoss()) return false;
+  await openWalletPopup({ path });
+  return true;
+}
 
 export type OpenWalletPopupOpts = {
   /** Path within the popup, e.g. `/swap` or `/dashboard`. */
@@ -96,6 +126,8 @@ export function buildPopupUrl(opts: OpenWalletPopupOpts): string {
 
 /**
  * Spawn a standalone popup window pointed at the given hash path.
+ * The window opens at the size the user last resized one of these
+ * windows to, unless the caller passes an explicit width and height.
  * Throws if the `chrome.windows` API is unavailable (e.g. when running
  * inside a regular tab during a unit test).
  */
@@ -105,11 +137,18 @@ export async function openWalletPopup(opts: OpenWalletPopupOpts): Promise<void> 
       "Popup window unavailable: chrome.windows API is missing from this context.",
     );
   }
-  await chrome.windows.create({
+  // The new window can blur for a moment while it takes focus. Don't
+  // treat that as the user clicking away.
+  await suppressWalletAutoClose();
+  const bounds = await readPopupBounds();
+  const win = await chrome.windows.create({
     url: buildPopupUrl(opts),
     type: "popup",
-    width: opts.width ?? DEFAULT_POPUP_WIDTH,
-    height: opts.height ?? DEFAULT_POPUP_HEIGHT,
+    width: opts.width ?? bounds.width,
+    height: opts.height ?? bounds.height,
     focused: true,
   });
+  if (win?.id != null && !opts.path.includes("/approve/")) {
+    await rememberWalletWindowId(win.id);
+  }
 }

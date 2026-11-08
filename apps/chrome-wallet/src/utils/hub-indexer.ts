@@ -35,6 +35,7 @@ import type {
   BtcAddressInscriptionsResponse,
   BtcAddressRunesResponse,
   BtcAddressRuneTransactionsResponse,
+  BtcRuneMetadata,
   BtcAddressSummary,
   BtcBlockResponse,
   BtcFeeEstimates,
@@ -44,6 +45,7 @@ import type {
   IndexerNetwork
 } from "./indexer";
 import { IndexerApiKeyRejectedError } from "./indexer";
+import { fetchWithHubRateLimit } from "./hub-rate-limit";
 
 export interface ArchHubIndexerClientOptions {
   /** Hub base URL, e.g. `https://hub.arch.network`. No trailing slash. */
@@ -141,9 +143,13 @@ export class ArchHubIndexerClient {
     );
   }
 
+  private fetchHub(url: string, init: RequestInit): Promise<Response> {
+    return fetchWithHubRateLimit(this.fetchImpl, url, init);
+  }
+
   private async getJson<T>(path: string): Promise<T> {
     this.assertAuthAvailable();
-    const res = await this.fetchImpl(this.url(path), { headers: this.headers() });
+    const res = await this.fetchHub(this.url(path), { headers: this.headers() });
     if (!res.ok) await this.raiseForStatus(path, res, "GET");
     return (await res.json()) as T;
   }
@@ -151,7 +157,7 @@ export class ArchHubIndexerClient {
   private async postJson<T>(path: string, body: unknown): Promise<T> {
     this.assertAuthAvailable();
     const headers = this.headers({ "content-type": "application/json" });
-    const res = await this.fetchImpl(this.url(path), {
+    const res = await this.fetchHub(this.url(path), {
       method: "POST",
       headers,
       body: JSON.stringify(body)
@@ -271,6 +277,10 @@ export class ArchHubIndexerClient {
     );
   }
 
+  getBtcRune(rune: string): Promise<BtcRuneMetadata> {
+    return this.getJson(`/btc/runes/${encodeURIComponent(rune)}`);
+  }
+
   getBtcInscription(id: string): Promise<BtcInscriptionSummary> {
     return this.getJson(`/btc/inscriptions/${encodeURIComponent(id)}`);
   }
@@ -280,7 +290,7 @@ export class ArchHubIndexerClient {
     // binary -- we hand the ArrayBuffer back unwrapped so the caller
     // can build a Blob + object URL once per inscription id.
     const url = this.url(`/btc/inscriptions/${encodeURIComponent(id)}/content`);
-    const res = await this.fetchImpl(url, { headers: this.headers() });
+    const res = await this.fetchHub(url, { headers: this.headers() });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`Hub inscription content error ${res.status}: ${text}`);

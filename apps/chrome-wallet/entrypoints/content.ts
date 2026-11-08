@@ -14,6 +14,8 @@
  *     after the 120s blanket timeout.
  */
 
+import { BRIDGE_CHANNEL, BRIDGE_TIMEOUT_MS, type BridgeResponse } from "../src/wallets/bridge/protocol";
+
 const CHANNEL = "arch-wallet-provider";
 const HEARTBEAT_MS = 15_000;
 
@@ -70,7 +72,7 @@ export default defineContentScript({
     window.addEventListener("message", (event) => {
       if (event.source !== window) return;
       if (event.origin !== pageOrigin) return;
-      if (event.data?.channel === "arch-wallet-external-wallet") {
+      if (event.data?.channel === BRIDGE_CHANNEL) {
         if (event.data?.direction !== "to-content") return;
         const resolve = externalRequests.get(event.data.id);
         if (!resolve) return;
@@ -115,21 +117,31 @@ export default defineContentScript({
           externalRequests.set(id, sendResponse);
           window.postMessage(
             {
-              channel: "arch-wallet-external-wallet",
+              channel: BRIDGE_CHANNEL,
               direction: "to-page",
               id,
               request: message.request,
             },
             pageOrigin,
           );
+          const timeoutMs =
+            BRIDGE_TIMEOUT_MS[message.request?.method as keyof typeof BRIDGE_TIMEOUT_MS] ?? 60_000;
           window.setTimeout(() => {
             const resolve = externalRequests.get(id);
             if (!resolve) return;
             externalRequests.delete(id);
-            resolve({ success: false, error: "External wallet request timed out" });
-          }, 30_000);
+            resolve({
+              success: false,
+              code: "TIMEOUT",
+              error: "The wallet didn't respond in time. If its window is still open, finish there and try again.",
+            } satisfies BridgeResponse);
+          }, timeoutMs);
         } catch (err: any) {
-          sendResponse({ success: false, error: err?.message || "External wallet bridge failed" });
+          sendResponse({
+            success: false,
+            code: "PROVIDER_ERROR",
+            error: err?.message || "External wallet bridge failed",
+          } satisfies BridgeResponse);
         }
       })();
       return true;

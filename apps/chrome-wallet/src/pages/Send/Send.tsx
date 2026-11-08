@@ -15,7 +15,8 @@ import {
 } from "../../utils/sdk";
 import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
-import { reEncodeTaprootAddress, isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
+import { isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
+import { identityAddress } from "../../state/account-addresses";
 import QrScanner from "../../components/QrScanner";
 import BackBar from "../../components/BackBar";
 import { buildUnsignedPsbt, finalizeSignedPsbt } from "../../utils/btc-psbt";
@@ -33,7 +34,7 @@ import {
   type FeeTierId,
 } from "../../utils/btc-fee-tiers";
 import BtcFeeTierPicker from "../../components/BtcFeeTierPicker";
-import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, truncateAddress } from "../../utils/format";
+import { formatBtc, formatArch, formatTokenAmount, formatArchId, formatBtcUsd, formatUsd, truncateAddress } from "../../utils/format";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { enrichIndexerTokens } from "../../utils/enrich-token";
 import { walletStore } from "../../state/wallet-store";
@@ -42,11 +43,21 @@ import {
   loadSendForm,
   saveSendForm,
 } from "../../state/send-form-session";
-import { isExternalAccount, isWatchAccount, type WalletAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount, type NetworkId, type WalletAccount } from "../../state/types";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
+import { isUserRejection } from "../../wallets/bridge/errors";
+import { signerInfo } from "../../wallets/capabilities";
+import { reopenForExternalSigning } from "../../utils/runtime-context";
+import { broadcastOrReconcile } from "../../utils/btc-broadcast";
 import ArchIcon from "../../components/ArchIcon";
+import { SignerBadge } from "../../components/AccountSwitcher";
 import { TokenIcon } from "../../components/TokenIcon";
 import { buildSessionSigner } from "../../utils/hub-session";
+import { reconcileHubResourceId } from "../../utils/hub-resource";
+import { hubIntentFee, verifyHubSigningRequest } from "../../utils/hub-signing-request-verify";
+import { feeChargedTo } from "../../utils/arch-fee";
+import { parseU64DecimalString } from "../../utils/u64-amount";
+import { buildSendHubAction } from "../../utils/send-hub-action";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
   EmailSessionNeededError,
@@ -58,6 +69,7 @@ import {
   rawTokenAmountToInput,
   usdInputToBtc,
 } from "../../utils/send-amounts";
+import { displayAmountUsd, tokenUsdValue, usdPerUnitForMint } from "../../utils/token-usd";
 import { isArchName, isAnsEnabledForNetwork, resolveName, type NameResolution } from "../../utils/name-service";
 
 type AssetType = "btc" | "arch" | "apl";
@@ -155,6 +167,37 @@ function btcUsdSubtitle(sats: number, btcUsd: number | null): string | null {
   return formatBtcUsd(sats, btcUsd);
 }
 
+/** Fiat value of a held APL balance, when the mint has a price. */
+function tokenBalanceUsdLabel(
+  token: TokenHolding,
+  network: NetworkId,
+  btcUsd: number | null,
+): string | null {
+  const usd = tokenUsdValue(
+    token.rawAmount,
+    token.decimals,
+    usdPerUnitForMint(token.mint, network, btcUsd),
+  );
+  return usd != null ? formatUsd(usd) : null;
+}
+
+/**
+ * Fiat value of the amount the user is typing. aBTC tracks BTC/USD;
+ * dollar-pegged mints sit at $1. Unpriced mints return null.
+ */
+function tokenSendUsdLabel(
+  token: TokenHolding,
+  displayAmount: string,
+  network: NetworkId,
+  btcUsd: number | null,
+): string | null {
+  const usd = displayAmountUsd(
+    displayAmount,
+    usdPerUnitForMint(token.mint, network, btcUsd),
+  );
+  return usd != null ? formatUsd(usd) : null;
+}
+
 export default function Send({ networkStatus }: SendProps) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -226,6 +269,10 @@ export default function Send({ networkStatus }: SendProps) {
     };
   }, [asset, recipient, state.network]);
 
+  // BTC sends spend from the Taproot identity address only, so that's
+  // the balance shown here (an Xverse payment balance is not).
+  const btcIdentity = activeAccount ? identityAddress(activeAccount, state.network) ?? "" : "";
+
   useEffect(() => {
     if (!activeAccount) return;
     const timeout = setTimeout(() => {
@@ -238,7 +285,7 @@ export default function Send({ networkStatus }: SendProps) {
       const archAddr =
         activeAccount.archAddress ||
         (activeAccount.publicKeyHex ? deriveArchAccountAddress(activeAccount.publicKeyHex) : "");
-      const btcAddr = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
+      const btcAddr = btcIdentity;
 
       try {
         const o = await fetchWalletOverview(indexer, {
@@ -311,7 +358,14 @@ export default function Send({ networkStatus }: SendProps) {
     };
     loadBalances();
     return () => clearTimeout(timeout);
-  }, [activeAccount, state.network]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.btcAddress,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    btcIdentity,
+    state.network,
+  ]);
 
   // ── Form-state persistence (chrome.storage.session) ───────────
   //
@@ -349,7 +403,7 @@ export default function Send({ networkStatus }: SendProps) {
         setStep(2);
       }
     })();
-  }, [activeAccount, presetAsset, state.network]);
+  }, [activeAccount?.id, presetAsset, state.network]);
 
   // Phase 2 of the restore: tokensHeld loads async; once it does,
   // resolve the persisted APL mint to its TokenHolding so the form
@@ -386,7 +440,7 @@ export default function Send({ networkStatus }: SendProps) {
       accountId: activeAccount.id,
       network: state.network,
     });
-  }, [step, asset, selectedToken, recipient, amount, activeAccount, state.network]);
+  }, [step, asset, selectedToken?.mint, recipient, amount, activeAccount?.id, state.network]);
 
   // Drop the parked form once a transaction broadcasts. We don't
   // want a successful send to leave its inputs lingering and
@@ -497,7 +551,10 @@ export default function Send({ networkStatus }: SendProps) {
           throw new Error(`Amount too small (minimum ${recipientDust} sats for this address type)`);
         }
 
-        const fromAddress = reEncodeTaprootAddress(activeAccount.btcAddress, state.network);
+        const fromAddress = identityAddress(activeAccount, state.network);
+        if (!fromAddress) {
+          throw new Error("This account has no Bitcoin address on this network. Switch networks to send from it.");
+        }
 
         const indexer = await getIndexer();
 
@@ -601,7 +658,7 @@ export default function Send({ networkStatus }: SendProps) {
       const rawTxHex = finalizeSignedPsbt(signedPsbtBase64, network);
 
       const indexer = await getIndexer();
-      const txid = await indexer.broadcastBtc(rawTxHex);
+      const txid = await broadcastOrReconcile(indexer, rawTxHex);
       setTxResult({ txid, rawTxid: txid });
       void addRecentRecipient({ address: recipient.trim(), asset: "btc", network: state.network });
 
@@ -617,10 +674,12 @@ export default function Send({ networkStatus }: SendProps) {
       setStep(4);
     } catch (err: any) {
       setError(err.message || "Transaction signing failed");
-      void notifyTxFailed({
-        title: "Bitcoin transfer failed",
-        message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
-      });
+      if (!isUserRejection(err)) {
+        void notifyTxFailed({
+          title: "Bitcoin transfer failed",
+          message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
+        });
+      }
     } finally {
       setLoading(false);
       setSignStatus(null);
@@ -629,6 +688,7 @@ export default function Send({ networkStatus }: SendProps) {
 
   const handleSubmit = useCallback(async () => {
     if (!activeAccount) return;
+    if (isExternalAccount(activeAccount) && (await reopenForExternalSigning("/send"))) return;
 
     if (asset === "btc") {
       return handleBtcSign();
@@ -660,6 +720,7 @@ export default function Send({ networkStatus }: SendProps) {
       await ensureSigningSessionForAccount(activeAccount);
       const client = await getClient();
       const externalUserId = await getExternalUserId();
+      await reconcileHubResourceId(activeAccount);
       client.setSessionSigner(
         buildSessionSigner(activeAccount, externalUserId, state.network),
       );
@@ -669,21 +730,18 @@ export default function Send({ networkStatus }: SendProps) {
       setSignStatus("Preparing signing request…");
 
       const submitViaHub = async (): Promise<string> => {
-        const action =
+        const { action, intent } = buildSendHubAction(
           asset === "apl" && selectedToken
             ? {
-                type: "arch.token_transfer" as const,
+                asset: "apl",
                 mintAddress: selectedToken.mint,
                 toAddress: reviewRecipient,
                 amount: aplRawAmount!.toString(),
                 sourceTokenAccount: selectedToken.tokenAccount,
                 decimals: selectedToken.decimals,
               }
-            : {
-                type: "arch.transfer" as const,
-                toAddress: reviewRecipient,
-                lamports: archLamports,
-              };
+            : { asset: "arch", toAddress: reviewRecipient, lamports: archLamports },
+        );
 
         const sr = await client.createSigningRequest({
           externalUserId,
@@ -696,9 +754,15 @@ export default function Send({ networkStatus }: SendProps) {
             : { kind: "turnkey", resourceId: activeAccount.turnkeyResourceId },
           action,
         });
+        const verified = verifyHubSigningRequest({
+          intent,
+          account: activeAccount,
+          payloadToSign: sr.payloadToSign,
+          display: sr.display,
+        });
 
         if (isExternalAccount(activeAccount)) {
-          const psbtBase64 = (sr.payloadToSign as any)?.psbtBase64;
+          const psbtBase64 = verified.psbtBase64;
           if (!psbtBase64) throw new Error("No PSBT available for external wallet signing");
           return await signWithExternalWallet(sr.signingRequestId, psbtBase64);
         }
@@ -707,9 +771,7 @@ export default function Send({ networkStatus }: SendProps) {
         // The session-stamped signer takes care of whichever bootstrap
         // (WebAuthn or OTP) opened the IndexedDB session; the Hub
         // never sees the signing key.
-        const payloadHex = (sr.payloadToSign as any)?.payloadHex;
-        if (!payloadHex) throw new Error("No payload available for signing");
-        return await signWithPasskey(sr.signingRequestId, payloadHex);
+        return await signWithPasskey(sr.signingRequestId, verified.payloadHex);
       };
 
       let txid: string;
@@ -782,10 +844,12 @@ export default function Send({ networkStatus }: SendProps) {
         return;
       }
       setError(formatWalletHubError(err, "Transaction failed"));
-      void notifyTxFailed({
-        title: asset === "apl" ? "Token transfer failed" : "ARCH transfer failed",
-        message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
-      });
+      if (!isUserRejection(err)) {
+        void notifyTxFailed({
+          title: asset === "apl" ? "Token transfer failed" : "ARCH transfer failed",
+          message: err?.message ? String(err.message).slice(0, 200) : "Broadcast failed",
+        });
+      }
     } finally {
       setLoading(false);
       setSignStatus(null);
@@ -923,25 +987,29 @@ export default function Send({ networkStatus }: SendProps) {
               </div>
             </div>
           </button>
-          {tokensHeld.map((tk) => (
-            <button
-              key={tk.mint}
-              className="card send-asset-card"
-              onClick={() => { setSelectedToken(tk); setAsset("apl"); setStep(2); }}
-            >
-              <div className="asset-row send-asset-row">
-                {renderAssetIcon("apl", tk)}
-                <div className="asset-info">
-                  <div className="asset-name">{tk.name || "APL Token"}</div>
-                  <div className="asset-sub">{tk.symbol || "APL Token"}</div>
+          {tokensHeld.map((tk) => {
+            const balanceUsd = tokenBalanceUsdLabel(tk, state.network, btcUsd);
+            return (
+              <button
+                key={tk.mint}
+                className="card send-asset-card"
+                onClick={() => { setSelectedToken(tk); setAsset("apl"); setStep(2); }}
+              >
+                <div className="asset-row send-asset-row">
+                  {renderAssetIcon("apl", tk)}
+                  <div className="asset-info">
+                    <div className="asset-name">{tk.name || "APL Token"}</div>
+                    <div className="asset-sub">{tk.symbol || "APL Token"}</div>
+                  </div>
+                  <div className="send-asset-balance-wrap">
+                    <div className="send-asset-balance-label">Available</div>
+                    <div className="send-asset-balance">{tk.uiAmount} {tk.symbol ? tk.symbol : ""}</div>
+                    {balanceUsd && <div className="send-asset-usd">{balanceUsd}</div>}
+                  </div>
                 </div>
-                <div className="send-asset-balance-wrap">
-                  <div className="send-asset-balance-label">Available</div>
-                  <div className="send-asset-balance">{tk.uiAmount} {tk.symbol ? tk.symbol : ""}</div>
-                </div>
-              </div>
-            </button>
-          ))}
+              </button>
+            );
+          })}
           {tokensHeld.length === 0 && (
             <div className="card send-asset-card send-asset-card-disabled">
               <div className="asset-row send-asset-row">
@@ -1016,6 +1084,9 @@ export default function Send({ networkStatus }: SendProps) {
         : asset === "apl" && selectedToken
           ? `${selectedToken.uiAmount} ${selectedToken.symbol || ""}`.trim()
           : "—";
+    const availableUsd = asset === "apl" && selectedToken
+      ? tokenBalanceUsdLabel(selectedToken, state.network, btcUsd)
+      : null;
     const showMax = (asset === "btc" && btcLoaded && btcSpendableSats > 0)
       || (asset === "arch" && archBalance && Number(archBalance) > 0)
       || (
@@ -1031,7 +1102,16 @@ export default function Send({ networkStatus }: SendProps) {
           setBtcUsdAmount(btcInputToUsd(maxBtc, btcUsd));
         }
       } else if (asset === "arch" && archBalance) {
-        setAmount((Number(archBalance) / 1e9).toFixed(4));
+        // The signer set (and so the fee) doesn't depend on the recipient.
+        const archAddress = activeAccount?.archAddress;
+        const fee = feeChargedTo(
+          hubIntentFee({ type: "arch.transfer", toAddress: archAddress ?? "", lamports: "0" }, archAddress),
+          archAddress,
+        );
+        const balance = parseU64DecimalString(archBalance);
+        if (fee !== null && balance !== null) {
+          setAmount(rawTokenAmountToInput(String(balance > fee ? balance - fee : 0n), 9));
+        }
       } else if (asset === "apl" && selectedToken) {
         setAmount(
           rawTokenAmountToInput(selectedToken.rawAmount, selectedToken.decimals),
@@ -1067,6 +1147,15 @@ export default function Send({ networkStatus }: SendProps) {
           : btcUsdLine
             ? `≈ ${btcUsdLine}`
             : null;
+    const tokenAmountUsd =
+      asset === "apl" && selectedToken
+        ? tokenSendUsdLabel(selectedToken, amount, state.network, btcUsd)
+        : null;
+    const amountHint = asset === "btc"
+      ? btcAmountHint
+      : tokenAmountUsd
+        ? `≈ ${tokenAmountUsd}`
+        : null;
 
     // Recent recipients for the current asset / network / mint context.
     // The store keeps them MRU-sorted; we cap to 6 here to keep the chip
@@ -1100,6 +1189,7 @@ export default function Send({ networkStatus }: SendProps) {
           <div className="asset-summary-chip-balance">
             <div className="asset-summary-chip-balance-label">Available</div>
             <div className="asset-summary-chip-balance-value">{availableValue}</div>
+            {availableUsd && <div className="send-asset-usd">{availableUsd}</div>}
           </div>
         </div>
 
@@ -1234,7 +1324,11 @@ export default function Send({ networkStatus }: SendProps) {
               inputMode="decimal"
             />
             <span className="form-field-suffix">
-              {asset === "btc" && btcAmountMode === "usd" ? "USD" : meta.unit}
+              {asset === "btc" && btcAmountMode === "usd"
+                ? "USD"
+                : asset === "apl"
+                  ? (selectedToken?.symbol || meta.unit)
+                  : meta.unit}
             </span>
             {asset === "btc" && btcUsd !== null && (
               <button
@@ -1261,8 +1355,8 @@ export default function Send({ networkStatus }: SendProps) {
               </button>
             )}
           </div>
-          {btcAmountHint && (
-            <div className="form-field-hint">{btcAmountHint}</div>
+          {amountHint && (
+            <div className="form-field-hint">{amountHint}</div>
           )}
         </div>
 
@@ -1310,13 +1404,19 @@ export default function Send({ networkStatus }: SendProps) {
         : selectedToken
           ? `${amount} ${selectedToken.symbol || "APL"}`
           : amount;
+    const tokenAmountUsd =
+      asset === "apl" && selectedToken
+        ? tokenSendUsdLabel(selectedToken, amount, state.network, btcUsd)
+        : null;
     const amountSubline = asset === "arch" && Number(amount) > 0
       ? `${Math.round((Number(amount) || 0) * 1e9).toLocaleString()} lamports`
       : asset === "btc" && amountSats > 0
         ? `${amountSats.toLocaleString()} sats`
-        : asset === "apl" && aplRawAmount !== null
-          ? `${aplRawAmount.toLocaleString()} raw units`
-          : null;
+        : tokenAmountUsd
+          ? `≈ ${tokenAmountUsd}`
+          : asset === "apl" && aplRawAmount !== null
+            ? `${aplRawAmount.toLocaleString()} raw units`
+            : null;
 
     return (
       <div className="send-form-shell">
@@ -1344,6 +1444,23 @@ export default function Send({ networkStatus }: SendProps) {
               </span>
             </div>
           </div>
+          <div className="review-row">
+            <div className="review-row-label">Network</div>
+            <div className="review-row-value">
+              <span className="review-row-primary">
+                {asset === "btc" ? "Bitcoin" : "Arch"} {isTestnet ? (asset === "btc" ? "Testnet4" : "Testnet") : "Mainnet"}
+              </span>
+            </div>
+          </div>
+          {activeAccount && (
+            <div className="review-row">
+              <div className="review-row-label">Signed by</div>
+              <div className="review-row-value">
+                <span className="review-row-primary">{activeAccount.label}</span>
+                <span className="review-row-sub"><SignerBadge account={activeAccount} /></span>
+              </div>
+            </div>
+          )}
           <div className="review-row">
             <div className="review-row-label">To</div>
             <div className="review-row-value">
@@ -1424,7 +1541,11 @@ export default function Send({ networkStatus }: SendProps) {
           onClick={handleSubmit}
           disabled={loading}
         >
-          {loading ? (signStatus || "Signing…") : "Confirm & Sign"}
+          {loading
+            ? (signStatus || "Signing…")
+            : activeAccount && signerInfo(activeAccount).external
+              ? signerInfo(activeAccount).approveLabel
+              : "Confirm & Sign"}
         </button>
       </div>
     );

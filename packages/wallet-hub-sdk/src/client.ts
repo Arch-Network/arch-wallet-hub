@@ -506,6 +506,9 @@ export class WalletHubClient {
     }, { enforced: true });
   }
 
+  /**
+   * @deprecated The Hub no longer signs server-side; this route was removed and now returns 404. Sign `payloadToSign.payloadHex` client-side and call {@link submitSigningRequest}.
+   */
   async signWithTurnkey(id: string, body: { externalUserId: string }): Promise<SubmitSigningResponse> {
     // Defence-in-depth: this route always requires a session bound to
     // the user. Surface a clear error early when we can neither use a

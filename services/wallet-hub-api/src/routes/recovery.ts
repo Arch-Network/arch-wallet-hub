@@ -43,7 +43,7 @@
  *     │  returns HPKE-encrypted credentialBundle
  *     ├─ mark challenge consumed
  *     └─ return { credentialBundle, organizationId, walletId,
- *                  defaultAddress, defaultPublicKeyHex,
+ *                  resourceId, defaultAddress, defaultPublicKeyHex,
  *                  externalUserId, authMethod, expiresInSeconds }
  *
  * Security posture:
@@ -70,6 +70,7 @@ import { timingSafeEqual } from "node:crypto";
 import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
+import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
 import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
 import {
   computeCandidateToken,
@@ -82,12 +83,21 @@ import {
   markRecoveryChallengeStatus,
   maskAddress,
   maskEmail,
-  resetRecoveryAttempts,
+  otpUserIdentifier,
   updateRecoveryChallengeCandidates,
   type RecoveryCandidate
 } from "../db/recovery.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { auditEvent } from "../audit/audit.js";
+import {
+  buildReviewInitResponse,
+  buildReviewVerifyResponse,
+  getReviewLoginConfig,
+  isReviewChallengeId,
+  isReviewEmail,
+  reviewCandidateTokenMatches,
+  reviewOtpMatches
+} from "../recovery/reviewLogin.js";
 import {
   classifyRecoveryChallengeAvailability,
   fingerprintOtpId,
@@ -122,7 +132,7 @@ const VERIFY_MAX_ATTEMPTS = 5;
 // no longer verifies. To keep this from spiralling we (a) cap total OTP
 // sends per challenge candidate -- initial send plus resends -- and (b)
 // require a cooldown between resends to reduce overlapping in-flight
-// OTPs. The send cap also bounds the verify-attempt reset on resend.
+// OTPs. Verify attempts are counted across all sends of a challenge.
 const MAX_OTP_SENDS = 5;
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -219,6 +229,8 @@ const VerifyResponse = Type.Object({
    *  CREATE_AUTHENTICATORS with the recovered API key. */
   rootUserId: Type.Union([Type.String(), Type.Null()]),
   walletId: Type.Union([Type.String(), Type.Null()]),
+  /** Hub resource primary key. Distinct from `walletId`. */
+  resourceId: Type.String(),
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   externalUserId: Type.Union([Type.String(), Type.Null()]),
@@ -235,6 +247,8 @@ const VerifyResponse = Type.Object({
 });
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
+  setDefaultRateLimitGroup(server, "recovery");
+
   server.post(
     "/recovery/email/init",
     {
@@ -253,6 +267,38 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       const db = getDbPool();
       const body = request.body as typeof InitBody.static;
       const email = body.email.trim();
+
+      // App-store review login: the configured test email bypasses the
+      // normal candidate lookup + Turnkey OTP and returns a synthetic
+      // challenge for the single pre-provisioned dummy mainnet wallet.
+      const reviewCfg = getReviewLoginConfig(server.config);
+      if (reviewCfg && isReviewEmail(reviewCfg, email)) {
+        const response = buildReviewInitResponse(reviewCfg, {
+          emailMasked: maskEmail(email),
+          ttlMs: CHALLENGE_TTL_MS
+        });
+        request.log.info(
+          { appId, challengeId: response.challengeId },
+          "recovery.init.review_login"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.init",
+            entityType: "recovery_challenge",
+            entityId: response.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reviewLogin: true, candidateCount: 1 },
+            outcome: "succeeded"
+          })
+        );
+        return response;
+      }
+
       const emailHash = hashEmailForRateLimit(email);
 
       // Hard rate-limit by hashed email. We don't tell the caller they
@@ -349,6 +395,12 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           // the parent org is a multi-user root org, so attempting
           // to recover into it would just fail. Skip silently.
           if (row.organization_id === rootOrgId) continue;
+          // A social-login wallet (migration 020) has no OTP bootstrap of
+          // its own yet: its session opens through OAUTH_LOGIN
+          // (routes/authOAuth.ts). Offering it here would surface it as a
+          // passkey wallet the code could never open. Linking an email
+          // code to it is the identity-link flow, not recovery.
+          if (row.auth_method === "oauth") continue;
           // Default NULL auth_method (legacy rows predating migration
           // 011) to "passkey" -- there were no email wallets before
           // that migration shipped.
@@ -552,6 +604,38 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
       const db = getDbPool();
       const body = request.body as typeof StartBody.static;
       const email = body.email.trim();
+
+      // App-store review login: a synthetic review challenge never hit
+      // Turnkey, so "starting" it is a no-op that just confirms the
+      // email + candidate token and echoes the masked email.
+      const reviewCfg = getReviewLoginConfig(server.config);
+      if (reviewCfg && isReviewChallengeId(body.challengeId)) {
+        if (
+          !isReviewEmail(reviewCfg, email) ||
+          !reviewCandidateTokenMatches(body.challengeId, body.candidateToken)
+        ) {
+          return reply.badRequest("Recovery email does not match this challenge");
+        }
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.otp_start",
+            entityType: "recovery_challenge",
+            entityId: body.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: { reviewLogin: true },
+            outcome: "succeeded"
+          })
+        );
+        return {
+          emailMasked: maskEmail(email),
+          expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS).toISOString()
+        };
+      }
 
       const challenge = await withDbTransaction(db, (client) =>
         getRecoveryChallenge(client, { appId, id: body.challengeId })
@@ -774,10 +858,17 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
 
       try {
         const turnkey = getTurnkeyClient();
-        const { otpId, activityId } = await turnkey.initOtpAuth({
+        const {
+          otpId,
+          activityId,
+          submitElapsedMs,
+          pollElapsedMs,
+          pollAttempts
+        } = await turnkey.initOtpAuth({
           organizationId: candidate.organizationId,
           userId: candidate.rootUserId,
           contact: email,
+          userIdentifier: otpUserIdentifier(appId, email),
           emailCustomization: buildOtpEmailCustomization(server.config)
         });
         const turnkeyElapsedMs = Date.now() - startRequestedAtMs;
@@ -786,9 +877,9 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
         // resends on the same challenge cannot lose each other's otpId /
         // otpStartCount. Re-resolving the candidate from the locked row
         // (rather than the pre-Turnkey snapshot) makes last-write-wins
-        // deterministic. On a resend, reset the verify attempt counter in
-        // the SAME tx so the fresh code gets a clean attempt budget; the
-        // send cap above prevents this from granting unlimited verifies.
+        // deterministic. The verify attempt counter is NOT reset on a
+        // resend: VERIFY_MAX_ATTEMPTS is a budget for the whole challenge,
+        // not per code.
         const updatedCandidate = await withDbTransaction(db, async (client) => {
           const locked = await getRecoveryChallengeForUpdate(client, {
             appId,
@@ -808,9 +899,6 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             id: challenge.id,
             candidates
           });
-          if (isResend) {
-            await resetRecoveryAttempts(client, { id: challenge.id });
-          }
           await auditEvent({
             client,
             appId,
@@ -824,8 +912,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
             payloadJson: {
               candidateResourceId: candidate.resourceId,
               isResend,
-              otpStartCount: nextCandidate.otpStartCount,
-              attemptsReset: isResend
+              otpStartCount: nextCandidate.otpStartCount
             },
             outcome: "succeeded"
           });
@@ -843,6 +930,9 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
               ? { previousOtpIdHash: fingerprintOtpId(previousOtpId) }
               : {}),
             turnkeyElapsedMs,
+            turnkeySubmitElapsedMs: submitElapsedMs,
+            turnkeyPollElapsedMs: pollElapsedMs,
+            turnkeyPollAttempts: pollAttempts,
             turnkeyActivityId: activityId
           },
           "recovery.otp_start.succeeded"
@@ -907,6 +997,74 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
 
       const db = getDbPool();
       const body = request.body as typeof VerifyBody.static;
+
+      // App-store review login: validate the static code and return a
+      // server-produced credential bundle for the dummy mainnet wallet.
+      // No DB challenge, no Turnkey OTP_AUTH.
+      const reviewCfg = getReviewLoginConfig(server.config);
+      if (reviewCfg && isReviewChallengeId(body.challengeId)) {
+        if (!reviewCandidateTokenMatches(body.challengeId, body.candidateToken)) {
+          return reply.badRequest("Unknown candidateToken");
+        }
+        if (!reviewOtpMatches(reviewCfg, body.code)) {
+          request.log.warn(
+            { appId, challengeId: body.challengeId },
+            "recovery.verify.review_login_bad_code"
+          );
+          await withDbTransaction(db, (client) =>
+            auditEvent({
+              client,
+              appId,
+              requestId: request.id,
+              userId: null,
+              eventType: "recovery.verify",
+              entityType: "recovery_challenge",
+              entityId: body.challengeId,
+              turnkeyActivityId: null,
+              turnkeyRequestId: null,
+              payloadJson: { reviewLogin: true, reason: "invalid_code" },
+              outcome: "failed"
+            })
+          );
+          return reply.unauthorized("Invalid or expired code");
+        }
+        let response;
+        try {
+          response = buildReviewVerifyResponse(reviewCfg, {
+            ephemeralPublicKey: body.ephemeralPublicKey,
+            expiresInSeconds: Number(RECOVERY_API_KEY_TTL_SECONDS)
+          });
+        } catch (err: any) {
+          request.log.warn(
+            { appId, challengeId: body.challengeId, err: String(err?.message ?? err) },
+            "recovery.verify.review_login_bad_target_key"
+          );
+          return reply.badRequest("Invalid ephemeral public key");
+        }
+        request.log.info(
+          { appId, challengeId: body.challengeId },
+          "recovery.verify.review_login"
+        );
+        await withDbTransaction(db, (client) =>
+          auditEvent({
+            client,
+            appId,
+            requestId: request.id,
+            userId: null,
+            eventType: "recovery.verify",
+            entityType: "recovery_challenge",
+            entityId: body.challengeId,
+            turnkeyActivityId: null,
+            turnkeyRequestId: null,
+            payloadJson: {
+              reviewLogin: true,
+              organizationId: reviewCfg.organizationId
+            },
+            outcome: "succeeded"
+          })
+        );
+        return response;
+      }
 
       const challenge = await withDbTransaction(db, (client) =>
         getRecoveryChallenge(client, { appId, id: body.challengeId })
@@ -1295,6 +1453,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           organizationId: candidate.organizationId,
           rootUserId: candidate.rootUserId,
           walletId: candidate.walletId,
+          resourceId: candidate.resourceId,
           defaultAddress: candidate.defaultAddress,
           defaultPublicKeyHex: candidate.defaultPublicKeyHex,
           externalUserId: candidate.externalUserId,

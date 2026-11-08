@@ -17,9 +17,8 @@
  *
  *   4. On Confirm, build a `WalletDigestSigner` from the active
  *      account, wrap with `makeSwapSigner`, and hand to
- *      `signAndSendTransaction` with `signaturePlacement: "prepend"`
- *      (PropAMM transactions ship with the program's signature
- *      pre-populated; the user's signature has to land in slot 0).
+ *      `executeSwapQuote` (CLAMM submits to the chain; PropAMM hands the
+ *      user-signed transaction back to the RFQ server, which countersigns).
  *
  *   5. On success, link to the explorer; on failure surface a clean
  *      error banner without unrendering the form.
@@ -29,7 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   applySlippage,
-  signAndSendTransaction,
+  executeSwapQuote,
   type TokenInfo,
   type TokenSymbol,
 } from "@arch/swap-engine";
@@ -37,11 +36,12 @@ import {
 import { useWallet } from "../../hooks/useWallet";
 import { useArchOnboarding } from "../../hooks/useArchOnboarding";
 import { isExternalAccount, isWatchAccount } from "../../state/types";
+import { signerInfo } from "../../wallets/capabilities";
 import { getIndexer } from "../../utils/indexer";
 import { formatSwapAmount } from "../../utils/format";
 import { applyDisplayOverridesByMintHex, lookupKnownToken } from "../../utils/known-tokens";
 import { usdPerUnitForSymbol } from "../../utils/token-usd";
-import { isInSidePanel, openWalletPopup } from "../../utils/runtime-context";
+import { isInSidePanel, openWalletPopup, survivesFocusLoss } from "../../utils/runtime-context";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import {
@@ -315,7 +315,15 @@ export default function Swap() {
     return () => {
       cancelled = true;
     };
-  }, [activeAccount, state.network, availableSymbols, config, balanceRefreshKey]);
+  }, [
+    activeAccount?.id,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    state.network,
+    availableSymbols,
+    config,
+    balanceRefreshKey,
+  ]);
 
   // ── quote ─────────────────────────────────────────────────────────
   const sellAmount = useMemo(() => {
@@ -365,7 +373,6 @@ export default function Swap() {
   const validation: SwapValidation = useMemo(() => {
     if (!activeAccount) return { kind: "no-account" };
     if (isWatchAccount(activeAccount)) return { kind: "watch-only" };
-    if (isExternalAccount(activeAccount)) return { kind: "external-unsupported" };
     // Block swap submission until the on-chain account + ATAs exist.
     // The OnboardingPanel above gives the user the path to fix this; the
     // submit button label points them at it so the page is self-documenting.
@@ -481,7 +488,9 @@ export default function Swap() {
     // Side panel → defer signing to a fresh popup window where
     // WebAuthn actually works. We hand off the current intent via URL
     // params so the popup reconstructs the form the user just confirmed.
-    if (sidePanelMode) {
+    // A linked wallet in the toolbar popup hands off too: its signing
+    // window takes focus, which closes the toolbar popup.
+    if (sidePanelMode || (isExternalAccount(activeAccount) && !(await survivesFocusLoss()))) {
       setError(null);
       setSuccessTxid(null);
       try {
@@ -514,13 +523,9 @@ export default function Swap() {
 
     try {
       await ensureSwapSigningSession(activeAccount);
-      const signer = swapTransactionSignerForAccount(activeAccount);
-      const txHash = await signAndSendTransaction(quote.runtimeTx, signer, {
+      const signer = swapTransactionSignerForAccount(activeAccount, state.network);
+      const txHash = await executeSwapQuote(config, quote, signer, {
         label: SWAP_LABEL,
-        // PropAMM/CLAMM transactions arrive with the program's
-        // signatures pre-populated. The user's signature has to land
-        // in slot 0 and the rest must be preserved.
-        signaturePlacement: "prepend",
         onStatus: (s) => setStatusMsg(s),
       });
       setSuccessTxid(txHash);
@@ -535,6 +540,7 @@ export default function Swap() {
   }, [
     validation,
     activeAccount,
+    config,
     quote,
     refreshQuote,
     sidePanelMode,
@@ -627,14 +633,15 @@ export default function Swap() {
           phase={onboarding.phase}
           error={onboarding.error}
           isInitializing={onboarding.isInitializing}
+          network={state.network}
           onInitialize={handleInitialize}
         />
 
         {resumedFromSidePanel && (
           <div className="swap-resume-notice" role="status">
-            Resumed from the side panel. Review the quote below and confirm
-            to sign — the popup window can show the passkey prompt that the
-            side panel can't.
+            {activeAccount && isExternalAccount(activeAccount)
+              ? `Review the quote below and confirm. This window stays open while you approve in ${signerInfo(activeAccount).label}.`
+              : "Resumed from the side panel. Review the quote below and confirm to sign — the popup window can show the passkey prompt that the side panel can't."}
           </div>
         )}
 

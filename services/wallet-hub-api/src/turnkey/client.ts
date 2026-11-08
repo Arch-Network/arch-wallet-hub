@@ -1,5 +1,10 @@
 import { ApiKeyStamper } from "@turnkey/api-key-stamper";
 import { TurnkeyClient } from "@turnkey/http";
+import {
+  extractOtpId,
+  waitForActivity,
+  type TurnkeyActivityLike
+} from "./activity.js";
 
 type CreateBitcoinWalletParams = {
   walletName: string;
@@ -94,35 +99,6 @@ type CreateApiKeyForUserParams = {
   expirationSeconds?: string;
 };
 
-type SignRawPayloadParams = {
-  signWith: string; // wallet account address, private key address, or privateKeyId
-  payload: string;
-  encoding: "PAYLOAD_ENCODING_TEXT_UTF8" | "PAYLOAD_ENCODING_HEXADECIMAL";
-  hashFunction: "HASH_FUNCTION_NO_OP" | "HASH_FUNCTION_SHA256";
-  organizationId?: string; // Optional: override for sub-organization signing
-};
-
-type SignRawPayloadResult = {
-  r: string;
-  s: string;
-  v: string;
-  activityId: string;
-};
-
-type SignBitcoinTransactionParams = {
-  signWith: string;
-  /**
-   * Unsigned Bitcoin transaction representation expected by Turnkey.
-   * In practice this is commonly a PSBT (base64) for segwit/taproot signing.
-   */
-  unsignedTransaction: string;
-};
-
-type SignBitcoinTransactionResult = {
-  signedTransaction: string;
-  activityId: string;
-};
-
 export type GetWalletAccountsParams = {
   walletId: string;
 };
@@ -136,14 +112,6 @@ export type WalletAccount = {
 
 function nowMs() {
   return Date.now().toString();
-}
-
-function looksLikeBase64(s: string) {
-  return /^[A-Za-z0-9+/=]+$/.test(s) && s.length % 4 === 0;
-}
-
-async function sleep(ms: number) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class TurnkeyService {
@@ -169,32 +137,36 @@ export class TurnkeyService {
     return await this.client.getWhoami({ organizationId: this.organizationId });
   }
 
-  private async pollActivity(activityId: string, organizationId?: string) {
-    // Keep polling conservative for Phase 0; callers should expect < a few seconds.
-    const maxAttempts = 60;
-    const delayMs = 500;
-    const orgId = organizationId ?? this.organizationId;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const res = await this.client.getActivity({
-        organizationId: orgId,
-        activityId
-      });
-
-      const activity = res.activity;
-      if (
-        activity.status === "ACTIVITY_STATUS_COMPLETED" ||
-        activity.status === "ACTIVITY_STATUS_FAILED" ||
-        activity.status === "ACTIVITY_STATUS_REJECTED" ||
-        activity.status === "ACTIVITY_STATUS_CONSENSUS_NEEDED"
-      ) {
-        return activity;
+  private settleActivity(
+    activityId: string,
+    organizationId?: string,
+    initial?: TurnkeyActivityLike
+  ) {
+    return waitForActivity({
+      activityId,
+      organizationId: organizationId ?? initial?.organizationId ?? this.organizationId,
+      initial,
+      getActivity: async ({ activityId: id, organizationId: orgId }) => {
+        const res = await this.client.getActivity({
+          organizationId: orgId,
+          activityId: id
+        });
+        return res.activity;
       }
+    });
+  }
 
-      await sleep(delayMs);
-    }
-
-    throw new Error(`Turnkey activity polling timed out: ${activityId}`);
+  private async pollActivity(
+    activityId: string,
+    organizationId?: string,
+    initial?: TurnkeyActivityLike
+  ): Promise<any> {
+    const { activity } = await this.settleActivity(
+      activityId,
+      organizationId,
+      initial
+    );
+    return activity;
   }
 
   async createBitcoinWallet(
@@ -219,7 +191,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
 
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey createWallet did not complete: ${activityId}`);
@@ -277,7 +249,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey createSubOrganization did not complete: ${activityId}`);
     }
@@ -353,7 +325,7 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(
         `Turnkey createSubOrganization (email) did not complete: ${activityId}`,
@@ -391,6 +363,136 @@ export class TurnkeyService {
     };
   }
 
+  /**
+   * Social login sign-up: a sub-organization whose root user's only
+   * credential is an OIDC identity (`oauthProviders`), plus the wallet.
+   * Turnkey verifies `oidcToken` in the enclave and stores its
+   * `iss` / `sub` / `aud` as the identity; the token itself is not kept.
+   * No API key, no authenticator: every later session comes through
+   * OAUTH_LOGIN, stamped by the Hub's parent key, which can open a session
+   * for the user but never sign for them.
+   *
+   * V7 is the first CREATE_SUB_ORGANIZATION shape whose root user params
+   * carry `oauthProviders`; the result is read from whichever versioned
+   * result Turnkey answers with, as the V4 path does.
+   */
+  async createSubOrganizationWithOAuthWallet(params: {
+    subOrganizationName: string;
+    rootUser: { userName: string; userEmail?: string };
+    provider: { providerName: string; oidcToken: string };
+    wallet: {
+      walletName: string;
+      addressFormat: CreateBitcoinWalletParams["addressFormat"];
+      path: string;
+    };
+  }): Promise<CreateSubOrganizationWithWalletResult> {
+    const res = await (this.client as any).createSubOrganization({
+      type: "ACTIVITY_TYPE_CREATE_SUB_ORGANIZATION_V7",
+      timestampMs: nowMs(),
+      organizationId: this.organizationId,
+      parameters: {
+        subOrganizationName: params.subOrganizationName,
+        rootUsers: [
+          {
+            userName: params.rootUser.userName,
+            ...(params.rootUser.userEmail ? { userEmail: params.rootUser.userEmail } : {}),
+            apiKeys: [],
+            authenticators: [],
+            oauthProviders: [
+              {
+                providerName: params.provider.providerName,
+                oidcToken: params.provider.oidcToken,
+              },
+            ],
+          },
+        ],
+        rootQuorumThreshold: 1,
+        wallet: {
+          walletName: params.wallet.walletName,
+          accounts: [
+            {
+              curve: "CURVE_SECP256K1",
+              pathFormat: "PATH_FORMAT_BIP32",
+              path: params.wallet.path,
+              addressFormat: params.wallet.addressFormat,
+            },
+          ],
+        },
+      },
+    });
+
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId, undefined, res.activity);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey createSubOrganization (oauth) did not complete: ${activityId}`);
+    }
+    const result =
+      (activity.result as any).createSubOrganizationResultV7 ??
+      (activity.result as any).createSubOrganizationResultV6 ??
+      (activity.result as any).createSubOrganizationResultV5 ??
+      (activity.result as any).createSubOrganizationResultV4 ??
+      null;
+    if (!result?.subOrganizationId) {
+      throw new Error("Turnkey createSubOrganization (oauth) did not return subOrganizationId");
+    }
+    const walletId = result.wallet?.walletId;
+    const addresses = result.wallet?.addresses ?? [];
+    if (!walletId) throw new Error("Turnkey createSubOrganization (oauth) did not return walletId");
+    const rootUserId = Array.isArray(result.rootUserIds) ? (result.rootUserIds[0] ?? null) : null;
+    return { subOrganizationId: result.subOrganizationId, rootUserId, walletId, addresses, activityId };
+  }
+
+  /**
+   * Social login sign-in: register `publicKey` (the browser's compressed
+   * P-256 session key) as a login API key on the user's sub-organization,
+   * on the strength of an OIDC token whose `nonce` is sha256(publicKey).
+   * Stamped by the Hub's parent key. The returned session JWT is Turnkey's
+   * own; our clients hold the private half of `publicKey`, which is all
+   * they need to stamp activities, so it is passed back only for
+   * diagnostics.
+   */
+  async oauthLogin(params: {
+    organizationId: string;
+    oidcToken: string;
+    publicKey: string;
+    expirationSeconds: string;
+    invalidateExisting?: boolean;
+  }): Promise<{ session: string | null; activityId: string }> {
+    const res = await (this.client as any).oauthLogin({
+      type: "ACTIVITY_TYPE_OAUTH_LOGIN",
+      timestampMs: nowMs(),
+      organizationId: params.organizationId,
+      parameters: {
+        oidcToken: params.oidcToken,
+        publicKey: params.publicKey,
+        expirationSeconds: params.expirationSeconds,
+        ...(params.invalidateExisting !== undefined ? { invalidateExisting: params.invalidateExisting } : {}),
+      },
+    });
+    const activityId = res.activity.id;
+    const activity = await this.pollActivity(activityId, params.organizationId, res.activity);
+    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
+      throw new Error(`Turnkey oauthLogin did not complete: ${activityId}`);
+    }
+    const session = (activity.result as any)?.oauthLoginResult?.session;
+    return { session: typeof session === "string" ? session : null, activityId };
+  }
+
+  /**
+   * Sub-organizations under the Hub's parent org whose registered OAuth
+   * provider matches the token's `iss` / `sub` / `aud`. The Hub's own
+   * `user_identities` is the primary index; this is the belt-and-braces
+   * lookup that backfills it when a row is missing.
+   */
+  async getSubOrgIdsByOidcToken(params: { oidcToken: string }): Promise<string[]> {
+    const res = await (this.client as any).getSubOrgIds({
+      organizationId: this.organizationId,
+      filterType: "OIDC_TOKEN",
+      filterValue: params.oidcToken,
+    });
+    return Array.isArray(res?.organizationIds) ? res.organizationIds : [];
+  }
+
   async createApiKeyForUser(params: CreateApiKeyForUserParams): Promise<{ apiKeyIds: string[]; activityId: string }> {
     const res = await (this.client as any).createApiKeys({
       type: "ACTIVITY_TYPE_CREATE_API_KEYS_V2",
@@ -410,7 +512,11 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
+    const activity = await this.pollActivity(
+      activityId,
+      params.organizationId,
+      res.activity
+    );
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey createApiKeys did not complete: ${activityId}`);
     }
@@ -435,8 +541,16 @@ export class TurnkeyService {
     organizationId: string;
     userId: string;
     contact: string;
+    userIdentifier: string;
     emailCustomization?: Record<string, unknown>;
-  }): Promise<{ otpId: string; activityId: string }> {
+  }): Promise<{
+    otpId: string;
+    activityId: string;
+    submitElapsedMs: number;
+    pollElapsedMs: number;
+    pollAttempts: number;
+  }> {
+    const submitStartedAt = Date.now();
     const res = await (this.client as any).initOtpAuth({
       type: "ACTIVITY_TYPE_INIT_OTP_AUTH",
       timestampMs: nowMs(),
@@ -445,20 +559,28 @@ export class TurnkeyService {
         otpType: "OTP_TYPE_EMAIL",
         contact: params.contact,
         userId: params.userId,
+        userIdentifier: params.userIdentifier,
         ...(params.emailCustomization
           ? { emailCustomization: params.emailCustomization }
           : {})
       }
     });
+    const submitElapsedMs = Date.now() - submitStartedAt;
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, params.organizationId);
+    const pollStartedAt = Date.now();
+    const { activity, pollAttempts } = await this.settleActivity(
+      activityId,
+      params.organizationId,
+      res.activity
+    );
+    const pollElapsedMs = Date.now() - pollStartedAt;
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey initOtpAuth did not complete: ${activityId}`);
     }
-    const otpId = (activity.result as any)?.initOtpAuthResult?.otpId;
+    const otpId = extractOtpId(activity);
     if (!otpId) throw new Error("Turnkey initOtpAuth did not return otpId");
-    return { otpId, activityId };
+    return { otpId, activityId, submitElapsedMs, pollElapsedMs, pollAttempts };
   }
 
   /**
@@ -501,7 +623,11 @@ export class TurnkeyService {
     });
 
     const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, params.organizationId);
+    const activity = await this.pollActivity(
+      activityId,
+      params.organizationId,
+      res.activity
+    );
     if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
       throw new Error(`Turnkey otpAuth did not complete: ${activityId}`);
     }
@@ -514,78 +640,6 @@ export class TurnkeyService {
     return { credentialBundle, apiKeyId, activityId };
   }
 
-  async signRawPayload(
-    params: SignRawPayloadParams
-  ): Promise<SignRawPayloadResult> {
-    const targetOrgId = params.organizationId ?? this.organizationId;
-    const res = await this.client.signRawPayload({
-      type: "ACTIVITY_TYPE_SIGN_RAW_PAYLOAD_V2",
-      timestampMs: nowMs(),
-      organizationId: targetOrgId,
-      parameters: {
-        signWith: params.signWith,
-        payload: params.payload,
-        encoding: params.encoding,
-        hashFunction: params.hashFunction
-      }
-    });
-
-    const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId, targetOrgId);
-
-    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
-      throw new Error(`Turnky signRawPayload did not complete: ${activityId}`);
-    }
-
-    const sig = activity.result.signRawPayloadResult;
-    if (!sig) {
-      throw new Error("Turnkey signRawPayload did not return a signature");
-    }
-
-    return { ...sig, activityId };
-  }
-
-  async signBitcoinTransaction(
-    params: SignBitcoinTransactionParams
-  ): Promise<SignBitcoinTransactionResult> {
-    // Turnkey expects `unsignedTransaction` as hex for Bitcoin tx signing.
-    // For our flows we commonly pass PSBT base64; normalize it to hex and then
-    // re-encode the signed artifact back to base64 so downstream code can parse it.
-    const inputWasBase64 = looksLikeBase64(params.unsignedTransaction);
-    const unsignedHex = inputWasBase64
-      ? Buffer.from(params.unsignedTransaction, "base64").toString("hex")
-      : params.unsignedTransaction;
-
-    const res = await this.client.signTransaction({
-      type: "ACTIVITY_TYPE_SIGN_TRANSACTION_V2",
-      timestampMs: nowMs(),
-      organizationId: this.organizationId,
-      parameters: {
-        signWith: params.signWith,
-        unsignedTransaction: unsignedHex,
-        type: "TRANSACTION_TYPE_BITCOIN"
-      }
-    });
-
-    const activityId = res.activity.id;
-    const activity = await this.pollActivity(activityId);
-
-    if (activity.status !== "ACTIVITY_STATUS_COMPLETED") {
-      throw new Error(`Turnkey signTransaction did not complete: ${activityId}`);
-    }
-
-    const signedTransaction = activity.result.signTransactionResult?.signedTransaction;
-    if (!signedTransaction) {
-      throw new Error("Turnkey signTransaction did not return signedTransaction");
-    }
-
-    const out = inputWasBase64
-      ? Buffer.from(signedTransaction, "hex").toString("base64")
-      : signedTransaction;
-
-    return { signedTransaction: out, activityId };
-  }
-
   async getWalletAccounts(params: GetWalletAccountsParams): Promise<{ accounts: WalletAccount[] }> {
     const res = await this.client.getWalletAccounts({
       organizationId: this.organizationId,
@@ -594,6 +648,13 @@ export class TurnkeyService {
     } as any);
 
     return { accounts: (res as any).accounts ?? [] };
+  }
+
+  async getWalletsForOrganization(params: {
+    organizationId: string;
+  }): Promise<{ wallets: { walletId: string }[] }> {
+    const res = await this.client.getWallets({ organizationId: params.organizationId } as any);
+    return { wallets: (res as any).wallets ?? [] };
   }
 
   async getWalletAccountsForOrganization(params: {

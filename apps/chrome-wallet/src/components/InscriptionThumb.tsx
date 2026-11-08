@@ -62,7 +62,7 @@ export function InscriptionThumb({ indexer, summary, size = 56 }: InscriptionThu
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    background: "var(--surface-2, #1f2230)",
+    background: "var(--surface-subtle)",
     color: "var(--text-muted, #9097a8)",
     fontFamily: "var(--font-mono, monospace)",
     fontSize: 10,

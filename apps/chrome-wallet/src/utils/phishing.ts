@@ -71,12 +71,19 @@ export const PHISHING_HOST_BLOCKLIST: ReadonlySet<string> = new Set<string>([
  * DO NOT add general Bitcoin infrastructure (block explorers,
  * Lightning nodes, etc.) -- only direct user-facing dapp surfaces
  * where confusion with the canonical brand is a real risk.
+ *
+ * First-party `*.arch.network` hosts are also allowlisted (see
+ * `isFirstPartyArchHost`) so official properties that differ by a
+ * character (`id` vs `ide`) do not warn against each other.
  */
 export const TRUSTED_HOST_LIST: readonly string[] = [
   "arch.network",
+  "www.arch.network",
   "hub.arch.network",
   "explorer.arch.network",
   "id.arch.network",
+  "ide.arch.network",
+  "wallet.arch.network",
 ];
 
 /**
@@ -256,13 +263,26 @@ interface LookalikeMatch {
 }
 
 /**
+ * Official Arch DNS. Attackers cannot register these without
+ * controlling Arch's zone, so they are never scored as lookalikes
+ * of each other. Suffix-match, not a substring: `arch.network.evil.com`
+ * must still be compared.
+ */
+function isFirstPartyArchHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "arch.network" || h.endsWith(".arch.network");
+}
+
+/**
  * Find the closest trusted hostname (by normalized edit distance)
- * within `cap` edits, if any. The trusted host *itself* is excluded
- * by comparing original (pre-normalization) hostnames -- otherwise
- * a visual-identical impostor like "arсh.network" (Cyrillic с)
- * would normalize to "arch.network", match itself, and escape
- * detection. Distance 0 between *different* original hostnames is
- * the strongest possible lookalike signal.
+ * within `cap` edits, if any. The visiting host is excluded when it
+ * is first-party Arch DNS or itself on the trusted allowlist --
+ * otherwise `ide.arch.network` (1 char from `id.arch.network`) would
+ * warn against a sibling official property. A visual-identical
+ * impostor like "arсh.network" (Cyrillic с) is *not* allowlisted
+ * (different original hostname, not `*.arch.network` after URL
+ * parsing / Punycode), so it still matches. Distance 0 between
+ * *different* original hostnames is the strongest lookalike signal.
  */
 function findLookalike(
   originalHostname: string,
@@ -271,9 +291,14 @@ function findLookalike(
   cap: number,
 ): LookalikeMatch | null {
   const origLower = originalHostname.toLowerCase();
+  if (
+    isFirstPartyArchHost(origLower) ||
+    trustedList.some((t) => t.toLowerCase() === origLower)
+  ) {
+    return null;
+  }
   let best: LookalikeMatch | null = null;
   for (const trusted of trustedList) {
-    if (trusted.toLowerCase() === origLower) continue; // it's the trusted host itself
     const tNorm = normalizeHostnameForComparison(trusted);
     const d = editDistance(normalized, tNorm, cap);
     if (d <= cap) {

@@ -124,4 +124,26 @@ describe("assessOriginRisk", () => {
     const r = assessOriginRisk("https://example.com", { trustedList: TRUSTED });
     expect(r.label).toBe("");
   });
+
+  it("does not flag two allowlisted hosts that differ by 1 character", () => {
+    const r = assessOriginRisk("https://ide.example", {
+      trustedList: ["id.example", "ide.example"],
+    });
+    expect(r.reason).toBe("ok");
+  });
+
+  it("does not flag official Arch hosts against each other", () => {
+    // Default list includes both id.arch.network and ide.arch.network;
+    // a naive 1-char check would treat them as phishing each other.
+    expect(assessOriginRisk("https://ide.arch.network").reason).toBe("ok");
+    expect(assessOriginRisk("https://id.arch.network").reason).toBe("ok");
+    expect(assessOriginRisk("https://www.arch.network").reason).toBe("ok");
+    expect(assessOriginRisk("https://docs.arch.network").reason).toBe("ok");
+    expect(assessOriginRisk("https://rpc.testnet.arch.network").reason).toBe("ok");
+  });
+
+  it("still flags a third-party lookalike of an Arch host", () => {
+    expect(assessOriginRisk("https://id-arch.network").reason).toBe("lookalike");
+    expect(assessOriginRisk("https://arch.netw0rk").reason).toBe("lookalike");
+  });
 });

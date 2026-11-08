@@ -5,6 +5,7 @@ import { request } from "sats-connect";
 import { Turnkey } from "@turnkey/sdk-browser";
 import type { WalletState, TransactionDetails, TransactionResult } from "../WizardFlow";
 import { formatArchId } from "../../../utils/archFormat";
+import { LEGACY_CUSTODIAL_UNSUPPORTED } from "../../../types";
 
 interface ReviewStepProps {
   client: WalletHubClient;
@@ -82,12 +83,10 @@ export default function ReviewStep({
   const [pollCount, setPollCount] = useState(0);
   const [isAirdropping, setIsAirdropping] = useState(false);
   const [airdropSuccess, setAirdropSuccess] = useState(false);
-  const [custodialSigningAttempted, setCustodialSigningAttempted] = useState(false);
-  const [isCustodialSigning, setIsCustodialSigning] = useState(false);
 
   const isTurnkey = wallet.type === "turnkey";
-  const isCustodialTurnkey = isTurnkey && wallet.isCustodial === true;
-  const isPasskeyTurnkey = isTurnkey && !wallet.isCustodial;
+  const isCustodialTurnkey = isTurnkey && wallet.isCustodial !== false;
+  const isPasskeyTurnkey = isTurnkey && wallet.isCustodial === false;
 
   // Create signing request on mount
   useEffect(() => {
@@ -140,44 +139,6 @@ export default function ReviewStep({
 
     return () => clearInterval(interval);
   }, [localSigningRequest?.signingRequestId, client, onSigningRequestCreated]);
-
-  // Auto-sign for custodial Turnkey wallets when readiness is "ready"
-  useEffect(() => {
-    if (!isCustodialTurnkey) return;
-    if (!localSigningRequest?.signingRequestId) return;
-    if (custodialSigningAttempted) return;
-    if (localSigningRequest?.status === "succeeded" || localSigningRequest?.status === "failed") return;
-    if (readiness?.status !== "ready") return;
-
-    const performCustodialSigning = async () => {
-      setCustodialSigningAttempted(true);
-      setIsCustodialSigning(true);
-      setError(null);
-
-      try {
-        const signRes = await client.signWithTurnkey(localSigningRequest.signingRequestId, { externalUserId });
-        setLocalSigningRequest(signRes);
-
-        if (signRes.status === "succeeded") {
-          const rawTxid = (signRes as any)?.result?.txid || (signRes as any)?.result?.txidHex;
-          onComplete({
-            success: true,
-            signingRequestId: signRes.signingRequestId,
-            txid: formatArchId(rawTxid),
-            rawTxid,
-          });
-        } else if (signRes.status === "failed") {
-          setError((signRes as any)?.result?.status?.message || "Transaction failed");
-        }
-      } catch (signErr: any) {
-        setError(signErr?.message || "Turnkey server signing failed");
-      } finally {
-        setIsCustodialSigning(false);
-      }
-    };
-
-    performCustodialSigning();
-  }, [isCustodialTurnkey, localSigningRequest?.signingRequestId, localSigningRequest?.status, readiness?.status, custodialSigningAttempted, client, externalUserId, onComplete, setError]);
 
   // Sign with Turnkey passkey (non-custodial wallet)
   const signWithPasskey = async (payloadHex: string, signingRequestId: string): Promise<void> => {
@@ -249,6 +210,10 @@ export default function ReviewStep({
   };
 
   const createSigningRequest = async () => {
+    if (isCustodialTurnkey) {
+      setError(LEGACY_CUSTODIAL_UNSUPPORTED);
+      return;
+    }
     setIsLoading(true);
     setError(null);
 
@@ -256,7 +221,7 @@ export default function ReviewStep({
       let signer: any;
       
       if (isTurnkey) {
-        // Turnkey signer - backend will handle signing for custodial, client for passkey
+        // Turnkey signer - the passkey signs client-side
         signer = {
           kind: "turnkey" as const,
           resourceId: wallet.turnkeyResourceId,
@@ -359,9 +324,8 @@ export default function ReviewStep({
   }, [client, localSigningRequest, setError]);
 
   const handleSign = useCallback(async () => {
-    // For custodial Turnkey, signing is handled server-side, so we just wait
     if (isCustodialTurnkey) {
-      setError("Turnkey signing is handled automatically. Please wait...");
+      setError(LEGACY_CUSTODIAL_UNSUPPORTED);
       return;
     }
 
@@ -453,37 +417,16 @@ export default function ReviewStep({
         <h1 className="step-title">Review & Sign</h1>
         <p className="step-description">
           {isCustodialTurnkey
-            ? "Your transaction is being signed automatically via Turnkey"
+            ? LEGACY_CUSTODIAL_UNSUPPORTED
             : isPasskeyTurnkey
             ? "Confirm the transaction details and sign with your Turnkey passkey"
             : "Confirm the transaction details and sign with your wallet"}
         </p>
       </div>
 
-      {/* Turnkey Custodial Auto-Sign Status */}
       {isCustodialTurnkey && (
-        <div className={`turnkey-status ${isTurnkeySucceeded ? "success" : "processing"}`}>
-          {isTurnkeySucceeded ? (
-            <>
-              <span className="turnkey-status-icon">✓</span>
-              <span>Transaction signed and submitted!</span>
-            </>
-          ) : isCustodialSigning ? (
-            <>
-              <span className="spinner small"></span>
-              <span>Signing via Turnkey (custodial)...</span>
-            </>
-          ) : readiness?.status !== "ready" ? (
-            <>
-              <span className="spinner small"></span>
-              <span>Waiting for account readiness...</span>
-            </>
-          ) : (
-            <>
-              <span className="spinner small"></span>
-              <span>Preparing to sign...</span>
-            </>
-          )}
+        <div className="turnkey-status">
+          <span>{LEGACY_CUSTODIAL_UNSUPPORTED}</span>
         </div>
       )}
 
@@ -652,7 +595,7 @@ export default function ReviewStep({
         </div>
       )}
 
-      {/* Back button for custodial Turnkey (no sign button needed - auto-signs) */}
+      {/* Back button for legacy custodial Turnkey (signing unsupported) */}
       {isCustodialTurnkey && !isTurnkeySucceeded && (
         <div className="step-actions">
           <button className="btn-secondary" onClick={onBack} type="button">

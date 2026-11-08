@@ -241,7 +241,6 @@ export async function getAggregatedQuote(
       sellToken,
       buyToken,
       amount,
-      options,
     );
     logger.log("PropAMM quote result", {
       buyAmount: result.buyAmount,
@@ -255,7 +254,7 @@ export async function getAggregatedQuote(
   logger.log("aggregator mode — fetching both AMMs in parallel");
   const aggStart = performance.now();
   const [propResult, clammResult] = await Promise.allSettled([
-    quoteSwap(config, pubkey, sellToken, buyToken, amount, options),
+    quoteSwap(config, pubkey, sellToken, buyToken, amount),
     getClammQuote(config, wallet, sellToken, buyToken, amount, options),
   ]);
   const quoteFetchMs = Math.round(performance.now() - aggStart);

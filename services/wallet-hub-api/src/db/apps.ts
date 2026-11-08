@@ -77,6 +77,30 @@ export async function getUserByExternalId(client: PoolClient, params: {
   return res.rows[0] ?? null;
 }
 
+/**
+ * True when `externalUserId` already owns a Turnkey resource or a linked
+ * wallet, i.e. there is an account a new credential could hijack.
+ */
+export async function userHasCredentials(client: PoolClient, params: {
+  appId: string;
+  externalUserId: string;
+}): Promise<boolean> {
+  const res = await client.query<{ has: boolean }>(
+    `
+      SELECT EXISTS (
+        SELECT 1 FROM users u
+        WHERE u.app_id = $1 AND u.external_user_id = $2
+          AND (
+            EXISTS (SELECT 1 FROM turnkey_resources r WHERE r.user_id = u.id)
+            OR EXISTS (SELECT 1 FROM linked_wallets l WHERE l.user_id = u.id)
+          )
+      ) AS has
+    `,
+    [params.appId, params.externalUserId]
+  );
+  return Boolean(res.rows[0]?.has);
+}
+
 export async function getOrCreateUserByExternalId(client: PoolClient, params: {
   appId: string;
   externalUserId: string;

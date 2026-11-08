@@ -31,7 +31,7 @@ import {
   type SwapAccountReadiness,
 } from "@arch/swap-engine";
 
-import { isExternalAccount, type WalletAccount } from "../state/types";
+import { isExternalAccount, type NetworkId, type WalletAccount } from "../state/types";
 import { walletStore } from "../state/wallet-store";
 import {
   swapTransactionSignerForAccount,
@@ -92,6 +92,7 @@ export async function probeAccountReadiness(
 export interface EnsureOnboardingInput {
   account: WalletAccount;
   config: NetworkConfig;
+  network: NetworkId;
   onPhase?: (phase: OnboardingPhase) => void;
 }
 
@@ -103,7 +104,7 @@ export interface EnsureOnboardingInput {
  */
 export async function ensureSwapSigningSession(account: WalletAccount): Promise<void> {
   if (isExternalAccount(account)) {
-    throw new Error("Swaps with linked external wallets are not supported yet.");
+    return;
   }
   if (account.authMethod !== "passkey") {
     throw new Error("Swaps with email wallets are not supported yet.");
@@ -126,10 +127,20 @@ export async function ensureSwapSigningSession(account: WalletAccount): Promise<
 export async function ensureSwapOnboardingForAccount({
   account,
   config,
+  network,
   onPhase,
 }: EnsureOnboardingInput): Promise<void> {
+  if (network === "mainnet") {
+    const readiness = await probeAccountReadiness(account, config);
+    if (!readiness.eligibility.eligible) {
+      throw new Error(
+        "Mainnet account setup is required before swapping. " +
+          "Initialize this wallet in Arch Prime, then return here to create token accounts.",
+      );
+    }
+  }
   await ensureSwapSigningSession(account);
-  const signChallenge = swapTransactionSignerForAccount(account);
+  const signChallenge = swapTransactionSignerForAccount(account, network);
   const pubkeyHex = xOnlyPubkeyHexForAccount(account);
   // `ensureOnboarding` itself handles the "already done" early-exit at
   // each step, so calling it on a fully-onboarded account is cheap (two

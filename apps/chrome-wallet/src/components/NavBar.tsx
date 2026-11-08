@@ -6,13 +6,14 @@ export default function NavBar() {
   const location = useLocation();
 
   return (
-    <nav className="app-nav">
+    <nav className="app-nav" aria-label="Wallet navigation">
       {POPUP_NAV_ITEMS.map((item) => {
         const isActive = location.pathname === item.path;
         return (
           <button
             key={item.path}
             className={isActive ? "active" : ""}
+            aria-current={isActive ? "page" : undefined}
             onClick={() => navigate(item.path)}
           >
             <span className="nav-icon">

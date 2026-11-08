@@ -83,23 +83,23 @@ function hexToBytes(hex: string): Uint8Array {
  * quote/routing purposes.
  */
 const DISPLAY_OVERRIDES: Record<string, { symbol: string; name: string }> = {
-  // Testnet wrapped BTC (live Autara / CLAMM aBTC)
-  "1d46e0dd87393236e4e01252439f46dcbaec7c2255d1fd734e61771a00e8f4e9": {
+  // Testnet wrapped BTC (live CLAMM aBTC)
+  "a180e0b6a44745fdf44537e8c76836301122b719a19dfa4d21f7169f234f9276": {
     symbol: "aBTC",
     name: "Arch Bitcoin",
   },
-  // Testnet Arch USD (live Autara / CLAMM aUSD)
-  "55c6cee38a31732e2dad821ab1c38f902a7c51efaefb3641d51f3485c4617a45": {
+  // Testnet Arch USD (live CLAMM aUSD)
+  "fdf39ea6a422926dbb7b133b0d98669197f171bc3fda7dedf867578ee1ecec0b": {
     symbol: "aUSD",
     name: "Arch USD",
   },
   // Mainnet wrapped BTC
-  "225b03d6f9e05fd834cd18906b019fb46372544b0eeb9f6f8b615472467d46b0": {
+  "5b29d2ff08829791698237a6d056ec9fab29187072819b7bf7a43e431f027f18": {
     symbol: "aBTC",
     name: "Arch Bitcoin",
   },
   // Mainnet Arch USD
-  "aec8ca1598d74bc27721536f1a88b5648740bc6a856546a0a47817ff7fe7437c": {
+  "b8586267326264db356ca4c92b61dee74b4510cb95488897191d18520b3b18a4": {
     symbol: "aUSD",
     name: "Arch USD",
   },

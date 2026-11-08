@@ -126,6 +126,14 @@ async function importKeyBase64(b64: string): Promise<CryptoKey> {
 
 let sessionKey: CryptoKey | null = null;
 
+// Each realm (service worker, popup, side panel, approve window) caches its
+// own copy; a lock or re-seal in any one of them must invalidate the rest.
+if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "session" && SESSION_KEY_KEY in changes) sessionKey = null;
+  });
+}
+
 async function loadSessionKeyFromStorage(): Promise<CryptoKey | null> {
   if (sessionKey) return sessionKey;
   try {

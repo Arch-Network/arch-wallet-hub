@@ -4,13 +4,14 @@ import { useWallet } from "../../hooks/useWallet";
 import { walletStore } from "../../state/wallet-store";
 import { invalidateClientCache } from "../../utils/sdk";
 import { truncateAddress } from "../../utils/format";
-import { reEncodeTaprootAddress } from "../../utils/addressNetwork";
+import { resolveAccountAddresses } from "../../state/account-addresses";
+import { signerInfo } from "../../wallets/capabilities";
 import CopyButton from "../../components/CopyButton";
 import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
 import TestRecoveryEmailButton from "../../components/TestRecoveryEmailButton";
 import { ConnectedSiteRow } from "../../components/ConnectedSiteRow";
-import type { ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
-import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount } from "../../state/types";
+import type { AccountAddress, ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
+import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount, isWatchAccount } from "../../state/types";
 import { APP_VERSION } from "../../utils/version";
 import { isAnsEnabledForNetwork, openAnsManager } from "../../utils/name-service";
 import DiagnosticsLogView from "../../components/DiagnosticsLogView";
@@ -49,15 +50,24 @@ function isHttpsUrl(url: string): boolean {
   }
 }
 
+function addressRecordLabel(record: AccountAddress): string {
+  const payment = record.purposes.includes("payment");
+  const ordinals = record.purposes.includes("ordinals");
+  if (payment && ordinals) return "Bitcoin Address";
+  return payment ? "Payment Address" : "Ordinals Address";
+}
+
 function accountAuthLabel(account: WalletAccount): string {
-  if (isExternalAccount(account)) {
-    if (account.externalProvider === "unisat") return "UniSat";
-    return "Xverse";
-  }
-  return account.authMethod === "email" ? "Email" : "Passkey";
+  return signerInfo(account).label;
 }
 
 function accountAuthTone(account: WalletAccount): { background: string; color: string } {
+  if (isWatchAccount(account)) {
+    return {
+      background: "color-mix(in srgb, var(--text-muted) 16%, transparent)",
+      color: "var(--text-muted)",
+    };
+  }
   if (isExternalAccount(account)) {
     return {
       background: "color-mix(in srgb, var(--color-warning) 16%, transparent)",
@@ -95,8 +105,8 @@ export default function Settings() {
   const [pwSaved, setPwSaved] = useState(false);
   const [pwError, setPwError] = useState<string | null>(null);
 
-  const displayBtcAddress = useMemo(
-    () => activeAccount ? reEncodeTaprootAddress(activeAccount.btcAddress, state.network) : "",
+  const btcAddressRecords = useMemo(
+    () => activeAccount ? resolveAccountAddresses(activeAccount, state.network).records : [],
     [activeAccount, state.network]
   );
 
@@ -350,7 +360,10 @@ export default function Settings() {
                   thinking about recovery. The button is its own
                   component because the status-row state machine is
                   big enough to warrant separation. */}
-              <TestRecoveryEmailButton email={activeAccount.recoveryEmail} />
+              <TestRecoveryEmailButton
+                email={activeAccount.recoveryEmail}
+                resourceId={activeAccount.turnkeyResourceId}
+              />
             </>
           )}
         </div>
@@ -376,7 +389,7 @@ export default function Settings() {
             </button>
           </div>
           <p style={{ fontSize: 11, color: "var(--text-muted)", margin: "8px 0 0" }}>
-            Popup closes when you click away. Side panel stays open while you browse.
+            Popup opens in a window you can resize. Side panel stays docked while you browse.
           </p>
         </div>
       </div>
@@ -538,15 +551,23 @@ export default function Settings() {
                 </span>
               </div>
             </div>
-            <div style={{ marginBottom: 8 }}>
-              <div className="input-label">Bitcoin Address</div>
-              <div className="address-chip address-chip-wrap">
-                <span className="mono address-chip-value" style={{ fontSize: 11 }}>
-                  {displayBtcAddress}
-                </span>
-                <CopyButton text={displayBtcAddress} />
+            {btcAddressRecords.length === 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <div className="input-label">Bitcoin Address</div>
+                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>No address on this network.</div>
               </div>
-            </div>
+            )}
+            {btcAddressRecords.map((r) => (
+              <div style={{ marginBottom: 8 }} key={r.address}>
+                <div className="input-label">{addressRecordLabel(r)}</div>
+                <div className="address-chip address-chip-wrap">
+                  <span className="mono address-chip-value" style={{ fontSize: 11 }}>
+                    {r.address}
+                  </span>
+                  <CopyButton text={r.address} />
+                </div>
+              </div>
+            ))}
             <div>
               <div className="input-label">Public Key</div>
               <div className="address-chip address-chip-wrap">
@@ -717,12 +738,12 @@ export default function Settings() {
                   style={{ width: "100%", boxSizing: "border-box" }}
                 />
                 {state.network === "mainnet" && !isHttpsUrl(hubBaseUrl) && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--color-negative-text)" }}>
                     Mainnet requires HTTPS.
                   </div>
                 )}
                 {hubBaseUrl.trim() !== "" && !isAllowedHubBaseUrl(hubBaseUrl.trim()) && (
-                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--danger)" }}>
+                  <div style={{ marginTop: 4, fontSize: 11, color: "var(--color-negative-text)" }}>
                     Host not in allowlist. Use hub.arch.network or a *.arch.network host.
                   </div>
                 )}
@@ -799,14 +820,14 @@ export default function Settings() {
           {!showReset ? (
             <button
               className="btn btn-secondary btn-full"
-              style={{ color: "var(--danger)" }}
+              style={{ color: "var(--color-negative-text)" }}
               onClick={() => setShowReset(true)}
             >
               Reset Wallet
             </button>
           ) : (
             <div className="card" style={{ borderColor: "var(--danger)" }}>
-              <p style={{ fontSize: 12, marginBottom: 8, color: "var(--danger)" }}>
+              <p style={{ fontSize: 12, marginBottom: 8, color: "var(--color-negative-text)" }}>
                 This erases the encrypted keystore and all local data from this extension.
                 Make sure your recovery email/passkey access is working before resetting.
               </p>

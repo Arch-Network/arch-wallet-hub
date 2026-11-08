@@ -67,10 +67,53 @@ export interface ArchTxSummary {
   counterparty?: string;
 }
 
+/** Display metadata for one of the user's token accounts. `EnrichedToken` satisfies this. */
+export interface TokenDisplayInfo {
+  tokenAccount: string;
+  mint: string;
+  symbol: string;
+  decimals: number;
+}
+
 import bs58 from "bs58";
 
 function asString(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+/**
+ * The indexer emits u64 amounts as decimal strings, bare JSON numbers
+ * (`"amount": 42`), or wrapped (`"lamports": {"type":"u64","data": 42}`).
+ * JSON numbers above 2^53 have already lost precision in JSON.parse.
+ */
+function asUintString(v: unknown): string {
+  if (typeof v === "string") return /^\d+$/.test(v) ? v : "";
+  if (typeof v === "number") return Number.isInteger(v) && v >= 0 ? BigInt(v).toString() : "";
+  if (v && typeof v === "object" && "data" in v) return asUintString((v as { data: unknown }).data);
+  return "";
+}
+
+/** Index token info by every address form of both its token account and its mint. */
+function buildTokenLookup(tokens: ReadonlyArray<TokenDisplayInfo> | undefined): Map<string, TokenDisplayInfo> {
+  const out = new Map<string, TokenDisplayInfo>();
+  for (const t of tokens ?? []) {
+    for (const addr of [t.tokenAccount, t.mint]) {
+      for (const form of addressForms(addr)) out.set(form, t);
+    }
+  }
+  return out;
+}
+
+function formatTokenAmountLabel(
+  rawAmount: string,
+  decimals: number,
+  symbol: string | undefined,
+  direction: "in" | "out" | "neutral",
+): string | undefined {
+  if (!rawAmount) return undefined;
+  const pretty = formatRawAmountWithDecimals(rawAmount, decimals);
+  const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
+  return symbol ? `${sign}${pretty} ${symbol}` : `${sign}${pretty}`;
 }
 
 function asArray<T = unknown>(v: unknown): T[] {
@@ -221,6 +264,7 @@ function summarizeFromDecodedInstructions(
   archAddress: string,
   archAccountForms?: Set<string>,
   tokenAccountForms?: Set<string>,
+  tokenLookup?: Map<string, TokenDisplayInfo>,
 ): { kind: ArchTxKind; label: string; direction: "in" | "out" | "neutral"; amountLabel?: string; counterparty?: string } | null {
   const flat = flattenInstructions(instructions);
   if (flat.length === 0) return null;
@@ -254,7 +298,7 @@ function summarizeFromDecodedInstructions(
 
       // System Transfer amounts come in lamports. Try `lamports` first,
       // fall back to `amount` for indexer versions that use either.
-      const rawLamports = asString(decoded.lamports) || asString(decoded.amount);
+      const rawLamports = asUintString(decoded.lamports) || asUintString(decoded.amount);
       let amountLabel: string | undefined;
       if (rawLamports) {
         try {
@@ -295,17 +339,25 @@ function summarizeFromDecodedInstructions(
       const direction: "in" | "out" | "neutral" = isOut ? "out" : isIn ? "in" : "neutral";
       if (direction === "neutral") continue;
 
-      const rawAmount = asString(decoded.amount);
-      const decimals = typeof decoded.decimals === "number" ? decoded.decimals : 0;
-      const pretty = rawAmount ? formatRawAmountWithDecimals(rawAmount, decimals) : null;
-      const sign = direction === "out" ? "-" : "+";
-      const amountLabel = pretty ? `${sign}${pretty}` : undefined;
+      // Plain Token: Transfer carries neither mint nor decimals, so resolve
+      // them from the user's own side of the transfer.
+      const token =
+        tokenLookup?.get(direction === "out" ? src : dst) ??
+        tokenLookup?.get(asString(decoded.mint));
+      const decimals = typeof decoded.decimals === "number" ? decoded.decimals : token?.decimals ?? 0;
+      const amountLabel = formatTokenAmountLabel(
+        asUintString(decoded.amount),
+        decimals,
+        token?.symbol,
+        direction,
+      );
 
       const viaCpi = ix.__depth > 0;
       const kind: ArchTxKind = viaCpi ? "swap" : "token_transfer";
+      const tokenName = token?.symbol ?? "Token";
       const label = viaCpi
         ? "Swap"
-        : direction === "in" ? "Received Token" : "Sent Token";
+        : direction === "in" ? `Received ${tokenName}` : `Sent ${tokenName}`;
 
       return {
         kind,
@@ -331,7 +383,8 @@ function trimTrailingZeros(s: string, keep = 2): string {
 
 function summarizeTokenTransfer(
   tx: any,
-  archAddress: string
+  archAddress: string,
+  tokenLookup: Map<string, TokenDisplayInfo>,
 ): Pick<ArchTxSummary, "label" | "direction" | "amountLabel" | "counterparty"> | null {
   const tt = tx?.token_transfer;
   if (!tt || typeof tt !== "object") return null;
@@ -345,17 +398,23 @@ function summarizeTokenTransfer(
   const isIn = dst === archAddress || dstOwner === archAddress;
   const direction: ArchTxSummary["direction"] = isOut ? "out" : isIn ? "in" : "neutral";
 
-  const rawAmount = asString(tt.amount) || String(tt.amount ?? "");
-  const decimals = typeof tt.decimals === "number" ? tt.decimals : 0;
-  const pretty = rawAmount ? formatRawAmountWithDecimals(rawAmount, decimals) : null;
-  const sign = direction === "out" ? "-" : direction === "in" ? "+" : "";
-  const amountLabel = pretty ? `${sign}${pretty}` : undefined;
+  const token =
+    tokenLookup.get(asString(tt.mint)) ??
+    tokenLookup.get(direction === "in" ? dst : src);
+  const decimals = typeof tt.decimals === "number" ? tt.decimals : token?.decimals ?? 0;
+  const amountLabel = formatTokenAmountLabel(
+    asUintString(tt.amount),
+    decimals,
+    token?.symbol,
+    direction,
+  );
 
   const counterparty = direction === "in" ? srcOwner || src || undefined : dstOwner || dst || undefined;
 
-  let label = "Token Transfer";
-  if (direction === "in") label = "Received Token";
-  else if (direction === "out") label = "Sent Token";
+  const tokenName = token?.symbol ?? "Token";
+  let label = token ? `${tokenName} Transfer` : "Token Transfer";
+  if (direction === "in") label = `Received ${tokenName}`;
+  else if (direction === "out") label = `Sent ${tokenName}`;
 
   return { label, direction, amountLabel, counterparty };
 }
@@ -374,6 +433,11 @@ export interface SummarizeOptions {
    * is the user's ATA rather than their archAddress.
    */
   tokenAccounts?: ReadonlyArray<string>;
+  /**
+   * Symbol + decimals for the user's tokens, so rows read "Sent USDC
+   * -12.5 USDC" instead of "Sent Token" with a raw base-unit amount.
+   */
+  tokens?: ReadonlyArray<TokenDisplayInfo>;
 }
 
 /**
@@ -393,7 +457,8 @@ export function summarizeArchTx(
   // Token transfer takes priority when the row carries decoded data, even
   // for failed txs -- we still want to know "Sent Token (failed)" rather
   // than just "Failed Transaction" with no context.
-  const tokenSummary = summarizeTokenTransfer(tx, archAddress);
+  const tokenLookup = buildTokenLookup(options?.tokens);
+  const tokenSummary = summarizeTokenTransfer(tx, archAddress, tokenLookup);
   if (tokenSummary) {
     return { kind: "token_transfer", ...tokenSummary };
   }
@@ -414,6 +479,7 @@ export function summarizeArchTx(
       archAddress,
       ownerForms,
       ataForms,
+      tokenLookup,
     );
     if (fromTree) return fromTree;
   }
@@ -426,6 +492,7 @@ export function summarizeArchTx(
     archAddress,
     ownerForms,
     ataForms,
+    tokenLookup,
   );
   if (decodedSummary) {
     return decodedSummary;

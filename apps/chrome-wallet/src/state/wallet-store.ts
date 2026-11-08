@@ -1,4 +1,5 @@
 import {
+  AccountAddress,
   AppState,
   DEFAULT_STATE,
   WalletAccount,
@@ -26,6 +27,7 @@ import { passkeyBootstrap } from "../session/bootstrap-passkey";
 import { EmailBootstrap, type EmailBootstrapArgs } from "../session/bootstrap-email";
 import { ensureHubSession } from "../utils/hub-session";
 import { clearAllHubTokens } from "../utils/hub-session-store";
+import { readOpenAsPreference, writeOpenAsPreference } from "./open-as-preference";
 
 const LEGACY_EC2_HUB_BASE_URL = "http://44.222.123.237:3005";
 /**
@@ -206,6 +208,19 @@ export function migrateApiConfig(state: any): boolean {
   return migrated;
 }
 
+function isAccountAddressRecord(r: any): r is AccountAddress {
+  return (
+    typeof r?.address === "string" &&
+    r.address.length > 0 &&
+    (r.network === "mainnet" || r.network === "testnet4") &&
+    Array.isArray(r.purposes) &&
+    r.purposes.length > 0 &&
+    r.purposes.every((p: unknown) => p === "payment" || p === "ordinals") &&
+    typeof r.addressType === "string" &&
+    typeof r.chainVerified === "boolean"
+  );
+}
+
 /**
  * Run all account- and config-shape migrations once on read. Called
  * both from getState (for legacy installs) and from the seal/unlock
@@ -303,6 +318,21 @@ export function migrateState(stateInput: any): { state: AppState; migrated: bool
         migrated = true;
       }
     }
+    // Provider address records are only meaningful for external accounts,
+    // and a malformed record must not be read as a verified address.
+    if (acct.addresses !== undefined) {
+      const kept =
+        acct.kind === "external" && Array.isArray(acct.addresses)
+          ? acct.addresses.filter(isAccountAddressRecord)
+          : [];
+      if (kept.length === 0) {
+        delete acct.addresses;
+        migrated = true;
+      } else if (kept.length !== acct.addresses.length) {
+        acct.addresses = kept;
+        migrated = true;
+      }
+    }
   }
 
   if (migrateApiConfig(state)) migrated = true;
@@ -372,14 +402,19 @@ export const walletStore = {
    * show the Unlock screen vs Onboarding).
    */
   async getState(): Promise<AppState> {
+    const openAs = await readOpenAsPreference();
     const sealed = await keystore.isSealed();
     const unlocked = await keystore.isUnlocked();
-    if (!sealed) return { ...DEFAULT_STATE };
-    if (!unlocked) return lockedShellState(true);
+    if (!sealed) return { ...DEFAULT_STATE, openAs: openAs ?? "popup" };
+    if (!unlocked) return { ...lockedShellState(true), openAs: openAs ?? "popup" };
     const raw = (await keystore.read()) as any;
-    if (!raw) return lockedShellState(true);
+    if (!raw) return { ...lockedShellState(true), openAs: openAs ?? "popup" };
     const { state, migrated } = migrateState(raw);
     state.locked = false;
+    // Migrate the legacy encrypted preference only after decryption succeeds.
+    // Never persist the locked shell's default over the user's choice.
+    if (openAs === undefined) await writeOpenAsPreference(state.openAs);
+    else state.openAs = openAs;
     if (migrated) await savePlaintextState(state);
     return state;
   },
@@ -813,9 +848,7 @@ export const walletStore = {
   },
 
   async setOpenAs(mode: "popup" | "sidepanel"): Promise<void> {
-    const state = await this.requireUnlockedState();
-    state.openAs = mode;
-    await savePlaintextState(state);
+    await writeOpenAsPreference(mode);
   },
 
   /**

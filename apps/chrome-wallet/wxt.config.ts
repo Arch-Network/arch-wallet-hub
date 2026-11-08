@@ -8,7 +8,7 @@ const packageJson = JSON.parse(
 ) as { version: string };
 
 // In monorepos with nested `node_modules` (this repo: arch-sdk lives at
-// `packages/arch-swap-engine/node_modules/@saturnbtcio/arch-sdk/`) Rolldown
+// `packages/arch-swap-engine/node_modules/@arch-network/arch-sdk/`) Rolldown
 // can't walk up to find the bare specifier `vite-plugin-node-polyfills/
 // shims/*` from those nested importers because the plugin is only installed
 // in the chrome-wallet package. The plugin's `globals: { Buffer | global |
@@ -26,6 +26,14 @@ const shimAliases = {
 };
 
 export default defineConfig({
+  hooks: {
+    // The popup entrypoint would otherwise install popup.html as the
+    // toolbar bubble. That bubble cannot be resized. Click handling in
+    // the service worker opens a real window instead.
+    "build:manifestGenerated": (_wxt, manifest) => {
+      if (manifest.action) delete manifest.action.default_popup;
+    },
+  },
   modules: ["@wxt-dev/module-react"],
   srcDir: ".",
   manifest: {
@@ -46,11 +54,35 @@ export default defineConfig({
     //   sidePanel     -> optional side panel UI
     //   notifications -> tx-broadcast / tx-failure popups so the user
     //                    sees the outcome even after closing the popup
+    //   declarativeNetRequestWithHostAccess
+    //                  -> rewrite wallet.arch.network/passkey.html as
+    //                    HTML. S3 currently answers that URL with an XML
+    //                    403, and 1Password does not inject into XML.
+    //                    Host access is already granted by <all_urls>,
+    //                    so this does not add a store permission warning.
     // Note: `tabs` is intentionally NOT requested. The background uses
     // tabs.query + tabs.sendMessage which are gated by host_permissions
     // <all_urls> below (required to talk to the content script).
-    permissions: ["storage", "alarms", "idle", "activeTab", "sidePanel", "scripting", "notifications"],
+    permissions: [
+      "storage",
+      "alarms",
+      "idle",
+      "activeTab",
+      "sidePanel",
+      "scripting",
+      "notifications",
+      "declarativeNetRequestWithHostAccess",
+    ],
     host_permissions: ["<all_urls>"],
+    declarative_net_request: {
+      rule_resources: [
+        {
+          id: "passkey_page_html",
+          enabled: true,
+          path: "rules/passkey-page.json",
+        },
+      ],
+    },
     // Defense-in-depth on top of MV3 defaults. MV3 already forbids
     // `unsafe-eval` and remote scripts; we restate the intent and
     // explicitly forbid `object-src` so plugins/Flash can't be
@@ -155,7 +187,7 @@ export default defineConfig({
       // them as plain `resolve.alias` strings, which Rolldown can't resolve
       // when the importer lives in a nested `node_modules/` that has no copy
       // of `vite-plugin-node-polyfills` (e.g. `packages/arch-swap-engine/
-      // node_modules/@saturnbtcio/arch-sdk/`). `enforce: 'pre'` ensures we
+      // node_modules/@arch-network/arch-sdk/`). `enforce: 'pre'` ensures we
       // intercept before Rolldown's own resolver tries (and fails).
       // (https://github.com/davidmyersdev/vite-plugin-node-polyfills/issues/81)
       {

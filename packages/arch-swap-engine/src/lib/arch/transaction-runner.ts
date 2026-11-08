@@ -30,6 +30,8 @@ type RunnerOptions = {
   onStatus?: StatusCallback;
   /** Strategy for combining the user signature with prior signatures (default: `"replace"`). */
   signaturePlacement?: SignaturePlacement;
+  /** Submits the signed transaction and resolves once it confirms (default: `submitAndConfirm`). */
+  submit?: (tx: RuntimeTransaction) => Promise<string>;
 };
 
 const defaultLogger = createDebugLogger("ArchTx");
@@ -60,6 +62,7 @@ export async function signAndSendTransaction(
     logger = defaultLogger,
     onStatus,
     signaturePlacement = "replace",
+    submit = submitAndConfirm,
   }: RunnerOptions,
 ): Promise<string> {
   logger.log(`${label} — signing`, {
@@ -84,7 +87,7 @@ export async function signAndSendTransaction(
     ...tx,
     signatures: composeSignatures(signature, tx.signatures, signaturePlacement),
   };
-  const txHash = await submitAndConfirm(signedTx);
+  const txHash = await submit(signedTx);
   const sendDurationMs = Math.round(performance.now() - sendStart);
   logger.log(`${label} — confirmed`, { txHash, sendDurationMs });
 

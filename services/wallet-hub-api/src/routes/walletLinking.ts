@@ -109,7 +109,10 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
   server.post(
     "/wallet-links/challenge",
     {
-      preHandler: server.enforceSessionForRoute("wallet-links.challenge"),
+      preHandler: [
+        server.enforceSessionForRoute("wallet-links.challenge"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary: "Create a wallet-linking challenge",
         tags: ["wallet-linking"],
@@ -212,7 +215,10 @@ export const registerWalletLinkingRoutes: FastifyPluginAsync = async (server) =>
   server.post(
     "/wallet-links/verify",
     {
-      preHandler: server.enforceSessionForRoute("wallet-links.verify"),
+      preHandler: [
+        server.enforceSessionForRoute("wallet-links.verify"),
+        server.requireSessionForExistingUser
+      ],
       schema: {
         summary: "Verify a signed challenge and link the wallet address",
         tags: ["wallet-linking"],

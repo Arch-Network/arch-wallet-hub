@@ -6,6 +6,7 @@ import {
   USE_DIRECT_INDEXER
 } from "./explorer-config";
 import { ArchHubIndexerClient } from "./hub-indexer";
+import { isHubRateLimitError } from "./hub-rate-limit";
 
 export type IndexerNetwork = "mainnet" | "testnet";
 
@@ -163,6 +164,29 @@ export interface BtcRuneTransaction {
 export interface BtcAddressRuneTransactionsResponse {
   transactions: BtcRuneTransaction[];
   next_cursor: string | null;
+  [k: string]: unknown;
+}
+
+/**
+ * Rune metadata from `GET /bitcoin/runes/:rune`. Supplies are decimal
+ * strings (u128 range); apply `divisibility` to render human amounts.
+ * `mints_remaining` may be null/absent for unlimited or terms-free runes.
+ */
+export interface BtcRuneMetadata {
+  rune_id: string;
+  spaced_name: string;
+  name?: string;
+  number?: number;
+  divisibility: number;
+  symbol?: string;
+  etching_txid?: string;
+  etching_height?: number;
+  premine?: string;
+  max_supply?: string;
+  minted?: string;
+  burned?: string;
+  circulating?: string;
+  mints_remaining?: string | null;
   [k: string]: unknown;
 }
 
@@ -451,6 +475,10 @@ export class ArchIndexerClient {
     );
   }
 
+  getBtcRune(rune: string): Promise<BtcRuneMetadata> {
+    return this.getJson(`/bitcoin/runes/${encodeURIComponent(rune)}`);
+  }
+
   getBtcAddressInscriptions(
     btcAddress: string,
     cursor?: string
@@ -593,6 +621,7 @@ export function isIndexerNotFoundError(err: unknown): boolean {
  * leaked key) instead of silently rendering an empty list.
  */
 export function isIndexerRateLimitError(err: unknown): boolean {
+  if (isHubRateLimitError(err)) return true;
   const message = err instanceof Error ? err.message : String(err ?? "");
   return (
     message.includes("429") ||
