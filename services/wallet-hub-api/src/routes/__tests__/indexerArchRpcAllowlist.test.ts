@@ -36,6 +36,8 @@ function stubIndexer(overrides: Partial<IndexerClient> = {}): IndexerClient {
     getBtcAddressRunes: async () => ({}),
     getBtcAddressInscriptions: async () => ({}),
     getBtcAddressRuneTransactions: async () => ({}),
+    getBtcRune: async () => ({}),
+    getBtcOutput: async () => ({}),
     getBtcInscription: async () => ({}),
     getBtcInscriptionContent: async () => ({
       body: new Uint8Array([1]).buffer,
