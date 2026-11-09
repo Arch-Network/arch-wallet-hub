@@ -15,8 +15,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const ROOT_ORG = "root-org";
 const EMAIL = "victim@example.com";
 
-function tokenFor(contact: string, id = "token-1"): string {
-  const claims = { contact, exp: 4102444800, id, public_key: "02" + "ee".repeat(32), verification_type: "OTP_TYPE_EMAIL" };
+/** A verification token as Turnkey issues it: `exp` a millisecond-epoch string (@turnkey/crypto's VerificationTokenClaims). */
+function tokenFor(contact: string, id = "token-1", exp: string | number = "4102444800000"): string {
+  const claims = { contact, exp, id, public_key: "02" + "ee".repeat(32), verification_type: "OTP_TYPE_EMAIL" };
   return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
 }
 
@@ -622,6 +623,27 @@ describe("email sign-in", () => {
     const res = await session(app, challengeId);
 
     expect(res.statusCode).toBe(401);
+    expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
+  });
+
+  it("reads Turnkey's millisecond-string exp, and a numeric one as seconds", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    expect((await verify(app, challengeId)).statusCode).toBe(200);
+
+    mocks.turnkey.verifyOtp.mockResolvedValueOnce({ verificationToken: tokenFor(EMAIL, "token-2", 4102444800), activityId: "a" });
+    const again = (await signin(app)).json();
+    expect((await verify(app, again.challengeId)).statusCode).toBe(200);
+  });
+
+  it("/session refuses a token whose millisecond exp has passed", async () => {
+    const app = await buildServer();
+    const { challengeId } = (await signin(app)).json();
+    await verify(app, challengeId);
+
+    const lapsed = await sessionWith(app, challengeId, tokenFor(EMAIL, "token-1", String(Date.now() - 1000)));
+
+    expect(lapsed.statusCode).toBe(401);
     expect(mocks.turnkey.otpLogin).not.toHaveBeenCalled();
   });
 
