@@ -180,7 +180,15 @@ function readVerification(verificationToken: string): OtpVerification {
   if (typeof claims.id !== "string" || !claims.id) {
     throw new Error("Turnkey verification token has no id");
   }
-  if (typeof claims.exp !== "number" || !Number.isFinite(claims.exp)) {
+  // Turnkey writes `exp` as a millisecond-epoch string, not RFC 7519 seconds
+  // (@turnkey/crypto's VerificationTokenClaims); a numeric one is read as seconds.
+  const expiresAtMs =
+    typeof claims.exp === "string" && /^\d+$/.test(claims.exp)
+      ? Number(claims.exp)
+      : typeof claims.exp === "number" && Number.isFinite(claims.exp)
+        ? claims.exp * 1000
+        : NaN;
+  if (!Number.isFinite(expiresAtMs)) {
     throw new Error("Turnkey verification token has no exp");
   }
   const publicKey = typeof claims.public_key === "string"
@@ -188,7 +196,7 @@ function readVerification(verificationToken: string): OtpVerification {
     : typeof claims.publicKey === "string"
       ? claims.publicKey
       : null;
-  return { contact: claims.contact.trim(), tokenId: claims.id, expiresAtMs: claims.exp * 1000, publicKey };
+  return { contact: claims.contact.trim(), tokenId: claims.id, expiresAtMs, publicKey };
 }
 
 type NetworkDefaults = { addressFormat: string; derivationPath: string };
