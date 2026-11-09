@@ -109,7 +109,8 @@ function seedChallenge() {
     attempts: 0,
     created_at: new Date().toISOString(),
     expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-    consumed_at: null
+    consumed_at: null,
+    otp_id: null
   };
 }
 
