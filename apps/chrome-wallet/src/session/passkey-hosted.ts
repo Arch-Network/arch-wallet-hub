@@ -23,8 +23,17 @@ import { WebauthnStamper } from "@turnkey/webauthn-stamper";
 import { PASSKEY_RP_ID } from "./constants";
 import { effectivePasskeyRpId, passkeyCreationSelection } from "./passkey-webauthn";
 import { withWalletWindowHeld } from "../utils/wallet-autoclose";
+import { getPasskeyWait, setPasskeyWait, type PasskeyWait } from "./passkey-wait";
 
 export const PASSKEY_PAGE_URL = "https://wallet.arch.network/passkey.html";
+
+/**
+ * Link under Continue on the confirm page. It retries under the
+ * extension id, where builds before the hosted page saved passkeys.
+ */
+export const PASSKEY_NOT_LISTED_LABEL = "My passkey isn't listed";
+
+export const PASSKEY_CANCELLED_MESSAGE = "Passkey confirmation was cancelled.";
 
 const CEREMONY_TIMEOUT_MS = 170_000;
 const PAGE_LOAD_TIMEOUT_MS = 15_000;
@@ -97,6 +106,8 @@ interface GetCeremonyRequest {
   rpId: string;
   challenge: number[];
   allowExtensionFallback: boolean;
+  /** The page function cannot read module constants, so the label rides along. */
+  fallbackLabel: string;
 }
 
 type CeremonyRequest = CreateCeremonyRequest | GetCeremonyRequest;
@@ -174,8 +185,8 @@ async function createPasskeyLocally(
 
 /**
  * Stamper whose WebAuthn assertion happens on wallet.arch.network.
- * "Use a security key saved in the extension" falls back to the
- * extension id, for a key registered before this page existed.
+ * The PASSKEY_NOT_LISTED_LABEL link falls back to the extension id,
+ * for a passkey registered before this page existed.
  */
 export class HostedWebauthnStamper implements TStamper {
   async stamp(payload: string) {
@@ -185,6 +196,7 @@ export class HostedWebauthnStamper implements TStamper {
       rpId: PASSKEY_RP_ID,
       challenge: Array.from(challenge),
       allowExtensionFallback: true,
+      fallbackLabel: PASSKEY_NOT_LISTED_LABEL,
     });
     if (result.status === "extension") {
       const extensionId = chrome.runtime?.id;
@@ -221,6 +233,15 @@ export function hostedPasskeyClient(organizationId: string, apiBaseUrl: string):
 async function runHostedPasskey(request: CeremonyRequest): Promise<CeremonyResult> {
   return withWalletWindowHeld(async () => {
     const opened = await openPasskeyPage();
+    let cancelled = false;
+    const wait: PasskeyWait = {
+      focus: () => void focusPasskeyPage(opened),
+      cancel: () => {
+        cancelled = true;
+        void closePasskeyPage(opened);
+      },
+    };
+    setPasskeyWait(wait);
     try {
       await waitForPasskeyPage(opened.tabId);
       await chrome.scripting.executeScript({
@@ -231,6 +252,7 @@ async function runHostedPasskey(request: CeremonyRequest): Promise<CeremonyResul
       });
       const started = Date.now();
       for (;;) {
+        if (cancelled) throw new Error(PASSKEY_CANCELLED_MESSAGE);
         if (Date.now() - started > CEREMONY_TIMEOUT_MS) {
           throw new Error("Timed out waiting for a passkey");
         }
@@ -252,10 +274,25 @@ async function runHostedPasskey(request: CeremonyRequest): Promise<CeremonyResul
         }
         await delay(250);
       }
+    } catch (err) {
+      // Cancelling closes the window, so whichever call was in flight
+      // fails with its own "window is gone" error. Report the cancel.
+      if (cancelled) throw new Error(PASSKEY_CANCELLED_MESSAGE);
+      throw err;
     } finally {
+      if (getPasskeyWait() === wait) setPasskeyWait(null);
       await closePasskeyPage(opened);
     }
   });
+}
+
+async function focusPasskeyPage(opened: { tabId: number; windowId?: number }): Promise<void> {
+  try {
+    if (opened.windowId != null) await chrome.windows.update(opened.windowId, { focused: true });
+    else await chrome.tabs.update(opened.tabId, { active: true });
+  } catch {
+    /* the window is already gone; the poll reports that */
+  }
 }
 
 async function openPasskeyPage(): Promise<{ tabId: number; windowId?: number }> {
@@ -343,10 +380,10 @@ function installPasskeyCeremony(request: CeremonyRequest): void {
   const error = document.createElement("p");
   error.style.cssText = "font-size:13px;color:#fca5a5;min-height:1.2em;margin:12px 0 0;";
   card.append(title, copy, button, error);
-  if (request.allowExtensionFallback) {
+  if (request.kind === "get" && request.allowExtensionFallback) {
     const fallback = document.createElement("button");
     fallback.type = "button";
-    fallback.textContent = "Use a security key saved in the extension";
+    fallback.textContent = request.fallbackLabel;
     fallback.style.cssText =
       "display:block;margin-top:14px;background:transparent;color:#d4d4d8;border:0;padding:0;font-size:13px;text-decoration:underline;cursor:pointer;";
     fallback.addEventListener("click", () => {

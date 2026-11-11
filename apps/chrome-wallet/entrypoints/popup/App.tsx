@@ -8,6 +8,7 @@ import {
 } from "../../src/utils/log";
 import Header from "../../src/components/Header";
 import ConnectionBanner from "../../src/components/ConnectionBanner";
+import PasskeyWaitBanner from "../../src/components/PasskeyWaitBanner";
 import NavBar from "../../src/components/NavBar";
 import SideNav from "../../src/components/SideNav";
 import { useApiStatus } from "../../src/hooks/useApiStatus";
@@ -345,6 +346,7 @@ export default function App() {
   return (
     <HashRouter>
       <AppRoutes />
+      <PasskeyWaitBanner />
     </HashRouter>
   );
 }

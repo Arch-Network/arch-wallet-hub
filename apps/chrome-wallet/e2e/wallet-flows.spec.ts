@@ -24,6 +24,7 @@ const ACCOUNT = {
 type SeedOptions = {
   unlocked?: boolean;
   checkpoint?: boolean;
+  authMethod?: "email" | "passkey";
 };
 
 async function extensionId(context: BrowserContext): Promise<string> {
@@ -39,7 +40,7 @@ async function seedWallet(page: Page, options: SeedOptions = {}): Promise<void> 
     locked: false,
     network: "testnet4",
     activeAccountId: ACCOUNT.id,
-    accounts: [ACCOUNT],
+    accounts: [{ ...ACCOUNT, authMethod: options.authMethod ?? ACCOUNT.authMethod }],
     connectedSites: {},
     hubBaseUrl: "https://e2e.arch.network",
     hubApiKey: "e2e-key",
@@ -187,6 +188,29 @@ test.describe("Chrome wallet functional flows", () => {
     await seedWallet(popup, { checkpoint: true });
     await popup.goto(`${baseUrl}#/dashboard`);
     await expect(popup).toHaveURL(/#\/recover/);
+  });
+
+  test("a passkey wait says where to finish and can be cancelled", async () => {
+    // The ceremony page is injected by the extension; the hosted file is empty.
+    await context.route("https://wallet.arch.network/passkey.html", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Arch Wallet</title>" }),
+    );
+    await popup.goto(baseUrl);
+    await seedWallet(popup, { unlocked: false, authMethod: "passkey" });
+    await popup.reload();
+
+    const passkeyOpened = context.waitForEvent("page");
+    await popup.getByPlaceholder("Your password").fill(PASSWORD);
+    await popup.getByRole("button", { name: /unlock/i }).click();
+
+    const passkeyPage = await passkeyOpened;
+    await expect(passkeyPage.getByRole("button", { name: "My passkey isn't listed" })).toBeVisible();
+    await expect(popup.getByText("Waiting for your passkey")).toBeVisible();
+
+    await popup.getByRole("button", { name: "Cancel" }).click();
+    await expect.poll(() => passkeyPage.isClosed()).toBe(true);
+    await expect(popup.getByText("Waiting for your passkey")).toBeHidden();
+    await expect(popup.locator(".app-container")).toBeVisible();
   });
 
   test("prepares a Bitcoin send entirely from deterministic indexer fixtures", async () => {
