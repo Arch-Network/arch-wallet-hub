@@ -38,6 +38,7 @@ import {
 } from "../../utils/amount-display";
 import { lookupKnownToken, type KnownTokenMeta } from "../../utils/known-tokens";
 import { interpretMessage } from "../../utils/sign-message";
+import { closeThisExtensionWindow } from "../../utils/wallet-autoclose";
 import {
   parsePsbt,
   psbtEncoding,
@@ -60,6 +61,7 @@ import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import { signerInfo, supports } from "../../wallets/capabilities";
 import { signArchMessageHashWithExternalWallet } from "../../utils/external-arch-message-hash";
 import { buildSessionSigner } from "../../utils/hub-session";
+import { reconcileHubResourceId } from "../../utils/hub-resource";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import {
   ensureSigningSessionForAccount,
@@ -1310,9 +1312,12 @@ export default function Approve() {
 
   const sendApproved = useCallback(
     (result: unknown) => {
-      chrome.runtime.sendMessage({ type: "APPROVE_REQUEST", requestId, result });
       setSuccess(true);
-      setTimeout(() => window.close(), 1500);
+      // Wait until the service worker has dropped the pending request,
+      // then close. Closing first makes onRemoved treat it as a reject.
+      chrome.runtime.sendMessage({ type: "APPROVE_REQUEST", requestId, result }, () => {
+        setTimeout(() => void closeThisExtensionWindow(), 1500);
+      });
     },
     [requestId],
   );
@@ -1404,6 +1409,10 @@ export default function Approve() {
       // signer so the SDK can transparently re-mint if the token
       // expires mid-flight.
       if (needsHubSession) {
+        // Recovery used to store Turnkey's wallet id here. Signing
+        // looks up a Hub resource id, so correct it before the
+        // session signer snapshots the value.
+        await reconcileHubResourceId(selectedAccount);
         client.setSessionSigner(
           buildSessionSigner(selectedAccount, externalUserId, state.network),
         );
@@ -1661,8 +1670,9 @@ export default function Approve() {
   }, []);
 
   const handleReject = useCallback(() => {
-    chrome.runtime.sendMessage({ type: "REJECT_REQUEST", requestId });
-    window.close();
+    chrome.runtime.sendMessage({ type: "REJECT_REQUEST", requestId }, () => {
+      void closeThisExtensionWindow();
+    });
   }, [requestId]);
 
   if (success) {

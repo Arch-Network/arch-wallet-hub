@@ -41,6 +41,9 @@ function isPublicPath(url: string): boolean {
   // origin for external-wallet (Xverse/UniSat) injection.
   // Returns inert HTML only -- no DB access, no secrets.
   if (url.startsWith("/v1/extension/connect")) return true;
+  // The Arch ID token's public keys: any verifier (rewards, a notifier)
+  // reads them, and a JWKS is public by definition.
+  if (url === "/.well-known/jwks.json" || url === "/v1/auth/jwks") return true;
   return false;
 }
 

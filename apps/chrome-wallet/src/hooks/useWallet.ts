@@ -5,6 +5,7 @@ import { keystore, type MigrationStatus } from "../crypto/keystore";
 import type { AppState, WalletAccount, NetworkId, RecipientAsset, Contact } from "../state/types";
 import { DEFAULT_STATE } from "../state/types";
 import { OPEN_AS_KEY } from "../state/open-as-preference";
+import { openSigningSessionAfterUnlock } from "../session/unlock-signing-session";
 
 export interface WalletStateBundle {
   state: AppState;
@@ -96,22 +97,8 @@ export function useWallet() {
       // Step 1: decrypt the keystore. Throws on bad password.
       await walletStore.unlock(password);
       // Step 2: best-effort, open a Turnkey session for the active
-      // account. For passkey wallets this means one WebAuthn prompt
-      // right now; for email wallets it means doing nothing here
-      // (the OTP step is handled by a dedicated UI flow that runs
-      // before the first sign attempt). If WebAuthn is dismissed we
-      // intentionally don't roll the keystore back to locked --
-      // viewing balances and history should never depend on a
-      // signing credential being live.
-      try {
-        const account = await walletStore.getActiveAccount();
-        if (account?.authMethod === "passkey") {
-          await walletStore.openPasskeySession();
-        }
-      } catch {
-        // Swallow: the next sign attempt will throw SessionLockedError
-        // and the UI re-prompts.
-      }
+      // account. Never throws and never re-locks the keystore.
+      await openSigningSessionAfterUnlock();
       await refresh();
     },
     sealLegacy: async (password: string) => {

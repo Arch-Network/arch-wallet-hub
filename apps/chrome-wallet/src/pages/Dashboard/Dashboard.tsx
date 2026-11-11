@@ -253,7 +253,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const { price: btcUsd } = useBtcUsdPrice();
   // Matches the 880px breakpoint that flips the dashboard into a
-  // two-column grid (`html[data-mode="sidepanel"] .dashboard-grid`).
+  // two-column grid (`html[data-layout="fluid"] .dashboard-grid`).
   // Above that width Portfolio sits beside Recent Activity, so the
   // section has room to surface more APL tokens inline before the
   // "+N more tokens" link kicks in. Below it we stay compact so the

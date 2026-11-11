@@ -26,6 +26,14 @@ const shimAliases = {
 };
 
 export default defineConfig({
+  hooks: {
+    // The popup entrypoint would otherwise install popup.html as the
+    // toolbar bubble. That bubble cannot be resized. Click handling in
+    // the service worker opens a real window instead.
+    "build:manifestGenerated": (_wxt, manifest) => {
+      if (manifest.action) delete manifest.action.default_popup;
+    },
+  },
   modules: ["@wxt-dev/module-react"],
   srcDir: ".",
   manifest: {
@@ -46,11 +54,35 @@ export default defineConfig({
     //   sidePanel     -> optional side panel UI
     //   notifications -> tx-broadcast / tx-failure popups so the user
     //                    sees the outcome even after closing the popup
+    //   declarativeNetRequestWithHostAccess
+    //                  -> rewrite wallet.arch.network/passkey.html as
+    //                    HTML. S3 currently answers that URL with an XML
+    //                    403, and 1Password does not inject into XML.
+    //                    Host access is already granted by <all_urls>,
+    //                    so this does not add a store permission warning.
     // Note: `tabs` is intentionally NOT requested. The background uses
     // tabs.query + tabs.sendMessage which are gated by host_permissions
     // <all_urls> below (required to talk to the content script).
-    permissions: ["storage", "alarms", "idle", "activeTab", "sidePanel", "scripting", "notifications"],
+    permissions: [
+      "storage",
+      "alarms",
+      "idle",
+      "activeTab",
+      "sidePanel",
+      "scripting",
+      "notifications",
+      "declarativeNetRequestWithHostAccess",
+    ],
     host_permissions: ["<all_urls>"],
+    declarative_net_request: {
+      rule_resources: [
+        {
+          id: "passkey_page_html",
+          enabled: true,
+          path: "rules/passkey-page.json",
+        },
+      ],
+    },
     // Defense-in-depth on top of MV3 defaults. MV3 already forbids
     // `unsafe-eval` and remote scripts; we restate the intent and
     // explicitly forbid `object-src` so plugins/Flash can't be

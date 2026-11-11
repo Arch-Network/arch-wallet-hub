@@ -33,45 +33,46 @@
 
 import { Turnkey } from "@turnkey/sdk-browser";
 import type { WalletAccount } from "../state/types";
-import { PASSKEY_RP_ID, TURNKEY_API_BASE_URL } from "./constants";
+import { TURNKEY_API_BASE_URL } from "./constants";
+import { withWalletWindowHeld } from "../utils/wallet-autoclose";
+import { effectivePasskeyRpId } from "./passkey-webauthn";
+import {
+  hostedPasskeyClient,
+  PASSKEY_NOT_LISTED_LABEL,
+  usesHostedPasskeyPage,
+} from "./passkey-hosted";
 import type { SessionBootstrap } from "./types";
 
-function base64UrlToBytes(value: string): Uint8Array {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = normalized.padEnd(
-    normalized.length + ((4 - (normalized.length % 4)) % 4),
-    "=",
-  );
-  const binary = globalThis.atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-
-function allowCredentialsForAccount(
-  account: WalletAccount,
-): PublicKeyCredentialDescriptor[] | undefined {
-  if (!account.passkeyCredentialId) return undefined;
-  return [
-    {
-      id: base64UrlToBytes(account.passkeyCredentialId),
-      type: "public-key",
-    },
-  ];
-}
-
 function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
-  // rpId is pinned in constants.ts and never derives from runtime
-  // location. See PASSKEY_RP_ID for rationale (RP confusion + ext-id
-  // drift). The id is the same across popup, sidepanel and tab
-  // contexts and across extension-id changes.
   return new Turnkey({
     apiBaseUrl: TURNKEY_API_BASE_URL,
     defaultOrganizationId: account.organizationId,
-    rpId: PASSKEY_RP_ID,
+    rpId: effectivePasskeyRpId(),
   });
+}
+
+/**
+ * The passkey that answered is not registered on this wallet's
+ * sub-org. The prompt is a discoverable get, so every Arch Wallet
+ * passkey on the device is offered and the user can pick another
+ * wallet's. Nothing was signed.
+ */
+export class WrongPasskeyError extends Error {
+  constructor(walletLabel: string) {
+    super(
+      `That passkey isn't registered to "${walletLabel}". Try again and choose a different passkey.` +
+        (usesHostedPasskeyPage()
+          ? ` If no other passkey is offered, choose "${PASSKEY_NOT_LISTED_LABEL}" in the passkey window.`
+          : ""),
+    );
+    this.name = "WrongPasskeyError";
+  }
+}
+
+/** Turnkey's error text carries the code, e.g. `"turnkeyErrorCode":"CREDENTIAL_NOT_FOUND"`. */
+function isCredentialNotFound(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return message.includes("CREDENTIAL_NOT_FOUND");
 }
 
 export class PasskeyBootstrap implements SessionBootstrap {
@@ -82,6 +83,36 @@ export class PasskeyBootstrap implements SessionBootstrap {
     publicKeyHex: string;
     expirationSeconds: number;
   }): Promise<void> {
+    try {
+      await this.stampLogin(args);
+    } catch (err) {
+      if (isCredentialNotFound(err)) throw new WrongPasskeyError(args.account.label);
+      throw err;
+    }
+  }
+
+  private async stampLogin(args: {
+    account: WalletAccount;
+    publicKeyHex: string;
+    expirationSeconds: number;
+  }): Promise<void> {
+    // Production runs the assertion on https://wallet.arch.network.
+    // 1Password never sees chrome-extension:// prompts, and iCloud
+    // Keychain will not take an extension id as rpId. Dev stays in
+    // the extension page (rpId localhost / extension id).
+    // Don't invalidate prior keys -- if we did, recovering on a
+    // second device would lock out the first. Stale keys age out
+    // on their own via expirationSeconds.
+    const login = {
+      publicKey: args.publicKeyHex,
+      expirationSeconds: String(args.expirationSeconds),
+    };
+    if (usesHostedPasskeyPage()) {
+      await hostedPasskeyClient(args.account.organizationId, TURNKEY_API_BASE_URL).stampLogin(
+        login,
+      );
+      return;
+    }
     const tk = buildPasskeyTurnkey(args.account);
     // The passkey client stamps every activity it sends with a
     // WebAuthn assertion against the user's already-registered
@@ -93,16 +124,21 @@ export class PasskeyBootstrap implements SessionBootstrap {
     // hardware key satisfying mere user-presence (button tap, no
     // biometric/PIN) is rejected. The unlock gate must be a real UV
     // factor.
-    await tk.passkeyClient({
-      allowCredentials: allowCredentialsForAccount(args.account),
-      userVerification: "required",
-    } as any).stampLogin({
-      publicKey: args.publicKeyHex,
-      expirationSeconds: String(args.expirationSeconds),
-      // Don't invalidate prior keys -- if we did, recovering on a
-      // second device would lock out the first. Stale keys age out
-      // on their own via expirationSeconds.
-    });
+    //
+    // Do not pass `allowCredentials`. An empty allow-list is a
+    // discoverable-credential get, which is how 1Password / Bitwarden
+    // answer. Naming the stored credential without `hybrid` made
+    // Brave's native passkey UI skip those providers ("not a valid
+    // option"). Turnkey still rejects a passkey that is not on this
+    // sub-org, so picking the wrong discoverable credential fails
+    // closed.
+    // 1Password and the system passkey sheet take focus. Without the
+    // hold, the wallet window would dismiss itself mid-prompt.
+    await withWalletWindowHeld(() =>
+      tk.passkeyClient({
+        userVerification: "required",
+      } as any).stampLogin(login),
+    );
   }
 }
 

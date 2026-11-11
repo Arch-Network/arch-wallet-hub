@@ -28,7 +28,7 @@
     "@turnkey/crypto": "^2.9.0",
     "@turnkey/http": "^4.0.0",
     "@turnkey/sdk-types": "^0.11.0",
-    "bitcoinjs-lib": "^7.0.1",
+    "bitcoinjs-lib": "^7.0.2",
     "bs58": "^6.0.0",
     "bs58check": "^4.0.0",
     "dotenv": "^16.4.5",
@@ -36,7 +36,7 @@
     "fastify-plugin": "^4.5.1",
     "pg": "^8.13.1",
     "uuid": "^11.0.5",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@fastify/swagger-ui": "^4.2.0",

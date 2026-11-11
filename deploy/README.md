@@ -164,7 +164,8 @@ via `STAMP_LOGIN`.
 
 **One-time provisioning:**
 
-1. Create the dummy email wallet on **mainnet**:
+1. Create the dummy email wallet on **mainnet**. The route answers `410`
+   unless `EMAIL_WALLET_CREATE_ENABLED=true`; turn it on for this step only.
    ```bash
    curl -X POST \
      -H "X-Api-Key: $HUB_API_KEY" -H "X-Network: mainnet" \
@@ -217,6 +218,13 @@ npx cdk deploy WalletHubStack -c corsAllowOrigins=https://hub.arch.network
 
 `npx cdk` resolves to the `aws-cdk` CLI pinned in `infra/cdk/package.json`.
 `corsAllowOrigins` is required; synthesis fails without it.
+
+### Security alerts
+
+CloudTrail, GuardDuty, and paging live in `WalletHubMonitoringStack` so
+they can be turned on without deploying this stack. Follow
+[RUNBOOK-phase3-hardening.md §D](../infra/cdk/RUNBOOK-phase3-hardening.md).
+Do not `cdk deploy WalletHubStack` to enable them.
 
 ### View logs
 

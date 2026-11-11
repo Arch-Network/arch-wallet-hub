@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
+    "test": "node --test test/security-alert.test.js",
     "cdk": "cdk",
     "synth": "cdk synth",
     "diff": "cdk diff WalletHubStack --method template",

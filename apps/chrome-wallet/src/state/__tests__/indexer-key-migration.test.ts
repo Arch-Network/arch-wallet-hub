@@ -5,6 +5,7 @@ import {
 } from "../wallet-store";
 import { DEFAULT_INDEXER_API_KEY } from "../../utils/explorer-config";
 import { INDEXER_BASE_URL } from "../../utils/explorer-config";
+import { DEFAULT_HUB_API_KEY } from "../types";
 
 // Minimal stand-in for AppState shape. migrateApiConfig only reads
 // the api-config fields, so the rest can stay empty / undefined.
@@ -32,6 +33,15 @@ describe("migrateApiConfig — indexer key", () => {
     expect(state.indexerApiKey).toBe(DEFAULT_INDEXER_API_KEY);
     expect(state.indexerApiKey).not.toBe(LEAKED_INDEXER_API_KEY);
     expect(migrated).toBe(true);
+  });
+
+  it("reports no migration when a keyless build has nothing to fill in", () => {
+    // Every read that reports a migration rewrites the keystore, and
+    // every open wallet page answers a keystore write with a read.
+    expect(DEFAULT_INDEXER_API_KEY).toBe("");
+    expect(DEFAULT_HUB_API_KEY).toBe("");
+    const state = makeState({ indexerApiKey: "", hubApiKey: "" });
+    expect(migrateApiConfig(state)).toBe(false);
   });
 
   it("preserves a user-supplied custom key untouched", () => {
