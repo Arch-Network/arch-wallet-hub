@@ -159,6 +159,16 @@ async function addPasskey(context: BrowserContext, page: Page): Promise<void> {
   });
 }
 
+/**
+ * Open Send and wait until it has rendered. The hash change returns
+ * before React routes, and the dashboard still on screen has its own
+ * "Get test ARCH" and "Bitcoin" buttons for an asset click to land on.
+ */
+async function openSend(page: Page, baseUrl: string): Promise<void> {
+  await page.goto(`${baseUrl}#/send`);
+  await expect(page.getByText("Choose which asset you want to send.")).toBeVisible();
+}
+
 async function installIndexerFixtures(context: BrowserContext): Promise<void> {
   await context.route("https://e2e.arch.network/**", async (route) => {
     const url = new URL(route.request().url());
@@ -301,7 +311,7 @@ test.describe("Chrome wallet functional flows", () => {
     await seedWallet(popup);
     await popup.reload();
     await expect(popup.locator(".app-container")).toBeVisible();
-    await popup.goto(`${baseUrl}#/send`);
+    await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /bitcoin/i }).click();
     await popup.getByPlaceholder("tb1p…").fill(ACCOUNT.btcAddress);
@@ -319,7 +329,7 @@ test.describe("Chrome wallet functional flows", () => {
     await seedWallet(popup);
     await popup.reload();
     await expect(popup.locator(".app-container")).toBeVisible();
-    await popup.goto(`${baseUrl}#/send`);
+    await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /arch/i }).first().click();
     await popup.getByPlaceholder("Base58 address").fill("nobody-e2e.arch");
@@ -335,7 +345,7 @@ test.describe("Chrome wallet functional flows", () => {
     await seedWallet(popup);
     await popup.reload();
     await expect(popup.locator(".app-container")).toBeVisible();
-    await popup.goto(`${baseUrl}#/send`);
+    await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /arch/i }).first().click();
     await popup.getByPlaceholder("Base58 address").fill(ACCOUNT.archAddress);
