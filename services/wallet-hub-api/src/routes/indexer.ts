@@ -49,6 +49,11 @@ import { Type } from "@sinclair/typebox";
 import { createHash } from "node:crypto";
 import { indexerForRequest, requestNetwork } from "../indexer/forRequest.js";
 import type { IndexerClient } from "../indexer/client.js";
+import { isAllowedArchRpcMethod } from "../indexer/archRpcAllowlist.js";
+import {
+  InscriptionContentTooLargeError,
+  MAX_INSCRIPTION_CONTENT_BYTES,
+} from "../indexer/inscriptionContentCap.js";
 import { createCoalescingCache } from "../indexer/coalescingCache.js";
 import { auditEvent } from "../audit/audit.js";
 import { getDbPool } from "../db/pool.js";
@@ -217,10 +222,9 @@ const BlockHeightParam = Type.Object({
 
 // JSON-RPC compat body. We accept `method` + `params` only; the
 // envelope (`jsonrpc`, `id`) is constructed server-side. Method
-// names are bounded to avoid pathological / SSRF-via-method-name
-// attempts; the upstream indexer also validates against its own
-// allowlist, but defense-in-depth here keeps obviously-bad
-// requests from ever hitting upstream.
+// names are length-bounded here; the handler then enforces the
+// read-only allowlist (issue #45) before any upstream call so the
+// privileged Indexer key cannot be used for arbitrary RPC.
 const ArchRpcBody = Type.Object({
   method: Type.String({ minLength: 1, maxLength: 128 }),
   params: Type.Unknown(),
@@ -779,6 +783,16 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
       const { id } = request.params as { id: string };
       try {
         const r = await indexer.getBtcInscriptionContent(id);
+        // Belt-and-suspenders: client already caps; refuse to send
+        // anything over the Hub limit even if a future client path
+        // forgets (issue #45).
+        if (r.body.byteLength > MAX_INSCRIPTION_CONTENT_BYTES) {
+          return reply.code(413).send({
+            statusCode: 413,
+            error: "PayloadTooLarge",
+            message: `Inscription content exceeds Hub size cap (${r.body.byteLength} > ${MAX_INSCRIPTION_CONTENT_BYTES} bytes)`,
+          });
+        }
         // Forward the upstream's content-type so the browser knows
         // how to decode the body. Default `application/octet-stream`
         // is the safe fallback if upstream omits the header.
@@ -797,6 +811,13 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
         }
         return reply.send(Buffer.from(r.body));
       } catch (err: any) {
+        if (err instanceof InscriptionContentTooLargeError) {
+          return reply.code(413).send({
+            statusCode: 413,
+            error: "PayloadTooLarge",
+            message: err.message,
+          });
+        }
         const message = err?.message ? String(err.message) : "Inscription proxy failed";
         return reply
           .code(502)
@@ -955,6 +976,10 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
   // oversized `params` bodies via Fastify's bodyLimit instead of
   // long-URL games on GET.
   //
+  // Allowlist (issue #45): only read-only methods in
+  // `ALLOWED_ARCH_RPC_METHODS` are forwarded. Mutating RPC must
+  // not ride the privileged Indexer key through this proxy.
+  //
   // Not audited: this is a read path for things like
   // `read_account_info` -- the audit chain is reserved for
   // mutating calls (faucet, broadcast).
@@ -962,7 +987,7 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
     "/indexer/arch/rpc",
     {
       schema: {
-        summary: "Arch JSON-RPC compat (proxied)",
+        summary: "Arch JSON-RPC compat (proxied, read-only allowlist)",
         tags: ["indexer"],
         body: ArchRpcBody,
       },
@@ -974,6 +999,9 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
         method: string;
         params: unknown;
       };
+      if (!isAllowedArchRpcMethod(method)) {
+        return reply.forbidden(`RPC method not allowed: ${method}`);
+      }
       const result = await forward(reply, () =>
         indexer.archRpc(method, params),
       );

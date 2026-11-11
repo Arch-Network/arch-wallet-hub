@@ -1,4 +1,13 @@
 import type { FastifyInstance } from "fastify";
+import {
+  MAX_INSCRIPTION_CONTENT_BYTES,
+  readResponseBodyCapped,
+} from "./inscriptionContentCap.js";
+
+export {
+  InscriptionContentTooLargeError,
+  MAX_INSCRIPTION_CONTENT_BYTES,
+} from "./inscriptionContentCap.js";
 
 export type IndexerClient = {
   getAccountSummary(address: string): Promise<unknown>;
@@ -82,8 +91,11 @@ export type IndexerClient = {
    * Raw inscription content (binary). Returns the upstream body
    * with its content-type and cache-control headers preserved so
    * the Hub can stream it to the wallet without losing browser
-   * cacheability. Body may be up to several MB; callers should
-   * decide their own size cap.
+   * cacheability.
+   *
+   * Bodies larger than {@link MAX_INSCRIPTION_CONTENT_BYTES} throw
+   * {@link InscriptionContentTooLargeError} (issue #45) — the Hub
+   * must not buffer unbounded upstream payloads.
    */
   getBtcInscriptionContent(id: string): Promise<{
     body: ArrayBuffer;
@@ -285,6 +297,9 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
       // them to the wallet -- ord ships `immutable, max-age=1y`
       // which keeps thumbnails out of the indexer hot path after
       // the first fetch.
+      //
+      // Size: read through readResponseBodyCapped (issue #45) so a
+      // multi-MB inscription cannot OOM the Hub process.
       const url = joinUrl(`/bitcoin/inscriptions/${enc(id)}/content`);
       let res: Response;
       try {
@@ -300,12 +315,12 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
         const body = await res.text().catch(() => "");
         throw new Error(`Indexer error ${res.status} ${res.statusText} (${url}): ${body}`);
       }
-      const body = await res.arrayBuffer();
       const lengthHeader = res.headers.get("content-length");
+      const body = await readResponseBodyCapped(res, MAX_INSCRIPTION_CONTENT_BYTES);
       return {
         body,
         contentType: res.headers.get("content-type") ?? "application/octet-stream",
-        contentLength: lengthHeader ? Number(lengthHeader) : undefined,
+        contentLength: lengthHeader ? Number(lengthHeader) : body.byteLength,
         cacheControl: res.headers.get("cache-control") ?? undefined
       };
     },
