@@ -160,6 +160,22 @@ async function addPasskey(context: BrowserContext, page: Page): Promise<void> {
 }
 
 /**
+ * Load the seeded wallet, unlocked, on the dashboard.
+ *
+ * Loaded at #/dashboard rather than the bare popup URL. From "/" the app
+ * redirects to the dashboard and saves that as the last route; its
+ * route restore then reads the saved route and navigates to it a moment
+ * later, pulling a test that has already moved on back to the dashboard.
+ * Starting on the route it would restore leaves it nothing to do.
+ */
+async function openUnlockedWallet(page: Page, baseUrl: string): Promise<void> {
+  await page.goto(`${baseUrl}#/dashboard`);
+  await seedWallet(page);
+  await page.reload();
+  await expect(page.locator(".app-container")).toBeVisible();
+}
+
+/**
  * Open Send and wait until it has rendered. The hash change returns
  * before React routes, and the dashboard still on screen has its own
  * "Get test ARCH" and "Bitcoin" buttons for an asset click to land on.
@@ -307,10 +323,7 @@ test.describe("Chrome wallet functional flows", () => {
   });
 
   test("prepares a Bitcoin send entirely from deterministic indexer fixtures", async () => {
-    await popup.goto(baseUrl);
-    await seedWallet(popup);
-    await popup.reload();
-    await expect(popup.locator(".app-container")).toBeVisible();
+    await openUnlockedWallet(popup, baseUrl);
     await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /bitcoin/i }).click();
@@ -325,10 +338,7 @@ test.describe("Chrome wallet functional flows", () => {
   });
 
   test("blocks ARCH send review when a .arch name cannot be resolved", async () => {
-    await popup.goto(baseUrl);
-    await seedWallet(popup);
-    await popup.reload();
-    await expect(popup.locator(".app-container")).toBeVisible();
+    await openUnlockedWallet(popup, baseUrl);
     await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /arch/i }).first().click();
@@ -341,10 +351,7 @@ test.describe("Chrome wallet functional flows", () => {
   });
 
   test("accepts a literal Arch address for send without name resolution", async () => {
-    await popup.goto(baseUrl);
-    await seedWallet(popup);
-    await popup.reload();
-    await expect(popup.locator(".app-container")).toBeVisible();
+    await openUnlockedWallet(popup, baseUrl);
     await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /arch/i }).first().click();
