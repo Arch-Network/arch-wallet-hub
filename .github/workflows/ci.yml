@@ -137,3 +137,17 @@ jobs:
       - name: Build
         working-directory: apps/chrome-wallet
         run: npm run build
+      # Loads the extension just built into Chromium. Run directly, not
+      # through `npm run test:e2e`, which would build a second time.
+      #
+      # No `--with-deps`: the runner image already has Chromium's shared
+      # libraries, and the flag only adds fonts through apt, which hung
+      # this job when the Ubuntu mirrors did not resolve.
+      - name: Install Chromium
+        working-directory: apps/chrome-wallet
+        timeout-minutes: 10
+        run: npx playwright install chromium
+      - name: E2E
+        working-directory: apps/chrome-wallet
+        timeout-minutes: 10
+        run: npx playwright test --config e2e/playwright.config.ts

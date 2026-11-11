@@ -225,3 +225,34 @@ jobs:
           CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+
+  # A failed release is otherwise silent: 0.9.9 uploaded to the store but
+  # was never published, and nobody knew for six days.
+  alert-on-failure:
+    needs: [build, github-release, chrome-web-store]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.triggering_actor }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BUILD: ${{ needs.build.result }}
+          GITHUB_RELEASE: ${{ needs.github-release.result }}
+          CHROME_WEB_STORE: ${{ needs.chrome-web-store.result }}
+        run: |
+          body="The Release Chrome Wallet run for \`$REF_NAME\` did not finish: $RUN_URL
+
+          - build: $BUILD
+          - github-release: $GITHUB_RELEASE
+          - chrome-web-store: $CHROME_WEB_STORE
+
+          If chrome-web-store failed at \"Publishing...\", the zip is uploaded as a draft and users are still on the previous version. The reason is in the job log; fix it in the [developer dashboard](https://chrome.google.com/webstore/devconsole) and submit the draft for review there."
+          # Assigning notifies whoever cut the release; fall back to an
+          # unassigned issue if that account cannot be assigned.
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "Chrome wallet release failed: $REF_NAME" --body "$body" --assignee "$ACTOR" ||
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "Chrome wallet release failed: $REF_NAME" --body "$body"

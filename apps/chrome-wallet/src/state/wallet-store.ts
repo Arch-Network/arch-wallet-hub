@@ -179,7 +179,10 @@ export function migrateApiConfig(state: any): boolean {
     state.hubBaseUrl = DEFAULT_HUB_BASE_URL;
     migrated = true;
   }
-  if (!state.hubApiKey) {
+  // Compared, not just assigned: a build without keys defaults to "", and
+  // reporting "" -> "" as a migration rewrites the keystore on every read,
+  // which every open wallet page answers with another read.
+  if (!state.hubApiKey && state.hubApiKey !== DEFAULT_HUB_API_KEY) {
     state.hubApiKey = DEFAULT_HUB_API_KEY;
     migrated = true;
   } else if (
@@ -194,7 +197,7 @@ export function migrateApiConfig(state: any): boolean {
     state.indexerBaseUrl = INDEXER_BASE_URL;
     migrated = true;
   }
-  if (!state.indexerApiKey) {
+  if (!state.indexerApiKey && state.indexerApiKey !== DEFAULT_INDEXER_API_KEY) {
     state.indexerApiKey = DEFAULT_INDEXER_API_KEY;
     migrated = true;
   } else if (state.indexerApiKey === LEAKED_INDEXER_API_KEY) {
