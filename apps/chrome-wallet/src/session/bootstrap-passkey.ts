@@ -36,7 +36,11 @@ import type { WalletAccount } from "../state/types";
 import { TURNKEY_API_BASE_URL } from "./constants";
 import { withWalletWindowHeld } from "../utils/wallet-autoclose";
 import { effectivePasskeyRpId } from "./passkey-webauthn";
-import { hostedPasskeyClient, usesHostedPasskeyPage } from "./passkey-hosted";
+import {
+  hostedPasskeyClient,
+  PASSKEY_NOT_LISTED_LABEL,
+  usesHostedPasskeyPage,
+} from "./passkey-hosted";
 import type { SessionBootstrap } from "./types";
 
 function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
@@ -47,10 +51,47 @@ function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
   });
 }
 
+/**
+ * The passkey that answered is not registered on this wallet's
+ * sub-org. The prompt is a discoverable get, so every Arch Wallet
+ * passkey on the device is offered and the user can pick another
+ * wallet's. Nothing was signed.
+ */
+export class WrongPasskeyError extends Error {
+  constructor(walletLabel: string) {
+    super(
+      `That passkey isn't registered to "${walletLabel}". Try again and choose a different passkey.` +
+        (usesHostedPasskeyPage()
+          ? ` If no other passkey is offered, choose "${PASSKEY_NOT_LISTED_LABEL}" in the passkey window.`
+          : ""),
+    );
+    this.name = "WrongPasskeyError";
+  }
+}
+
+/** Turnkey's error text carries the code, e.g. `"turnkeyErrorCode":"CREDENTIAL_NOT_FOUND"`. */
+function isCredentialNotFound(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return message.includes("CREDENTIAL_NOT_FOUND");
+}
+
 export class PasskeyBootstrap implements SessionBootstrap {
   readonly id = "passkey";
 
   async register(args: {
+    account: WalletAccount;
+    publicKeyHex: string;
+    expirationSeconds: number;
+  }): Promise<void> {
+    try {
+      await this.stampLogin(args);
+    } catch (err) {
+      if (isCredentialNotFound(err)) throw new WrongPasskeyError(args.account.label);
+      throw err;
+    }
+  }
+
+  private async stampLogin(args: {
     account: WalletAccount;
     publicKeyHex: string;
     expirationSeconds: number;

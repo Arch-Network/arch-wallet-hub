@@ -3,6 +3,7 @@ import {
   effectivePasskeyRpId,
   passkeyAllowCredentials,
   passkeyCreationSelection,
+  passkeyUserName,
 } from "../passkey-webauthn";
 
 afterEach(() => {
@@ -51,5 +52,19 @@ describe("passkeyAllowCredentials", () => {
   it("omits the filter when there is no stored credential", () => {
     expect(passkeyAllowCredentials(undefined)).toBeUndefined();
     expect(passkeyAllowCredentials(null)).toBeUndefined();
+  });
+});
+
+describe("passkeyUserName", () => {
+  it("names the passkey after its wallet so the picker can tell two wallets apart", () => {
+    expect(passkeyUserName("normal", new Date(2026, 10, 11, 9, 5))).toBe(
+      "normal (2026-11-11 09:05)",
+    );
+  });
+
+  it("separates two wallets that share a label by when they were made", () => {
+    expect(passkeyUserName("Passkey Wallet", new Date(2026, 10, 11, 9, 5))).not.toBe(
+      passkeyUserName("Passkey Wallet", new Date(2026, 10, 11, 9, 6)),
+    );
   });
 });

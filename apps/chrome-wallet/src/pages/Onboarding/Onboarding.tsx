@@ -19,6 +19,7 @@ import {
 import { readHubToken } from "../../utils/hub-session-store";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
 import { createArchPasskey } from "../../session/passkey-hosted";
+import { passkeyUserName } from "../../session/passkey-webauthn";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 import ArchLogoAnimated from "../../components/ArchLogoAnimated";
 import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
@@ -356,13 +357,14 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       );
 
       const displayName = walletName.trim() || "Arch Wallet";
+      const walletLabel = walletName.trim() || "Passkey Wallet";
       setStatusMessage("Follow the passkey prompt.");
 
       const passkey = await withTimeout(
         createArchPasskey({
           apiBaseUrl: config.apiBaseUrl,
           organizationId: config.organizationId,
-          userName: `${externalUserId}-${Date.now()}`,
+          userName: passkeyUserName(walletLabel),
           displayName,
         }),
         180_000,
@@ -393,7 +395,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       const account: WalletAccount = {
         id: result.resourceId,
-        label: walletName.trim() || "Passkey Wallet",
+        label: walletLabel,
         btcAddress: result.defaultAddress ?? "",
         publicKeyHex: result.defaultPublicKeyHex ?? "",
         archAddress: result.defaultPublicKeyHex

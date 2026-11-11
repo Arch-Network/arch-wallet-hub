@@ -12,7 +12,7 @@ vi.mock("@turnkey/sdk-browser", () => ({
   Turnkey: mocks.Turnkey,
 }));
 
-import { PasskeyBootstrap } from "../bootstrap-passkey";
+import { PasskeyBootstrap, WrongPasskeyError } from "../bootstrap-passkey";
 
 const account: WalletAccount = {
   id: "acct-1",
@@ -57,5 +57,36 @@ describe("PasskeyBootstrap", () => {
     expect(mocks.passkeyClient).toHaveBeenCalledWith(
       expect.not.objectContaining({ allowCredentials: expect.anything() }),
     );
+  });
+
+  it("says the passkey belongs to another wallet when Turnkey does not find it on this sub-org", async () => {
+    // Verbatim from a user report: the other of two saved passkeys answered.
+    mocks.stampLogin.mockRejectedValue(
+      new Error(
+        "Turnkey error 16: credential ID could not be found in organization or its parent organization " +
+          "organizationId=9e906f47-388c-4c89-8ee8-066c895032c1 credentialId=3_5Sd25AitUcKe5b6uS5Fjvwa44 " +
+          '(Details: [{"@type":"type.googleapis.com/errors.v1.TurnkeyErrorDetail","turnkeyErrorCode":"CREDENTIAL_NOT_FOUND"}])',
+      ),
+    );
+
+    const attempt = new PasskeyBootstrap().register({
+      account,
+      publicKeyHex: "pk",
+      expirationSeconds: 600,
+    });
+
+    await expect(attempt).rejects.toBeInstanceOf(WrongPasskeyError);
+    await expect(attempt).rejects.toThrow(
+      'That passkey isn\'t registered to "Passkey wallet". Try again and choose a different passkey.',
+    );
+  });
+
+  it("leaves every other failure as Turnkey reported it", async () => {
+    const dismissed = new Error("The operation either timed out or was not allowed.");
+    mocks.stampLogin.mockRejectedValue(dismissed);
+
+    await expect(
+      new PasskeyBootstrap().register({ account, publicKeyHex: "pk", expirationSeconds: 600 }),
+    ).rejects.toBe(dismissed);
   });
 });

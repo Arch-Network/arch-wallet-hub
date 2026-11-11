@@ -57,6 +57,18 @@ export function passkeyCreationSelection(): AuthenticatorSelectionCriteria {
   };
 }
 
+/**
+ * `user.name` for a new passkey. Password managers and the system
+ * picker list this string, and the unlock prompt offers every Arch
+ * Wallet passkey on the device, so it has to say which wallet the
+ * passkey opens. The minute separates wallets that share a label.
+ */
+export function passkeyUserName(walletLabel: string, now = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `${walletLabel} (${date} ${pad(now.getHours())}:${pad(now.getMinutes())})`;
+}
+
 function base64UrlToBytes(value: string): Uint8Array {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(

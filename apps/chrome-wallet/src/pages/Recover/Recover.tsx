@@ -76,6 +76,7 @@ import {
   type WalletAccount,
 } from "../../state/types";
 import { createArchPasskey } from "../../session/passkey-hosted";
+import { passkeyUserName } from "../../session/passkey-webauthn";
 import { resolveRecoveredHubResourceId } from "../../utils/hub-resource";
 
 type Step = "email" | "otp" | "pick" | "password" | "done";
@@ -644,7 +645,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
           createArchPasskey({
             apiBaseUrl: config.apiBaseUrl,
             organizationId: verifyResult.organizationId,
-            userName: `${verifyResult.externalUserId ?? "recovered"}-${Date.now()}`,
+            userName: passkeyUserName(displayName),
             displayName,
           }),
           180_000,
