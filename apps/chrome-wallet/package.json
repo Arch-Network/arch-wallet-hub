@@ -27,7 +27,7 @@
     "@turnkey/crypto": "^2.9.0",
     "@turnkey/http": "^4.0.0",
     "@turnkey/sdk-browser": "^5.2.1",
-    "bitcoinjs-lib": "^7.0.1",
+    "bitcoinjs-lib": "^7.0.2",
     "bs58": "^6.0.0",
     "buffer": "^6.0.3",
     "qrcode.react": "^4.2.0",
