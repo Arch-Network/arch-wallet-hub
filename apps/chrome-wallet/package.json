@@ -1,6 +1,6 @@
 {
   "name": "@arch/chrome-wallet",
-  "version": "0.9.6",
+  "version": "0.9.11",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "wxt build && playwright test --config e2e/playwright.config.ts",
     "screenshots": "wxt build && playwright test --config screenshots/playwright.config.ts"
   },
   "dependencies": {
@@ -26,7 +27,7 @@
     "@turnkey/crypto": "^2.9.0",
     "@turnkey/http": "^4.0.0",
     "@turnkey/sdk-browser": "^5.2.1",
-    "bitcoinjs-lib": "^7.0.1",
+    "bitcoinjs-lib": "^7.0.2",
     "bs58": "^6.0.0",
     "buffer": "^6.0.3",
     "qrcode.react": "^4.2.0",

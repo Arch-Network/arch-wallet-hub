@@ -36,6 +36,11 @@ import type { WalletAccount } from "../state/types";
 import { TURNKEY_API_BASE_URL } from "./constants";
 import { withWalletWindowHeld } from "../utils/wallet-autoclose";
 import { effectivePasskeyRpId } from "./passkey-webauthn";
+import {
+  hostedPasskeyClient,
+  PASSKEY_NOT_LISTED_LABEL,
+  usesHostedPasskeyPage,
+} from "./passkey-hosted";
 import type { SessionBootstrap } from "./types";
 
 function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
@@ -46,6 +51,30 @@ function buildPasskeyTurnkey(account: WalletAccount): Turnkey {
   });
 }
 
+/**
+ * The passkey that answered is not registered on this wallet's
+ * sub-org. The prompt is a discoverable get, so every Arch Wallet
+ * passkey on the device is offered and the user can pick another
+ * wallet's. Nothing was signed.
+ */
+export class WrongPasskeyError extends Error {
+  constructor(walletLabel: string) {
+    super(
+      `That passkey isn't registered to "${walletLabel}". Try again and choose a different passkey.` +
+        (usesHostedPasskeyPage()
+          ? ` If no other passkey is offered, choose "${PASSKEY_NOT_LISTED_LABEL}" in the passkey window.`
+          : ""),
+    );
+    this.name = "WrongPasskeyError";
+  }
+}
+
+/** Turnkey's error text carries the code, e.g. `"turnkeyErrorCode":"CREDENTIAL_NOT_FOUND"`. */
+function isCredentialNotFound(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return message.includes("CREDENTIAL_NOT_FOUND");
+}
+
 export class PasskeyBootstrap implements SessionBootstrap {
   readonly id = "passkey";
 
@@ -54,6 +83,36 @@ export class PasskeyBootstrap implements SessionBootstrap {
     publicKeyHex: string;
     expirationSeconds: number;
   }): Promise<void> {
+    try {
+      await this.stampLogin(args);
+    } catch (err) {
+      if (isCredentialNotFound(err)) throw new WrongPasskeyError(args.account.label);
+      throw err;
+    }
+  }
+
+  private async stampLogin(args: {
+    account: WalletAccount;
+    publicKeyHex: string;
+    expirationSeconds: number;
+  }): Promise<void> {
+    // Production runs the assertion on https://wallet.arch.network.
+    // 1Password never sees chrome-extension:// prompts, and iCloud
+    // Keychain will not take an extension id as rpId. Dev stays in
+    // the extension page (rpId localhost / extension id).
+    // Don't invalidate prior keys -- if we did, recovering on a
+    // second device would lock out the first. Stale keys age out
+    // on their own via expirationSeconds.
+    const login = {
+      publicKey: args.publicKeyHex,
+      expirationSeconds: String(args.expirationSeconds),
+    };
+    if (usesHostedPasskeyPage()) {
+      await hostedPasskeyClient(args.account.organizationId, TURNKEY_API_BASE_URL).stampLogin(
+        login,
+      );
+      return;
+    }
     const tk = buildPasskeyTurnkey(args.account);
     // The passkey client stamps every activity it sends with a
     // WebAuthn assertion against the user's already-registered
@@ -78,13 +137,7 @@ export class PasskeyBootstrap implements SessionBootstrap {
     await withWalletWindowHeld(() =>
       tk.passkeyClient({
         userVerification: "required",
-      } as any).stampLogin({
-        publicKey: args.publicKeyHex,
-        expirationSeconds: String(args.expirationSeconds),
-        // Don't invalidate prior keys -- if we did, recovering on a
-        // second device would lock out the first. Stale keys age out
-        // on their own via expirationSeconds.
-      }),
+      } as any).stampLogin(login),
     );
   }
 }

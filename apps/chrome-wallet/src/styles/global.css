@@ -363,6 +363,41 @@ a {
   color: #fff;
 }
 
+/* A passkey ceremony is open in its own window (PasskeyWaitBanner). */
+.passkey-wait {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  width: min(680px, calc(100% - 32px));
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-chip);
+  background: rgba(31, 29, 31, 0.96);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.passkey-wait-actions {
+  display: flex;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.passkey-wait-actions button {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
 .app-sidebar {
   display: none;
 }

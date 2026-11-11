@@ -43,7 +43,7 @@
  *     │  returns HPKE-encrypted credentialBundle
  *     ├─ mark challenge consumed
  *     └─ return { credentialBundle, organizationId, walletId,
- *                  defaultAddress, defaultPublicKeyHex,
+ *                  resourceId, defaultAddress, defaultPublicKeyHex,
  *                  externalUserId, authMethod, expiresInSeconds }
  *
  * Security posture:
@@ -71,6 +71,7 @@ import { withDbTransaction } from "../db/tx.js";
 import { getDbPool } from "../db/pool.js";
 import { findUsersByRecoveryEmail, getUserByExternalId } from "../db/apps.js";
 import { setDefaultRateLimitGroup } from "../plugins/rateLimit.js";
+import { registerEmailSigninRoutes } from "./recoverySignin.js";
 import { listTurnkeyResourcesForUserForApp } from "../db/queries.js";
 import {
   computeCandidateToken,
@@ -229,6 +230,8 @@ const VerifyResponse = Type.Object({
    *  CREATE_AUTHENTICATORS with the recovered API key. */
   rootUserId: Type.Union([Type.String(), Type.Null()]),
   walletId: Type.Union([Type.String(), Type.Null()]),
+  /** Hub resource primary key. Distinct from `walletId`. */
+  resourceId: Type.String(),
   defaultAddress: Type.Union([Type.String(), Type.Null()]),
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   externalUserId: Type.Union([Type.String(), Type.Null()]),
@@ -246,6 +249,14 @@ const VerifyResponse = Type.Object({
 
 export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
   setDefaultRateLimitGroup(server, "recovery");
+
+  registerEmailSigninRoutes(server, {
+    maxPerWindow: RATE_LIMIT_MAX_INITS,
+    windowMs: RATE_LIMIT_WINDOW_MS,
+    challengeTtlMs: CHALLENGE_TTL_MS,
+    maxVerifyAttempts: VERIFY_MAX_ATTEMPTS,
+    otpEmail: () => buildOtpEmailCustomization(server.config)
+  });
 
   server.post(
     "/recovery/email/init",
@@ -1451,6 +1462,7 @@ export const registerRecoveryRoutes: FastifyPluginAsync = async (server) => {
           organizationId: candidate.organizationId,
           rootUserId: candidate.rootUserId,
           walletId: candidate.walletId,
+          resourceId: candidate.resourceId,
           defaultAddress: candidate.defaultAddress,
           defaultPublicKeyHex: candidate.defaultPublicKeyHex,
           externalUserId: candidate.externalUserId,

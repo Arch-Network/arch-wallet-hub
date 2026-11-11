@@ -273,6 +273,11 @@ export type VerifyRecoveryEmailResponse = {
   rootUserId: string | null;
   /** Wallet metadata so the client can rebuild a WalletAccount. */
   walletId: string | null;
+  /**
+   * Hub `turnkey_resources.id`. Session mint and signing look this up.
+   * Not the same value as `walletId`. Older hubs omit it.
+   */
+  resourceId?: string | null;
   defaultAddress: string | null;
   defaultPublicKeyHex: string | null;
   /** externalUserId the wallet was originally bound to. */
@@ -377,6 +382,7 @@ export type GetTurnkeyWalletResponse = {
   turnkeyRootUserId: string | null;
   walletId: string | null;
   defaultAddress: string | null;
+  defaultPublicKeyHex?: string | null;
   defaultAddressFormat: string | null;
   defaultDerivationPath: string | null;
   createdAt: string;

@@ -5,14 +5,12 @@
  * Password managers (1Password, Bitwarden) only offer a passkey when
  * the request looks like one they are allowed to answer:
  *
- *   - `rpId` must match the document origin. In the extension that
- *     origin is `chrome-extension://<id>/`, so the rpId has to be the
- *     extension id. A pinned domain like `wallet.arch.network` is
- *     correct on a hosted https page (and on mobile associated
- *     domains) but 1Password treats it as a phishing mismatch from
- *     the extension and hides itself from the picker. Chrome's
- *     platform authenticator is more lenient, which is why Touch ID
- *     kept working.
+ *   - `rpId` must match the document origin. Production ceremonies
+ *     run on https://wallet.arch.network (`passkey-hosted.ts`) because
+ *     1Password only hooks https pages and iCloud Keychain will not
+ *     take an extension id. This helper is the dev and extension-page
+ *     fallback: there the rpId is the extension id, since 1Password
+ *     treats `wallet.arch.network` on `chrome-extension://` as phishing.
  *   - Assertions must be discoverable (empty `allowCredentials`) or,
  *     if we name a credential, include the `hybrid` transport.
  *     Naming a credential with no transports makes Brave/Chrome's
@@ -57,6 +55,18 @@ export function passkeyCreationSelection(): AuthenticatorSelectionCriteria {
     residentKey: "preferred",
     requireResidentKey: false,
   };
+}
+
+/**
+ * `user.name` for a new passkey. Password managers and the system
+ * picker list this string, and the unlock prompt offers every Arch
+ * Wallet passkey on the device, so it has to say which wallet the
+ * passkey opens. The minute separates wallets that share a label.
+ */
+export function passkeyUserName(walletLabel: string, now = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `${walletLabel} (${date} ${pad(now.getHours())}:${pad(now.getMinutes())})`;
 }
 
 function base64UrlToBytes(value: string): Uint8Array {

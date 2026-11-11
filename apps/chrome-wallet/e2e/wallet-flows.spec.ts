@@ -1,4 +1,5 @@
 import { test, expect, chromium, type BrowserContext, type Page } from "@playwright/test";
+import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -24,6 +25,7 @@ const ACCOUNT = {
 type SeedOptions = {
   unlocked?: boolean;
   checkpoint?: boolean;
+  authMethod?: "email" | "passkey";
 };
 
 async function extensionId(context: BrowserContext): Promise<string> {
@@ -39,7 +41,7 @@ async function seedWallet(page: Page, options: SeedOptions = {}): Promise<void> 
     locked: false,
     network: "testnet4",
     activeAccountId: ACCOUNT.id,
-    accounts: [ACCOUNT],
+    accounts: [{ ...ACCOUNT, authMethod: options.authMethod ?? ACCOUNT.authMethod }],
     connectedSites: {},
     hubBaseUrl: "https://e2e.arch.network",
     hubApiKey: "e2e-key",
@@ -117,6 +119,72 @@ async function seedWallet(page: Page, options: SeedOptions = {}): Promise<void> 
   );
 }
 
+const PASSKEY_PAGE_URL = "https://wallet.arch.network/passkey.html";
+
+/** The ceremony page is injected by the extension; the hosted file is empty. */
+async function stubPasskeyPage(context: BrowserContext): Promise<void> {
+  await context.route(PASSKEY_PAGE_URL, (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><title>Arch Wallet</title>" }),
+  );
+}
+
+/**
+ * Give the passkey page a passkey that answers on its own, as a second
+ * Arch Wallet passkey saved on the same device would.
+ */
+async function addPasskey(context: BrowserContext, page: Page): Promise<void> {
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  const { authenticatorId } = await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  await cdp.send("WebAuthn.addCredential", {
+    authenticatorId,
+    credential: {
+      credentialId: Buffer.from("e2e-other-wallet-passkey").toString("base64"),
+      isResidentCredential: true,
+      rpId: "wallet.arch.network",
+      privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
+      userHandle: Buffer.from("e2e-other-wallet").toString("base64"),
+      signCount: 0,
+    },
+  });
+}
+
+/**
+ * Load the seeded wallet, unlocked, on the dashboard.
+ *
+ * Loaded at #/dashboard rather than the bare popup URL. From "/" the app
+ * redirects to the dashboard and saves that as the last route; its
+ * route restore then reads the saved route and navigates to it a moment
+ * later, pulling a test that has already moved on back to the dashboard.
+ * Starting on the route it would restore leaves it nothing to do.
+ */
+async function openUnlockedWallet(page: Page, baseUrl: string): Promise<void> {
+  await page.goto(`${baseUrl}#/dashboard`);
+  await seedWallet(page);
+  await page.reload();
+  await expect(page.locator(".app-container")).toBeVisible();
+}
+
+/**
+ * Open Send and wait until it has rendered. The hash change returns
+ * before React routes, and the dashboard still on screen has its own
+ * "Get test ARCH" and "Bitcoin" buttons for an asset click to land on.
+ */
+async function openSend(page: Page, baseUrl: string): Promise<void> {
+  await page.goto(`${baseUrl}#/send`);
+  await expect(page.getByText("Choose which asset you want to send.")).toBeVisible();
+}
+
 async function installIndexerFixtures(context: BrowserContext): Promise<void> {
   await context.route("https://e2e.arch.network/**", async (route) => {
     const url = new URL(route.request().url());
@@ -148,7 +216,11 @@ async function installIndexerFixtures(context: BrowserContext): Promise<void> {
 }
 
 test.describe("Chrome wallet functional flows", () => {
-  test.skip(!existsSync(EXTENSION_DIR), `Run "npm run build" before E2E tests: ${EXTENSION_DIR}`);
+  // Never skipped in CI: a missing build there has to fail, not pass quietly.
+  test.skip(
+    !existsSync(EXTENSION_DIR) && !process.env.CI,
+    `Run "npm run build" before E2E tests: ${EXTENSION_DIR}`,
+  );
 
   let context: BrowserContext;
   let popup: Page;
@@ -189,12 +261,70 @@ test.describe("Chrome wallet functional flows", () => {
     await expect(popup).toHaveURL(/#\/recover/);
   });
 
-  test("prepares a Bitcoin send entirely from deterministic indexer fixtures", async () => {
+  test("a passkey wait says where to finish and can be cancelled", async () => {
+    await stubPasskeyPage(context);
     await popup.goto(baseUrl);
-    await seedWallet(popup);
+    await seedWallet(popup, { unlocked: false, authMethod: "passkey" });
     await popup.reload();
+
+    const passkeyOpened = context.waitForEvent("page");
+    await popup.getByPlaceholder("Your password").fill(PASSWORD);
+    await popup.getByRole("button", { name: /unlock/i }).click();
+
+    const passkeyPage = await passkeyOpened;
+    await expect(passkeyPage.getByRole("button", { name: "My passkey isn't listed" })).toBeVisible();
+    await expect(popup.getByText("Waiting for your passkey")).toBeVisible();
+
+    await popup.getByRole("button", { name: "Cancel" }).click();
+    await expect.poll(() => passkeyPage.isClosed()).toBe(true);
+    await expect(popup.getByText("Waiting for your passkey")).toBeHidden();
     await expect(popup.locator(".app-container")).toBeVisible();
-    await popup.goto(`${baseUrl}#/send`);
+  });
+
+  test("a wrong passkey at unlock is reported and can be retried", async () => {
+    await stubPasskeyPage(context);
+    // Turnkey's reply when the passkey that answered is not on the wallet's sub-org.
+    await context.route("https://api.turnkey.com/**", (route) =>
+      route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: 16,
+          message:
+            "credential ID could not be found in organization or its parent organization organizationId=e2e-org credentialId=e2e",
+          details: [{ turnkeyErrorCode: "CREDENTIAL_NOT_FOUND" }],
+        }),
+      }),
+    );
+    await popup.goto(baseUrl);
+    await seedWallet(popup, { unlocked: false, authMethod: "passkey" });
+    await popup.reload();
+
+    const passkeyOpened = context.waitForEvent("page");
+    await popup.getByPlaceholder("Your password").fill(PASSWORD);
+    await popup.getByRole("button", { name: /unlock/i }).click();
+    const passkeyPage = await passkeyOpened;
+    await addPasskey(context, passkeyPage);
+    await passkeyPage.getByRole("button", { name: "Continue" }).click();
+
+    await expect(popup.getByText("Signing is not unlocked yet")).toBeVisible();
+    await expect(popup.getByText(`That passkey isn't registered to "${ACCOUNT.label}"`)).toBeVisible();
+    await expect(popup.locator(".app-container")).toBeVisible();
+
+    const retryOpened = context.waitForEvent("page");
+    await popup.getByRole("button", { name: "Try again" }).click();
+    const retryPage = await retryOpened;
+    await expect(popup.getByText("Waiting for your passkey")).toBeVisible();
+    await expect(popup.getByText("Signing is not unlocked yet")).toBeHidden();
+
+    await popup.getByRole("button", { name: "Cancel" }).click();
+    await expect.poll(() => retryPage.isClosed()).toBe(true);
+    await expect(popup.getByText("Signing is not unlocked yet")).toBeHidden();
+  });
+
+  test("prepares a Bitcoin send entirely from deterministic indexer fixtures", async () => {
+    await openUnlockedWallet(popup, baseUrl);
+    await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /bitcoin/i }).click();
     await popup.getByPlaceholder("tb1p…").fill(ACCOUNT.btcAddress);
@@ -208,11 +338,8 @@ test.describe("Chrome wallet functional flows", () => {
   });
 
   test("blocks ARCH send review when a .arch name cannot be resolved", async () => {
-    await popup.goto(baseUrl);
-    await seedWallet(popup);
-    await popup.reload();
-    await expect(popup.locator(".app-container")).toBeVisible();
-    await popup.goto(`${baseUrl}#/send`);
+    await openUnlockedWallet(popup, baseUrl);
+    await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /arch/i }).first().click();
     await popup.getByPlaceholder("Base58 address").fill("nobody-e2e.arch");
@@ -224,11 +351,8 @@ test.describe("Chrome wallet functional flows", () => {
   });
 
   test("accepts a literal Arch address for send without name resolution", async () => {
-    await popup.goto(baseUrl);
-    await seedWallet(popup);
-    await popup.reload();
-    await expect(popup.locator(".app-container")).toBeVisible();
-    await popup.goto(`${baseUrl}#/send`);
+    await openUnlockedWallet(popup, baseUrl);
+    await openSend(popup, baseUrl);
 
     await popup.getByRole("button", { name: /arch/i }).first().click();
     await popup.getByPlaceholder("Base58 address").fill(ACCOUNT.archAddress);
@@ -260,6 +384,7 @@ test.describe("Chrome wallet functional flows", () => {
       address: ACCOUNT.btcAddress,
       publicKey: ACCOUNT.publicKeyHex,
       archAddress: ACCOUNT.archAddress,
+      kind: ACCOUNT.kind,
     });
 
     const rejectOpened = context.waitForEvent("page");

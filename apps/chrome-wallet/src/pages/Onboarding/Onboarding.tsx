@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
-import { Turnkey } from "@turnkey/sdk-browser";
 import { walletStore } from "../../state/wallet-store";
 import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
@@ -19,11 +18,8 @@ import {
 } from "../../state/types";
 import { readHubToken } from "../../utils/hub-session-store";
 import { mintHubSessionWithRecovery } from "../../session/hub-session-recovery";
-import {
-  effectivePasskeyRpId,
-  passkeyCreationSelection,
-} from "../../session/passkey-webauthn";
-import { withWalletWindowHeld } from "../../utils/wallet-autoclose";
+import { createArchPasskey } from "../../session/passkey-hosted";
+import { passkeyUserName } from "../../session/passkey-webauthn";
 import RecoveryDisclosure from "../../components/RecoveryDisclosure";
 import ArchLogoAnimated from "../../components/ArchLogoAnimated";
 import { externalWalletAdapters, getExternalWalletAdapter } from "../../wallets/external-wallets";
@@ -360,32 +356,18 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
         "Fetching server configuration",
       );
 
-      // Extension pages must use the extension id as rpId so 1Password
-      // sees a matching origin. Hosted pages use wallet.arch.network.
-      const rpId = effectivePasskeyRpId();
-
-      setStatusMessage("Creating passkey - follow the browser prompt...");
-
-      const tk = new Turnkey({
-        apiBaseUrl: config.apiBaseUrl,
-        defaultOrganizationId: config.organizationId,
-        rpId,
-      });
-
       const displayName = walletName.trim() || "Arch Wallet";
+      const walletLabel = walletName.trim() || "Passkey Wallet";
+      setStatusMessage("Follow the passkey prompt.");
+
       const passkey = await withTimeout(
-        withWalletWindowHeld(() =>
-          tk.passkeyClient().createUserPasskey({
-            publicKey: {
-              rp: { id: rpId, name: "Arch Wallet" },
-              user: { name: `${externalUserId}-${Date.now()}`, displayName },
-              // SECURITY: UV required. requireResidentKey is explicitly
-              // false so Turnkey's default `true` does not hide 1Password.
-              authenticatorSelection: passkeyCreationSelection(),
-            },
-          }),
-        ),
-        30_000,
+        createArchPasskey({
+          apiBaseUrl: config.apiBaseUrl,
+          organizationId: config.organizationId,
+          userName: passkeyUserName(walletLabel),
+          displayName,
+        }),
+        180_000,
         "Creating passkey",
       );
 
@@ -413,7 +395,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       const account: WalletAccount = {
         id: result.resourceId,
-        label: walletName.trim() || "Passkey Wallet",
+        label: walletLabel,
         btcAddress: result.defaultAddress ?? "",
         publicKeyHex: result.defaultPublicKeyHex ?? "",
         archAddress: result.defaultPublicKeyHex
