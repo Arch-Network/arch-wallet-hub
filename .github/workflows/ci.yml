@@ -137,3 +137,11 @@ jobs:
       - name: Build
         working-directory: apps/chrome-wallet
         run: npm run build
+      # Loads the extension just built into Chromium. Run directly, not
+      # through `npm run test:e2e`, which would build a second time.
+      - name: Install Chromium
+        working-directory: apps/chrome-wallet
+        run: npx playwright install --with-deps chromium
+      - name: E2E
+        working-directory: apps/chrome-wallet
+        run: npx playwright test --config e2e/playwright.config.ts
