@@ -231,6 +231,34 @@ describe("History loading", () => {
     expect(button(el, "Load more")).toBeUndefined();
   });
 
+  it("asks again for a page that failed before moving past it", async () => {
+    const pagesAsked: number[] = [];
+    let failPageTwo = true;
+    h.archFeed = async (_address, page) => {
+      pagesAsked.push(page);
+      if (page === 2 && failPageTwo) throw new Error("Hub indexer error 503");
+      return page === 3 ? feedOf("p3-0") : fullPage(`p${page}`);
+    };
+
+    const el = await renderHistory();
+    button(el, "Load more")!.click();
+    await settle();
+    // Page 2 failed: the first page stays, and the banner says so.
+    expect(shownTxids(el)).toHaveLength(20);
+    expect(el.textContent).toContain("Couldn't load Arch");
+
+    failPageTwo = false;
+    button(el, "Load more")!.click();
+    await settle();
+
+    // The same page again, not page 3 with page 2's rows left out.
+    expect(pagesAsked).not.toContain(3);
+    const shown = shownTxids(el);
+    expect(shown).toHaveLength(40);
+    expect(shown).toContain("p2-0");
+    expect(el.textContent).not.toContain("Couldn't load");
+  });
+
   it("starts the new account on its first page", async () => {
     const pagesAsked: Array<[string, number]> = [];
     h.archFeed = async (address, page) => {

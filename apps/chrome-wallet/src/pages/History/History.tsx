@@ -519,7 +519,12 @@ export default function History() {
         <button
           className="btn btn-secondary btn-full"
           style={{ marginTop: 12 }}
-          onClick={() => setArchPage((p) => p + 1)}
+          onClick={() => {
+            // A page that failed is asked for again: moving on would leave
+            // its rows out of a list that reads as continuous.
+            if (archFeed.current.pages.has(archPage)) setArchPage((p) => p + 1);
+            else void fetchTransactions();
+          }}
           disabled={loading}
         >
           {loading ? "Loading…" : "Load more"}
