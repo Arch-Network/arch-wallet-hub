@@ -42,33 +42,59 @@ export function formatTokenAmount(amount: number, decimals: number): string {
   });
 }
 
+/** How the Swap surface shows amounts of one token. */
+export type SwapPrecision = {
+  /** Decimal places on the cards, where amounts are read at a glance. */
+  display: number;
+  /** Every place the token can carry, for the figures a swap is reviewed on. */
+  full: number;
+};
+
+/** Cards stop at 8 places: enough for a satoshi, and it keeps the row on one line. */
+const SWAP_CARD_MAX_DECIMALS = 8;
+
 /**
- * Display-precision for the swap surface. Mirrors the historical
- * per-symbol decimals the Swap cards used (USDC → 2, everything else
- * → 8). TODO: plumb `engineToken.decimals` through the Swap cards so
- * a future token (e.g. USDT @ 6 decimals) doesn't get the wrong tail.
+ * Precision for a token from its own metadata, never from its symbol:
+ * the wallet renames tokens for display (USDC shows as "aUSD"), so a
+ * symbol check silently stops matching. Dollar-pegged tokens read as
+ * money; everything else shows the precision it has on chain.
  */
-function swapDisplayDecimals(symbol: string): number {
-  return symbol === "USDC" ? 2 : 8;
+export function swapPrecision(tokenDecimals: number, dollarPegged: boolean): SwapPrecision {
+  const full = Number.isInteger(tokenDecimals) && tokenDecimals > 0 ? tokenDecimals : 0;
+  return {
+    display: Math.min(full, dollarPegged ? 2 : SWAP_CARD_MAX_DECIMALS),
+    full,
+  };
 }
 
 /**
  * Render an already-scaled token amount (display units, not atomic)
- * with locale-aware thousands separators and fixed precision matching
- * the Swap surface's display rules. Returns "0" for zero / non-finite
- * so the caller can decide whether to append the symbol.
+ * with locale-aware thousands separators. Shows `decimals` places, and
+ * up to `maxDecimals` when the amount has them. A positive amount too
+ * small to show reads "<0.01" rather than rounding to a zero the user
+ * would take for nothing. Returns "0" for zero / non-finite so the
+ * caller can decide whether to append the symbol.
  *
  * Examples:
- *   formatSwapAmount(99696,    "USDC")  → "99,696.00"
- *   formatSwapAmount(1.0039,   "aBTC")  → "1.00390000"
- *   formatSwapAmount(0,        "USDC")  → "0"
+ *   formatSwapAmount(99696,   2)     → "99,696.00"
+ *   formatSwapAmount(1.0039,  8)     → "1.00390000"
+ *   formatSwapAmount(0.004,   2)     → "<0.01"
+ *   formatSwapAmount(0.004,   2, 6)  → "0.004"
+ *   formatSwapAmount(0,       2)     → "0"
  */
-export function formatSwapAmount(amount: number, symbol: string): string {
+export function formatSwapAmount(amount: number, decimals: number, maxDecimals = decimals): string {
   if (!Number.isFinite(amount) || amount <= 0) return "0";
-  const decimals = swapDisplayDecimals(symbol);
+  const max = Math.max(decimals, maxDecimals);
+  const smallest = 10 ** -max;
+  if (amount < smallest) {
+    return `<${smallest.toLocaleString(undefined, {
+      minimumFractionDigits: max,
+      maximumFractionDigits: max,
+    })}`;
+  }
   return amount.toLocaleString(undefined, {
     minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
+    maximumFractionDigits: max,
   });
 }
 
@@ -77,8 +103,42 @@ export function formatSwapAmount(amount: number, symbol: string): string {
  * Used by the Swap cards' "Bal X" indicator so the unit is never
  * lost.
  */
-export function formatSwapBalance(balance: number, symbol: string): string {
-  return `${formatSwapAmount(balance, symbol)} ${symbol}`;
+export function formatSwapBalance(
+  balance: number,
+  symbol: string,
+  decimals: number,
+  maxDecimals = decimals,
+): string {
+  return `${formatSwapAmount(balance, decimals, maxDecimals)} ${symbol}`;
+}
+
+/**
+ * A swap rate ("1 aBTC ≈ … aUSD") as a number. Rates of 100 and up read
+ * as prices; below 1 the leading zeros carry no information, so the
+ * rate keeps six significant digits instead of six decimal places —
+ * a dollar-to-bitcoin rate is 0.0000139171, not "0.000014".
+ */
+export function formatSwapRate(rate: number): string {
+  if (!Number.isFinite(rate) || rate <= 0) return "—";
+  if (rate < 1) return rate.toLocaleString(undefined, { maximumSignificantDigits: 6 });
+  const decimals = rate >= 100 ? 2 : 6;
+  return rate.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
+/**
+ * A balance as text for an amount field: every place the token has and
+ * no more, so "MAX" spends the whole balance without rounding past it.
+ *
+ *   formatMaxAmount(10.999999, 6) → "10.999999"
+ *   formatMaxAmount(0.5,       8) → "0.5"
+ */
+export function formatMaxAmount(balance: number, tokenDecimals: number): string {
+  if (!Number.isFinite(balance) || balance <= 0) return "";
+  const fixed = balance.toFixed(Math.min(Math.max(tokenDecimals, 0), 20));
+  return fixed.includes(".") ? fixed.replace(/\.?0+$/, "") : fixed;
 }
 
 /** Format a USD amount with smart precision: < $1 -> 4 decimals, otherwise 2. */

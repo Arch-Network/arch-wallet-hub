@@ -11,6 +11,8 @@ import { TokenChip } from "./TokenChip";
 type Props = {
   value: string;
   symbol: string;
+  /** Decimal places to show for this token. */
+  decimals: number;
   iconPath?: string;
   usdValue: number;
   walletConnected: boolean;
@@ -34,6 +36,7 @@ function formatUsd(usd: number): string | null {
 export function SellAmountCard({
   value,
   symbol,
+  decimals,
   iconPath,
   usdValue,
   walletConnected,
@@ -57,7 +60,7 @@ export function SellAmountCard({
           {walletConnected ? (
             <>
               <span className={isLoadingBalance ? "swap-balance-loading" : undefined}>
-                Bal {formatSwapBalance(balance, symbol)}
+                Bal {formatSwapBalance(balance, symbol, decimals)}
               </span>
               {balance > 0 && (
                 <button

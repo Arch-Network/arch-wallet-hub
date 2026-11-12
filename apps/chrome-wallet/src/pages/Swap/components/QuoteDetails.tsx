@@ -7,11 +7,12 @@ import type { AmmType } from "@arch/swap-engine";
 
 import { applySlippage } from "@arch/swap-engine";
 
-import { formatSwapBalance } from "../../../utils/format";
+import { formatSwapBalance, formatSwapRate, type SwapPrecision } from "../../../utils/format";
 
 type Props = {
   sellSymbol: string;
   buySymbol: string;
+  buyPrecision: SwapPrecision;
   sellAmount: number;
   buyAmount: number;
   slippagePct: number;
@@ -20,20 +21,13 @@ type Props = {
 
 function formatRate(sellSymbol: string, buySymbol: string, rate: number): string {
   if (!Number.isFinite(rate) || rate <= 0) return "—";
-  // High-magnitude rates (e.g. BTC/USDC ≈ 110,000) get 2 decimals
-  // and thousands separators; sub-100 rates get 6 decimals so we
-  // don't drop precision on USDC/BTC inverses.
-  const decimals = rate >= 100 ? 2 : 6;
-  const display = rate.toLocaleString(undefined, {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
-  return `1 ${sellSymbol} ≈ ${display} ${buySymbol}`;
+  return `1 ${sellSymbol} ≈ ${formatSwapRate(rate)} ${buySymbol}`;
 }
 
-function formatBuyAmount(amount: number, symbol: string): string {
+// The floor a swap is reviewed on: shown to the token's full precision.
+function formatBuyAmount(amount: number, symbol: string, precision: SwapPrecision): string {
   if (!Number.isFinite(amount) || amount <= 0) return "—";
-  return formatSwapBalance(amount, symbol);
+  return formatSwapBalance(amount, symbol, precision.display, precision.full);
 }
 
 function sourceLabel(source: AmmType): string {
@@ -50,6 +44,7 @@ function sourceLabel(source: AmmType): string {
 export function QuoteDetails({
   sellSymbol,
   buySymbol,
+  buyPrecision,
   sellAmount,
   buyAmount,
   slippagePct,
@@ -67,7 +62,7 @@ export function QuoteDetails({
       </div>
       <div className="swap-detail-row">
         <span>Min received ({slippagePct.toFixed(2)}% slip)</span>
-        <span className="swap-detail-value">{formatBuyAmount(minReceived, buySymbol)}</span>
+        <span className="swap-detail-value">{formatBuyAmount(minReceived, buySymbol, buyPrecision)}</span>
       </div>
       <div className="swap-detail-row">
         <span>Source</span>

@@ -9,6 +9,8 @@ import { TokenChip } from "./TokenChip";
 type Props = {
   amount: number;
   symbol: string;
+  /** Decimal places to show for this token. */
+  decimals: number;
   iconPath?: string;
   usdValue: number;
   showUsd: boolean;
@@ -27,6 +29,7 @@ function formatUsd(usd: number): string | null {
 export function ReceiveAmountCard({
   amount,
   symbol,
+  decimals,
   iconPath,
   usdValue,
   showUsd,
@@ -42,7 +45,7 @@ export function ReceiveAmountCard({
         <span className="swap-card-label">You receive</span>
         {walletConnected && (
           <span className="swap-card-balance">
-            Bal {formatSwapBalance(balance, symbol)}
+            Bal {formatSwapBalance(balance, symbol, decimals)}
           </span>
         )}
       </div>
@@ -52,7 +55,7 @@ export function ReceiveAmountCard({
             isRefreshing ? "swap-card-output-refreshing" : ""
           }`}
         >
-          {formatSwapAmount(amount, symbol)}
+          {formatSwapAmount(amount, decimals)}
         </span>
         <TokenChip symbol={symbol} iconPath={iconPath} onClick={onPickToken} />
       </div>
