@@ -787,7 +787,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
           : "Enter the email you used at sign-up to find your wallet."}
       </p>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
       {statusMessage && (
         <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
           {statusMessage}
@@ -797,8 +797,9 @@ export default function Recover({ onRecovered }: RecoverProps) {
       {step === "email" && (
         <>
           <div style={{ marginBottom: 12, textAlign: "left", width: "100%" }}>
-            <label className="input-label">Email</label>
+            <label className="input-label" htmlFor="recover-email">Email</label>
             <input
+              id="recover-email"
               className="input"
               type="email"
               value={email}
@@ -861,8 +862,9 @@ export default function Recover({ onRecovered }: RecoverProps) {
           ) : (
             <>
               <div style={{ marginBottom: 12, textAlign: "left", width: "100%" }}>
-                <label className="input-label">One-time code</label>
+                <label className="input-label" htmlFor="recover-otp">One-time code</label>
                 <input
+                  id="recover-otp"
                   className="input"
                   type="text"
                   inputMode="numeric"
@@ -970,8 +972,9 @@ export default function Recover({ onRecovered }: RecoverProps) {
             window stays open while you copy that password from another app.
           </p>
           <div style={{ marginBottom: 8, textAlign: "left", width: "100%" }}>
-            <label className="input-label">New password</label>
+            <label className="input-label" htmlFor="recover-password">New password</label>
             <input
+              id="recover-password"
               className="input"
               type="password"
               value={password}
@@ -993,8 +996,9 @@ export default function Recover({ onRecovered }: RecoverProps) {
             )}
           </div>
           <div style={{ marginBottom: 12, textAlign: "left", width: "100%" }}>
-            <label className="input-label">Confirm</label>
+            <label className="input-label" htmlFor="recover-password-confirm">Confirm</label>
             <input
+              id="recover-password-confirm"
               className="input"
               type="password"
               value={confirm}

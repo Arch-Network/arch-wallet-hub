@@ -397,7 +397,7 @@ export default function SessionBootstrapper({
       <h1 className="onboarding-title">Verify by email</h1>
       <p className="onboarding-sub">{subheader}</p>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
 
       {stage === "init" && (
         <div style={{ marginTop: 12, width: "100%" }}>
@@ -463,8 +463,9 @@ export default function SessionBootstrapper({
       {(stage === "otp" || stage === "verifying") && (
         <>
           <div style={{ marginBottom: 12, textAlign: "left", width: "100%" }}>
-            <label className="input-label">One-time code</label>
+            <label className="input-label" htmlFor="session-otp">One-time code</label>
             <input
+              id="session-otp"
               className="input"
               type="text"
               inputMode="numeric"

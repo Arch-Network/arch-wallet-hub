@@ -1764,7 +1764,7 @@ export default function Approve() {
       />
 
       <div className="approve-body">
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
 
         {originRefusal && (
           <div className="approve-risk approve-risk-danger" style={{ marginBottom: 10 }}>

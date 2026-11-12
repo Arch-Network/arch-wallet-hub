@@ -121,17 +121,22 @@ function PasswordFields({ password, confirm, onPassword, onConfirm }: PasswordFi
   return (
     <>
       <div className="onboarding-field">
-        <label className="onboarding-field-label">Password</label>
+        <label className="onboarding-field-label" htmlFor="onboarding-password">
+          Password
+        </label>
         <input
+          id="onboarding-password"
           className="input"
           type="password"
           value={password}
           onChange={(e) => onPassword(e.target.value)}
           placeholder="At least 8 characters"
           autoComplete="new-password"
+          aria-describedby={password ? "onboarding-password-strength" : undefined}
         />
         {password && (
           <p
+            id="onboarding-password-strength"
             className="onboarding-field-status"
             data-tone={strength.score >= 3 ? "success" : "muted"}
           >
@@ -140,17 +145,27 @@ function PasswordFields({ password, confirm, onPassword, onConfirm }: PasswordFi
         )}
       </div>
       <div className="onboarding-field">
-        <label className="onboarding-field-label">Confirm password</label>
+        <label className="onboarding-field-label" htmlFor="onboarding-password-confirm">
+          Confirm password
+        </label>
         <input
+          id="onboarding-password-confirm"
           className="input"
           type="password"
           value={confirm}
           onChange={(e) => onConfirm(e.target.value)}
           placeholder="Re-enter your password"
           autoComplete="new-password"
+          aria-invalid={mismatch ? true : undefined}
+          aria-describedby={mismatch ? "onboarding-password-mismatch" : undefined}
         />
         {mismatch && (
-          <p className="onboarding-field-status" data-tone="danger">
+          <p
+            id="onboarding-password-mismatch"
+            className="onboarding-field-status"
+            data-tone="danger"
+            role="alert"
+          >
             Passwords do not match
           </p>
         )}
@@ -792,7 +807,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
           You'll need it every time you unlock.
         </p>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
 
         <form
           className="onboarding-form"
@@ -875,7 +890,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       <h1 className="onboarding-title">{stepHeading}</h1>
       <p className="onboarding-sub">{stepSubhead}</p>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
       {error && installLink && (
         <a className="link-btn onboarding-install-link" href={installLink.url} target="_blank" rel="noreferrer">
           Install {installLink.label}
@@ -993,16 +1008,20 @@ function ExternalProviderStep({
   return (
     <div className="onboarding-card">
       <div className="onboarding-field">
-        <label className="onboarding-field-label">Account label</label>
+        <label className="onboarding-field-label" htmlFor="onboarding-account-label">
+          Account label
+        </label>
         <input
+          id="onboarding-account-label"
           className="input"
           type="text"
           value={walletName}
           onChange={(e) => onWalletName(e.target.value)}
           placeholder="e.g. My Xverse Wallet"
+          aria-describedby="onboarding-account-label-hint"
           autoFocus
         />
-        <p className="onboarding-field-hint">
+        <p id="onboarding-account-label-hint" className="onboarding-field-hint">
           This only labels the linked wallet inside Arch Wallet.
         </p>
       </div>
@@ -1057,16 +1076,20 @@ function DetailsStep({
   return (
     <div className="onboarding-card">
       <div className="onboarding-field">
-        <label className="onboarding-field-label">Wallet name</label>
+        <label className="onboarding-field-label" htmlFor="onboarding-wallet-name">
+          Wallet name
+        </label>
         <input
+          id="onboarding-wallet-name"
           className="input"
           type="text"
           value={walletName}
           onChange={(e) => onWalletName(e.target.value)}
           placeholder="e.g. My Daily Wallet"
+          aria-describedby="onboarding-wallet-name-hint"
           autoFocus
         />
-        <p className="onboarding-field-hint">
+        <p id="onboarding-wallet-name-hint" className="onboarding-field-hint">
           Just a label so you can tell wallets apart. You can rename
           it any time.
         </p>
@@ -1075,18 +1098,20 @@ function DetailsStep({
       <div className="onboarding-divider" />
 
       <div className="onboarding-field">
-        <label className="onboarding-field-label">
+        <label className="onboarding-field-label" htmlFor="onboarding-email">
           {method === "email" ? "Email" : "Recovery email"}
         </label>
         <input
+          id="onboarding-email"
           className="input"
           type="email"
           value={email}
           onChange={(e) => onEmail(e.target.value)}
           placeholder="you@example.com"
           autoComplete="email"
+          aria-describedby="onboarding-email-hint"
         />
-        <p className="onboarding-field-hint">
+        <p id="onboarding-email-hint" className="onboarding-field-hint">
           {method === "email"
             ? "Required - codes sent here approve signing and recover this wallet."
             : "Required - this is how you recover the wallet if you lose your passkey."}

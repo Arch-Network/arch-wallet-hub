@@ -266,7 +266,7 @@ export default function SendInscription() {
         <div className="page-header">
           <h2 className="page-title">Send Inscription</h2>
         </div>
-        <div className="error-banner">{loadError}</div>
+        <div className="error-banner" role="alert">{loadError}</div>
         <button className="btn btn-secondary btn-full" onClick={() => navigate("/collectibles")}>
           Back to collectibles
         </button>
@@ -329,7 +329,7 @@ export default function SendInscription() {
           <div className="page-subtitle">Double-check the details before signing this transaction.</div>
         </div>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
 
         <div className="review-card">
           <div className="review-row">
@@ -421,14 +421,17 @@ export default function SendInscription() {
         </div>
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
 
       <div className="form-field">
         <div className="form-field-header">
-          <label className="form-field-label">Recipient address</label>
+          <label className="form-field-label" htmlFor="send-inscription-recipient">
+            Recipient address
+          </label>
         </div>
         <div className="form-field-input">
           <input
+            id="send-inscription-recipient"
             type="text"
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
