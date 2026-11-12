@@ -1,5 +1,5 @@
 import EmptyStateArt from "../../components/EmptyStateArt";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useWallet } from "../../hooks/useWallet";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
 import { useRetryCountdown } from "../../hooks/useRetryCountdown";
@@ -61,14 +61,48 @@ export default function History() {
   const btcAddressKey = activeAccount
     ? resolveAccountAddresses(activeAccount, state.network).all.join(",")
     : "";
+  // Everything that decides whose history this is. Rows loaded under one
+  // key must never be shown under another.
+  const identityKey = [
+    activeAccount?.id,
+    activeAccount?.archAddress,
+    activeAccount?.publicKeyHex,
+    activeAccount?.btcAddress,
+    btcAddressKey,
+    state.network,
+  ].join("|");
+
+  // Switching account or network: drop what the previous one loaded in the
+  // same render, so its rows are never painted under the new selection.
+  const [shownIdentity, setShownIdentity] = useState(identityKey);
+  if (shownIdentity !== identityKey) {
+    setShownIdentity(identityKey);
+    setTransactions([]);
+    setArchPage(1);
+    setHasMoreArch(false);
+    setBanner({ kind: "none" });
+    setLoading(true);
+  }
+
+  // Each fetch takes a number and only the newest may commit, so a slow
+  // response cannot overwrite the result of a later request.
+  const latestFetch = useRef(0);
+  // Rows from the paged Arch feed, by page, so "Load more" adds to the list
+  // instead of replacing the pages before it.
+  const archFeed = useRef({ identity: identityKey, pages: new Map<number, TxItem[]>() });
 
   const fetchTransactions = useCallback(async () => {
+    const fetchId = ++latestFetch.current;
+    const isCurrent = () => latestFetch.current === fetchId;
     if (!activeAccount) return;
     setLoading(true);
     setBanner({ kind: "none" });
     try {
       const indexer = await getIndexer();
+      if (!isCurrent()) return;
       const items: TxItem[] = [];
+      // This fetch's page of the Arch feed, or null when it failed.
+      let archPageItems: TxItem[] | null = null;
       // Track per-chain errors so we can decide on a single banner
       // at the end. We don't bail on the first failure: an Arch
       // outage shouldn't hide the user's BTC history, and vice
@@ -135,6 +169,7 @@ export default function History() {
       } catch {
         // token enrichment is best-effort
       }
+      if (!isCurrent()) return;
 
       if (archAddr) {
       try {
@@ -151,6 +186,7 @@ export default function History() {
         if (archTxs.length === 0 && archPage === 1) {
           console.info("[History] No Arch transactions for", archAddr);
         }
+        if (!isCurrent()) return;
         setHasMoreArch(archTxs.length >= 20);
 
         // Fetch detail + tree per tx in parallel. The tree gives us
@@ -171,6 +207,7 @@ export default function History() {
           })
         );
 
+        const pageItems: TxItem[] = [];
         for (const { merged: tx, tree } of detailedArchTxs) {
           const isToken = isAplTransaction(tx) || tokenTxIds.has(tx.txid);
           const kind: TxKind = isToken ? "apl" : "arch";
@@ -182,7 +219,7 @@ export default function History() {
             archAddr,
             { tree, tokenAccounts, tokens },
           );
-          items.push({
+          pageItems.push({
             txid: tx.txid,
             displayTxid: truncateAddress(formatArchId(tx.txid), 8),
             type: kind,
@@ -198,10 +235,28 @@ export default function History() {
             explorerUrl: `${archExplorer}${tx.txid}`,
           });
         }
+        archPageItems = pageItems;
       } catch (e: any) {
         archError = e;
         console.warn("[History] Arch transaction fetch failed:", e?.message);
       }
+      }
+      if (!isCurrent()) return;
+
+      // Show every page loaded so far. A page that failed to reload keeps
+      // the rows it had.
+      if (archFeed.current.identity !== identityKey) {
+        archFeed.current = { identity: identityKey, pages: new Map() };
+      }
+      const archPages = archFeed.current.pages;
+      if (archPageItems) archPages.set(archPage, archPageItems);
+      const feedTxIds = new Set<string>();
+      for (const page of [...archPages.keys()].sort((a, b) => a - b)) {
+        for (const item of archPages.get(page) ?? []) {
+          if (feedTxIds.has(item.txid)) continue;
+          feedTxIds.add(item.txid);
+          items.push(item);
+        }
       }
 
       // Merge ATA-only transactions as their own rows. Inbound APL transfers
@@ -254,6 +309,7 @@ export default function History() {
           console.warn("[History] ATA transaction merge failed:", e?.message);
         }
       }
+      if (!isCurrent()) return;
 
       // Runes live at the ordinals address; a transfer between the
       // account's own addresses appears under both, so keep the first.
@@ -263,6 +319,7 @@ export default function History() {
       ]);
       const seenBtcTxids = new Set<string>();
       for (const address of btcAddresses.all) {
+        if (!isCurrent()) return;
         try {
           for (const item of await loadBtcHistory(indexer, address, runes, inscriptions, btcExplorer)) {
             if (seenBtcTxids.has(item.txid)) continue;
@@ -296,6 +353,7 @@ export default function History() {
         const message = err instanceof Error ? err.message : String(err);
         return { kind: "other", chain, message };
       };
+      if (!isCurrent()) return;
       const nextBanner =
         decideBanner(btcError, "btc") ?? decideBanner(archError, "arch");
       if (nextBanner) setBanner(nextBanner);
@@ -316,28 +374,23 @@ export default function History() {
       // a missing API key. Surface as an auth banner so the user knows
       // where to look.
       console.warn("[History] indexer client init failed:", e?.message);
+      if (!isCurrent()) return;
       setBanner({
         kind: isIndexerAuthError(e) ? "auth" : "other",
         chain: "btc",
         message: e instanceof Error ? e.message : String(e),
       });
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
-  }, [
-    activeAccount?.id,
-    activeAccount?.archAddress,
-    activeAccount?.publicKeyHex,
-    activeAccount?.btcAddress,
-    btcAddressKey,
-    archPage,
-    archExplorer,
-    btcExplorer,
-    state.network,
-  ]);
+  }, [identityKey, archPage, archExplorer, btcExplorer]);
 
   useEffect(() => {
     fetchTransactions();
+    // Leaving the page: whatever is still in flight has nowhere to land.
+    return () => {
+      latestFetch.current++;
+    };
   }, [fetchTransactions]);
 
   // Direct-indexer builds spend the user's own key, so their banner
@@ -355,16 +408,28 @@ export default function History() {
 
   return (
     <>
-      <div className="tabs">
-        <button className={`tab ${tab === "all" ? "active" : ""}`} onClick={() => setTab("all")}>
+      <div className="tabs" role="group" aria-label="Filter activity by chain">
+        <button
+          className={`tab ${tab === "all" ? "active" : ""}`}
+          aria-pressed={tab === "all"}
+          onClick={() => setTab("all")}
+        >
           All
         </button>
-        <button className={`tab ${tab === "arch" ? "active" : ""}`} onClick={() => setTab("arch")}>
+        <button
+          className={`tab ${tab === "arch" ? "active" : ""}`}
+          aria-pressed={tab === "arch"}
+          onClick={() => setTab("arch")}
+        >
           <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
             <ArchIcon size={12} color={tab === "arch" ? "var(--color-primary)" : "var(--text-muted)"} /> Arch
           </span>
         </button>
-        <button className={`tab ${tab === "btc" ? "active" : ""}`} onClick={() => setTab("btc")}>
+        <button
+          className={`tab ${tab === "btc" ? "active" : ""}`}
+          aria-pressed={tab === "btc"}
+          onClick={() => setTab("btc")}
+        >
           ₿ Bitcoin
         </button>
       </div>
@@ -416,16 +481,25 @@ export default function History() {
           </div>
         </div>
       )}
-      {loading ? (
+      {loading && transactions.length === 0 ? (
         <div className="spinner-center">
           <div className="spinner" />
         </div>
       ) : filtered.length === 0 ? (
         // A failed load is not an empty history: the banner above says so.
-        tabFailed ? null : (
+        tabFailed ? null : transactions.length === 0 ? (
           <div className="empty-state">
             <EmptyStateArt kind="activity" />
             <div>No transactions yet</div>
+          </div>
+        ) : (
+          // The wallet has activity, just none on the chain being filtered.
+          <div className="empty-state">
+            <EmptyStateArt kind="activity" />
+            <div>No {tab === "btc" ? "Bitcoin" : "Arch"} transactions</div>
+            <button className="link-btn" onClick={() => setTab("all")}>
+              Show all activity
+            </button>
           </div>
         )
       ) : (
@@ -445,9 +519,15 @@ export default function History() {
         <button
           className="btn btn-secondary btn-full"
           style={{ marginTop: 12 }}
-          onClick={() => setArchPage((p) => p + 1)}
+          onClick={() => {
+            // A page that failed is asked for again: moving on would leave
+            // its rows out of a list that reads as continuous.
+            if (archFeed.current.pages.has(archPage)) setArchPage((p) => p + 1);
+            else void fetchTransactions();
+          }}
+          disabled={loading}
         >
-          Load more
+          {loading ? "Loading…" : "Load more"}
         </button>
       )}
     </>

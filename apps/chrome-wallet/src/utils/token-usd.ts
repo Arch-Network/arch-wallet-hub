@@ -25,6 +25,11 @@ export function tracksBtcPrice(symbol: TokenSymbol): boolean {
   return symbol === "BTC";
 }
 
+/** True when the asset is held at $1. */
+export function isDollarPegged(symbol: TokenSymbol): boolean {
+  return symbol === "USDC" || symbol === "USDT";
+}
+
 /**
  * USD value of one whole unit of an engine asset.
  *
@@ -41,7 +46,7 @@ export function usdPerUnitForSymbol(
   const haveFiat = btcUsd != null && Number.isFinite(btcUsd) && btcUsd > 0;
   if (!haveFiat) return null;
   if (tracksBtcPrice(symbol)) return btcUsd;
-  if (symbol === "USDC" || symbol === "USDT") return 1;
+  if (isDollarPegged(symbol)) return 1;
   return null;
 }
 

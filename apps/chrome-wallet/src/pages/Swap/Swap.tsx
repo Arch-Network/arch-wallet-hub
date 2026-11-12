@@ -35,12 +35,12 @@ import {
 
 import { useWallet } from "../../hooks/useWallet";
 import { useArchOnboarding } from "../../hooks/useArchOnboarding";
-import { isExternalAccount, isWatchAccount } from "../../state/types";
+import { isExternalAccount, isWatchAccount, type WalletAccount } from "../../state/types";
 import { signerInfo } from "../../wallets/capabilities";
 import { getIndexer } from "../../utils/indexer";
-import { formatSwapAmount } from "../../utils/format";
+import { formatMaxAmount, formatSwapAmount, swapPrecision } from "../../utils/format";
 import { applyDisplayOverridesByMintHex, lookupKnownToken } from "../../utils/known-tokens";
-import { usdPerUnitForSymbol } from "../../utils/token-usd";
+import { isDollarPegged, usdPerUnitForSymbol } from "../../utils/token-usd";
 import { isInSidePanel, openWalletPopup, survivesFocusLoss } from "../../utils/runtime-context";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { useBtcUsdPrice } from "../../hooks/useBtcUsdPrice";
@@ -70,6 +70,20 @@ type TokenBalances = Partial<Record<TokenSymbol, number>>;
 type Direction = "sell" | "buy";
 
 type PickerState = { direction: Direction } | null;
+
+/**
+ * What to say once an action has moved to the standalone wallet window.
+ * Only a passkey account is there because of passkey prompts; a linked
+ * wallet is there because its own window would close the toolbar popup.
+ */
+function handoffMessage(account: WalletAccount | null, action: string): string {
+  const signer = account ? signerInfo(account) : null;
+  if (signer?.external) {
+    return `Continue in the popup window to ${action}. You'll approve in ${signer.label} there.`;
+  }
+  if (signer?.kind === "email") return `Continue in the popup window to ${action}.`;
+  return `Continue in the popup window to ${action}. The side panel can't show passkey prompts.`;
+}
 
 function pickTokens(
   symbols: TokenSymbol[],
@@ -138,6 +152,17 @@ export default function Swap() {
           )
         : null,
     [buyToken],
+  );
+
+  // Precision comes from the engine token, keyed by its routing symbol:
+  // the display symbol above is a label and says nothing about decimals.
+  const sellPrecision = useMemo(
+    () => swapPrecision(sellToken?.decimals ?? 0, isDollarPegged(pair.sell)),
+    [sellToken, pair.sell],
+  );
+  const buyPrecision = useMemo(
+    () => swapPrecision(buyToken?.decimals ?? 0, isDollarPegged(pair.buy)),
+    [buyToken, pair.buy],
   );
 
   const [rawInput, setRawInput] = useState("");
@@ -430,9 +455,8 @@ export default function Swap() {
 
   const handleMax = useCallback(() => {
     if (sellBalance <= 0) return;
-    const decimals = pair.sell === "USDC" ? 2 : 8;
-    setRawInput(sellBalance.toFixed(decimals));
-  }, [sellBalance, pair.sell]);
+    setRawInput(formatMaxAmount(sellBalance, sellPrecision.full));
+  }, [sellBalance, sellPrecision.full]);
 
   const handlePickToken = useCallback(
     (direction: Direction, symbol: TokenSymbol) => {
@@ -465,9 +489,7 @@ export default function Swap() {
           resume: "1",
         },
       });
-      setStatusMsg(
-        "Continue in the popup window to initialize swaps. The side panel can't show passkey prompts.",
-      );
+      setStatusMsg(handoffMessage(activeAccount, "initialize swaps"));
     } catch (e) {
       setError(
         e instanceof Error
@@ -475,7 +497,7 @@ export default function Swap() {
           : "Could not open the wallet popup.",
       );
     }
-  }, [sidePanelMode, onboarding.initialize, pair.sell, pair.buy, rawInput]);
+  }, [sidePanelMode, onboarding.initialize, pair.sell, pair.buy, rawInput, activeAccount]);
 
   const handleSubmit = useCallback(async () => {
     if (validation.kind === "quote-failed") {
@@ -503,9 +525,7 @@ export default function Swap() {
             resume: "1",
           },
         });
-        setStatusMsg(
-          "Continue in the popup window to sign. The side panel can't show passkey prompts.",
-        );
+        setStatusMsg(handoffMessage(activeAccount, "sign"));
       } catch (e) {
         setError(
           e instanceof Error
@@ -627,27 +647,34 @@ export default function Swap() {
       </div>
 
       <div className="swap-shell">
-        <OnboardingPanel
-          status={onboarding.status}
-          readiness={onboarding.readiness}
-          phase={onboarding.phase}
-          error={onboarding.error}
-          isInitializing={onboarding.isInitializing}
-          network={state.network}
-          onInitialize={handleInitialize}
-        />
+        {/* Without an account there is nothing to probe, so nothing to set up. */}
+        {activeAccount && (
+          <OnboardingPanel
+            status={onboarding.status}
+            readiness={onboarding.readiness}
+            phase={onboarding.phase}
+            error={onboarding.error}
+            isInitializing={onboarding.isInitializing}
+            network={state.network}
+            signer={signerInfo(activeAccount)}
+            onInitialize={handleInitialize}
+          />
+        )}
 
         {resumedFromSidePanel && (
           <div className="swap-resume-notice" role="status">
             {activeAccount && isExternalAccount(activeAccount)
               ? `Review the quote below and confirm. This window stays open while you approve in ${signerInfo(activeAccount).label}.`
-              : "Resumed from the side panel. Review the quote below and confirm to sign — the popup window can show the passkey prompt that the side panel can't."}
+              : activeAccount && signerInfo(activeAccount).kind === "passkey"
+                ? "Resumed from the side panel. Review the quote below and confirm to sign — the popup window can show the passkey prompt that the side panel can't."
+                : "Resumed from the side panel. Review the quote below and confirm to sign."}
           </div>
         )}
 
         <SellAmountCard
           value={rawInput}
           symbol={sellDisplay?.symbol ?? pair.sell}
+          decimals={sellPrecision.display}
           iconPath={sellToken.icon}
           usdValue={sellUsdValue}
           walletConnected={!!activeAccount}
@@ -664,6 +691,7 @@ export default function Swap() {
         <ReceiveAmountCard
           amount={buyAmount}
           symbol={buyDisplay?.symbol ?? pair.buy}
+          decimals={buyPrecision.display}
           iconPath={buyToken.icon}
           usdValue={buyUsdValue}
           showUsd={showUsdBuy}
@@ -677,6 +705,7 @@ export default function Swap() {
           <QuoteDetails
             sellSymbol={sellDisplay?.symbol ?? pair.sell}
             buySymbol={buyDisplay?.symbol ?? pair.buy}
+            buyPrecision={buyPrecision}
             sellAmount={sellAmount}
             buyAmount={buyAmount}
             slippagePct={DEFAULT_SLIPPAGE_PCT}
@@ -685,13 +714,13 @@ export default function Swap() {
         )}
 
         {validation.kind === "quote-failed" && (
-          <div className="error-banner" style={{ marginTop: 8 }}>
+          <div className="error-banner" role="alert" style={{ marginTop: 8 }}>
             Quote failed: {validation.message}
           </div>
         )}
 
         {error && (
-          <div className="error-banner" style={{ marginTop: 8 }}>
+          <div className="error-banner" role="alert" style={{ marginTop: 8 }}>
             {error}
           </div>
         )}
@@ -736,7 +765,8 @@ export default function Swap() {
             <strong>
               {formatSwapAmount(
                 applySlippage(buyAmount, DEFAULT_SLIPPAGE_PCT),
-                pair.buy,
+                buyPrecision.display,
+                buyPrecision.full,
               )}{" "}
               {buyDisplay?.symbol ?? pair.buy}
             </strong>

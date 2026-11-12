@@ -298,7 +298,7 @@ export default function SendRune() {
         <div className="page-header">
           <h2 className="page-title">Send {labelForRune({ spaced_name: runeId })}</h2>
         </div>
-        <div className="error-banner">{balanceError}</div>
+        <div className="error-banner" role="alert">{balanceError}</div>
         <button className="btn btn-secondary btn-full" onClick={() => navigate("/dashboard")}>
           Back to dashboard
         </button>
@@ -366,7 +366,7 @@ export default function SendRune() {
           <div className="page-subtitle">Double-check the details before signing this transaction.</div>
         </div>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
 
         <div className="review-card">
           <div className="review-row">
@@ -483,14 +483,17 @@ export default function SendRune() {
         </div>
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
 
       <div className="form-field">
         <div className="form-field-header">
-          <label className="form-field-label">Recipient address</label>
+          <label className="form-field-label" htmlFor="send-rune-recipient">
+            Recipient address
+          </label>
         </div>
         <div className="form-field-input">
           <input
+            id="send-rune-recipient"
             type="text"
             value={recipient}
             onChange={(e) => setRecipient(e.target.value)}
@@ -503,13 +506,16 @@ export default function SendRune() {
 
       <div className="form-field">
         <div className="form-field-header">
-          <label className="form-field-label">Amount</label>
+          <label className="form-field-label" htmlFor="send-rune-amount">
+            Amount
+          </label>
           <span className="form-field-meta">
             Available <strong>{balanceHuman}</strong>
           </span>
         </div>
         <div className="form-field-input form-field-input--amount">
           <input
+            id="send-rune-amount"
             type="text"
             inputMode="decimal"
             value={amountText}

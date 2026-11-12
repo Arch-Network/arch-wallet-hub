@@ -294,7 +294,7 @@ export default function Settings() {
           <details style={{ marginBottom: 12 }}>
             <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Change password</summary>
             <div style={{ marginTop: 8 }}>
-              {pwError && <div className="error-banner" style={{ marginBottom: 8 }}>{pwError}</div>}
+              {pwError && <div className="error-banner" role="alert" style={{ marginBottom: 8 }}>{pwError}</div>}
               {pwSaved && (
                 <div style={{ marginBottom: 8, color: "var(--success)", fontSize: 12 }}>Password changed</div>
               )}
@@ -724,12 +724,17 @@ export default function Settings() {
               Turnkey, signing requests, custodial BTC sends, recovery.
             </div>
             <div className="card">
-              {hubError && <div className="error-banner" style={{ marginBottom: 8 }}>{hubError}</div>}
+              {hubError && <div className="error-banner" role="alert" style={{ marginBottom: 8 }}>{hubError}</div>}
               <div style={{ marginBottom: 8 }}>
-                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+                <label
+                  className="input-label"
+                  htmlFor="settings-hub-base-url"
+                  style={{ display: "block", marginBottom: 4 }}
+                >
                   Base URL
                 </label>
                 <input
+                  id="settings-hub-base-url"
                   className="input"
                   type="text"
                   value={hubBaseUrl}
@@ -749,10 +754,15 @@ export default function Settings() {
                 )}
               </div>
               <div style={{ marginBottom: 10 }}>
-                <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+                <label
+                  className="input-label"
+                  htmlFor="settings-hub-api-key"
+                  style={{ display: "block", marginBottom: 4 }}
+                >
                   API Key
                 </label>
                 <input
+                  id="settings-hub-api-key"
                   className="input"
                   type="password"
                   value={hubApiKey}

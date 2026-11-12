@@ -144,7 +144,7 @@ export default function AddWatch() {
       )}
 
       {error && (
-        <div className="error-banner" style={{ marginBottom: 12 }}>
+        <div className="error-banner" role="alert" style={{ marginBottom: 12 }}>
           {error}
         </div>
       )}

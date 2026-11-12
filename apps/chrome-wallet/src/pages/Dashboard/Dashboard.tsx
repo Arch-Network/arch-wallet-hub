@@ -703,7 +703,7 @@ export default function Dashboard() {
       )}
 
       <div className="dashboard-shell">
-      {error && <div className="error-banner">{error}</div>}
+      {error && <div className="error-banner" role="alert">{error}</div>}
       {busySeconds !== null && (
         <div className="warning-banner">
           {busySeconds > 0 ? `Busy right now. Retrying in ${busySeconds}s…` : "Busy right now. Retrying…"}

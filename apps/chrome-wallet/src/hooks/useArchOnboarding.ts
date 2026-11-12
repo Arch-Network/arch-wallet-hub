@@ -208,20 +208,22 @@ export function useArchOnboarding({
 
 /**
  * Human-readable label for an OnboardingPhase. Centralised so the Swap
- * page and Dashboard hero render the same copy.
+ * page and Dashboard hero render the same copy. `approval` says how the
+ * account approves a transaction ("approve in Xverse"); it defaults to
+ * the passkey wording.
  */
-export function labelForPhase(phase: OnboardingPhase): string {
+export function labelForPhase(phase: OnboardingPhase, approval = "sign with passkey"): string {
   switch (phase) {
     case "checking-account":
       return "Checking your Arch account…";
     case "creating-account":
-      return "Creating your Arch account (sign with passkey)…";
+      return `Creating your Arch account (${approval})…`;
     case "verifying-account":
       return "Verifying account is live on-chain…";
     case "checking-token-accounts":
       return "Checking token accounts…";
     case "creating-token-accounts":
-      return "Creating token accounts (sign with passkey)…";
+      return `Creating token accounts (${approval})…`;
     case "verifying-token-accounts":
       return "Verifying token accounts…";
   }

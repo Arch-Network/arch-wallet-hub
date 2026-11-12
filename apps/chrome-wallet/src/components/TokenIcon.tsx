@@ -23,6 +23,9 @@
  *   - No `image` or `onError` fires → render `ArchIcon` glyph.
  * This guarantees we never show a browser broken-image placeholder
  * (the bug today's deploy reported on the first paint of USD Coin).
+ *
+ * A failure is remembered per URL, not per mounted component: rows are
+ * reused as metadata resolves, and a later working URL must still show.
  */
 import { useState } from "react";
 
@@ -47,8 +50,9 @@ const DEFAULT_SIZE = 28;
 
 export function TokenIcon({ image, symbol, size, wrapperClassName }: Props) {
   const dim = size ?? DEFAULT_SIZE;
-  const [errored, setErrored] = useState(false);
-  const showImage = !!image && !errored;
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const showImage = !!image && image !== failedSrc;
+  const onError = () => setFailedSrc(image ?? null);
 
   // Wrapped mode: caller's CSS owns wrapper geometry; we only size content.
   //
@@ -72,7 +76,7 @@ export function TokenIcon({ image, symbol, size, wrapperClassName }: Props) {
               borderRadius: "50%",
               objectFit: "cover",
             }}
-            onError={() => setErrored(true)}
+            onError={onError}
           />
         ) : (
           <ArchIcon size={Math.round(dim * 0.85)} color="var(--color-usd)" />
@@ -102,7 +106,7 @@ export function TokenIcon({ image, symbol, size, wrapperClassName }: Props) {
           width={dim}
           height={dim}
           style={{ width: dim, height: dim, objectFit: "cover" }}
-          onError={() => setErrored(true)}
+          onError={onError}
         />
       ) : (
         <ArchIcon size={Math.round(dim * 0.6)} color="var(--color-usd)" />

@@ -60,17 +60,28 @@ export default function Unlock({ onUnlock }: UnlockProps) {
       <h1 className="onboarding-title">Welcome back</h1>
       <p className="onboarding-sub">Enter your password to unlock the wallet.</p>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && (
+        <div id="unlock-error" className="error-banner" role="alert">
+          {error}
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} style={{ width: "100%" }}>
         <div style={{ marginBottom: 12, textAlign: "left" }}>
-          <label className="input-label" style={{ display: "block", marginBottom: 4 }}>
+          <label
+            className="input-label"
+            htmlFor="unlock-password"
+            style={{ display: "block", marginBottom: 4 }}
+          >
             Password
           </label>
           <input
             ref={inputRef}
+            id="unlock-password"
             className="input"
             type="password"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "unlock-error" : undefined}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Your password"

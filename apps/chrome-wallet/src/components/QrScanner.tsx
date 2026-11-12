@@ -132,7 +132,7 @@ export default function QrScanner({ onResult, onClose }: QrScannerProps) {
           <button className="qr-scanner-close" onClick={onClose} aria-label="Close">×</button>
         </div>
         <video ref={videoRef} className="qr-scanner-video" playsInline muted />
-        {error && <div className="error-banner" style={{ marginTop: 8 }}>{error}</div>}
+        {error && <div className="error-banner" role="alert" style={{ marginTop: 8 }}>{error}</div>}
         <div style={{ marginTop: 8, display: "flex", justifyContent: "center" }}>
           <label className="btn btn-sm btn-secondary" style={{ cursor: "pointer" }}>
             Upload image

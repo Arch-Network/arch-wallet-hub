@@ -122,7 +122,7 @@ async function installDeterministicFixtures(
   });
 }
 
-/** Reset extension storage, inject the seed for this screen, and reload. */
+/** Reset extension storage and inject the seed for this screen. */
 async function primePage(
   page: Page,
   url: string,
@@ -143,7 +143,6 @@ async function primePage(
     }
   }, payload);
   await page.emulateMedia({ colorScheme: theme });
-  await page.reload({ waitUntil: "domcontentloaded" });
 }
 
 /** True once the unlocked app shell (not Onboarding/Unlock) is mounted. */
@@ -160,11 +159,13 @@ async function renderScreen(
   settleMs: number,
 ): Promise<void> {
   await primePage(page, url, theme, seed);
-  if (route) {
-    await page.evaluate((r) => {
-      window.location.hash = r;
-    }, route);
-  }
+  // Open the route as a new document's first URL. Setting the hash on a
+  // freshly loaded page races the app's own redirect from "/" to the
+  // dashboard: when the redirect lands second, the dashboard is captured
+  // under the other screen's name. Leaving the extension page first makes
+  // the next navigation a full load instead of a fragment change.
+  await page.goto("about:blank");
+  await page.goto(route ? `${url}#${route}` : url, { waitUntil: "domcontentloaded" });
   await page.waitForSelector("#root *", { timeout: 15_000 }).catch(() => {});
   await page.waitForTimeout(settleMs);
 }

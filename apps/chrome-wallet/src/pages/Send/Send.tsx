@@ -939,7 +939,7 @@ export default function Send({ networkStatus }: SendProps) {
           <h2 className="page-title">Send</h2>
           <div className="page-subtitle">Choose which asset you want to send.</div>
         </div>
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
         <div className="send-asset-list">
           <button
             className="card send-asset-card"
@@ -1193,17 +1193,20 @@ export default function Send({ networkStatus }: SendProps) {
           </div>
         </div>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
 
         <div className="form-field">
           <div className="form-field-header">
-            <label className="form-field-label">Recipient address</label>
+            <label className="form-field-label" htmlFor="send-recipient">
+              Recipient address
+            </label>
             {recentMatches.length > 0 && (
               <span className="form-field-meta">{recentMatches.length} recent</span>
             )}
           </div>
           <div className="form-field-input">
             <input
+              id="send-recipient"
               placeholder={asset === "btc" ? "tb1p…" : "Base58 address"}
               value={recipient}
               onChange={(e) => setRecipient(e.target.value)}
@@ -1301,13 +1304,16 @@ export default function Send({ networkStatus }: SendProps) {
 
         <div className="form-field">
           <div className="form-field-header">
-            <label className="form-field-label">Amount</label>
+            <label className="form-field-label" htmlFor="send-amount">
+              Amount
+            </label>
             <span className="form-field-meta">
               Available <strong>{availableValue}</strong>
             </span>
           </div>
           <div className="form-field-input form-field-input--amount">
             <input
+              id="send-amount"
               type="number"
               step={
                 asset === "btc" && btcAmountMode === "usd"
@@ -1430,7 +1436,7 @@ export default function Send({ networkStatus }: SendProps) {
             This {asset === "apl" ? "APL token" : "ARCH"} send uses Wallet Hub for signing orchestration. Check Wallet Hub API in Settings if signing fails.
           </div>
         )}
-        {error && <div className="error-banner">{error}</div>}
+        {error && <div className="error-banner" role="alert">{error}</div>}
 
         <div className="review-card">
           <div className="review-row">
