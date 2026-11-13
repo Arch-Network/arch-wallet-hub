@@ -1,9 +1,8 @@
 import Fastify from "fastify";
 import sensible from "@fastify/sensible";
-import crypto from "node:crypto";
 import { getEnv } from "./config/env.js";
 import { registerDb } from "./plugins/db.js";
-import { registerObservability } from "./plugins/observability.js";
+import { genRequestId, registerObservability } from "./plugins/observability.js";
 import { registerOpenApi } from "./plugins/openapi.js";
 import { registerTurnkey } from "./plugins/turnkey.js";
 import { registerIndexer } from "./plugins/indexer.js";
@@ -65,11 +64,10 @@ export async function createServer() {
         remove: true
       }
     },
-    requestIdHeader: "x-request-id",
-    genReqId(req) {
-      // If client provides x-request-id, Fastify will use it; otherwise generate a short one.
-      return req.headers["x-request-id"]?.toString() ?? crypto.randomUUID();
-    },
+    // The id comes from genRequestId alone: with a header name here
+    // Fastify would take the caller's x-request-id exactly as sent.
+    requestIdHeader: false,
+    genReqId: genRequestId,
     // `request.ip` must reflect the real client for per-IP rate
     // limiting and audit-log correctness.
     trustProxy: TRUST_PROXY_HOPS,

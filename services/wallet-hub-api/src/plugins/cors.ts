@@ -91,6 +91,8 @@ const corsPlugin: FastifyPluginAsync = async (server) => {
     },
     methods: ALLOW_METHODS,
     allowedHeaders: ALLOW_HEADERS,
+    // Readable by browser callers, so an error report can carry the id.
+    exposedHeaders: ["x-request-id"],
     credentials: false,
     maxAge: 600,
     strictPreflight: true,

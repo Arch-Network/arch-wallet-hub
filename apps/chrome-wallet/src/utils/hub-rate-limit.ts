@@ -11,9 +11,15 @@
  * unless that exceeds the one-minute cap. State is per extension context
  * (popup, side panel, service worker) and is not persisted.
  *
- * Deliberately dependency-free so both the indexer client and the SDK
- * client wiring in `sdk.ts` can import it without a cycle.
+ * Every Hub call passes through here, so this is also where a failed
+ * one is recorded in the diagnostics log with the Hub's request id.
+ *
+ * Imports only `log.ts`, which imports nothing, so both the indexer
+ * client and the SDK client wiring in `sdk.ts` can import it without a
+ * cycle.
  */
+
+import { log } from "./log";
 
 /** Cooldown when the 429 carries no usable header; doubles per consecutive 429. */
 const BASE_COOLDOWN_MS = 5_000;
@@ -130,6 +136,34 @@ function noteRateLimited(key: string, headers: Headers): HubRateLimitError {
 }
 
 /**
+ * A Hub path with everything but its route words masked, so a logged
+ * route never carries an address, txid or id: `/v1/indexer/btc/tx/:id`.
+ */
+export function hubRouteLabel(url: string): string {
+  return hubPath(url)
+    .split("/")
+    .map((segment) => (segment === "" || /^(v\d+|[a-z][a-z-]{0,31})$/.test(segment) ? segment : ":id"))
+    .join("/");
+}
+
+/**
+ * Record a failed Hub response in the diagnostics log. The request id
+ * is the one the Hub logged the request under, so a user's error report
+ * points at a single server log line. Error messages are left alone:
+ * callers match on their text. A 404 is not recorded; reads of accounts
+ * the indexer has not seen yet return it routinely.
+ */
+function noteFailedResponse(method: string, url: string, res: Response): void {
+  if (res.ok || res.status === 404) return;
+  log.warn("Hub request failed", {
+    status: res.status,
+    requestId: res.headers.get("x-request-id") ?? undefined,
+    method: method.toUpperCase(),
+    route: hubRouteLabel(url),
+  });
+}
+
+/**
  * `fetchImpl` gated by the request's bucket cooldown: throws
  * `HubRateLimitError` without a network call while it runs, and on a 429.
  */
@@ -144,6 +178,7 @@ export async function fetchWithHubRateLimit(
   const remaining = remainingMs(key, Date.now());
   if (remaining > 0) throw new HubRateLimitError(remaining);
   const res = await fetchImpl(input, init);
+  noteFailedResponse(method, url, res);
   if (res.status === 429) throw noteRateLimited(key, res.headers);
   if (res.ok && remainingMs(key, Date.now()) === 0) cooldowns.delete(key);
   return res;

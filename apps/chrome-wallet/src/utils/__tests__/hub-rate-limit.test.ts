@@ -265,3 +265,88 @@ describe("SDK-wrapped rate-limit errors", () => {
     expect(rl.isHubRateLimitError(new Error("WalletHub error 500 Internal Server Error"))).toBe(false);
   });
 });
+
+describe("failed Hub responses in the diagnostics log", () => {
+  const ADDRESS = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+  const REQUEST_ID = "4b1f6d0e-8a55-4c0e-9c1b-2f7f3a401e29";
+
+  function failed(status: number, headers: Record<string, string> = {}): Response {
+    return new Response(JSON.stringify({ statusCode: status, message: "boom" }), { status, headers });
+  }
+
+  async function hubFailures() {
+    const { getRecentLogs } = await import("../log");
+    return getRecentLogs().filter((entry) => entry.msg === "Hub request failed");
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  it("records the Hub's request id, the status and the route without the address", async () => {
+    const { f } = scriptedFetch([() => failed(500, { "x-request-id": REQUEST_ID })]);
+    const err = (await rejection(indexerClient(f).getAccountSummary(ADDRESS))) as Error;
+
+    const entries = await hubFailures();
+    expect(entries.map((entry) => [entry.level, entry.extra])).toEqual([
+      ["warn", { status: 500, requestId: REQUEST_ID, method: "GET", route: "/v1/indexer/arch/accounts/:id" }],
+    ]);
+    expect(JSON.stringify(entries)).not.toContain(ADDRESS);
+    // The id stays out of the message: callers classify errors by its text.
+    expect(err.message).not.toContain(REQUEST_ID);
+  });
+
+  it("records a failure through the SDK's fetch, and a 429 before throwing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      scriptedFetch([() => failed(401, { "x-request-id": "req-a" }), () => tooMany({ "x-request-id": "req-b" })]).f,
+    );
+    await rl.hubRateLimitedFetch(`${HUB}/v1/signing-requests/0b9c2f1e-1111-4222-8333-444455556666/submit`, {
+      method: "post",
+    });
+    await rejection(rl.hubRateLimitedFetch(`${HUB}/v1/auth/session/refresh`, { method: "POST" }));
+
+    expect((await hubFailures()).map((entry) => entry.extra)).toEqual([
+      { status: 401, requestId: "req-a", method: "POST", route: "/v1/signing-requests/:id/submit" },
+      { status: 429, requestId: "req-b", method: "POST", route: "/v1/auth/session/refresh" },
+    ]);
+    vi.unstubAllGlobals();
+  });
+
+  it("records a failure that carries no request id", async () => {
+    const { f } = scriptedFetch([() => failed(502)]);
+    await rl.fetchWithHubRateLimit(f, `${HUB}/v1/indexer/btc/fee-estimates`);
+    expect((await hubFailures()).map((entry) => entry.extra)).toEqual([
+      { status: 502, method: "GET", route: "/v1/indexer/btc/fee-estimates" },
+    ]);
+  });
+
+  it("does not record a success, a 404, or a call a cooldown stopped", async () => {
+    const { f } = scriptedFetch([() => ok(), () => failed(404, { "x-request-id": REQUEST_ID }), () => tooMany()]);
+    await rl.fetchWithHubRateLimit(f, `${HUB}/v1/indexer/btc/fee-estimates`);
+    await rl.fetchWithHubRateLimit(f, `${HUB}/v1/indexer/arch/accounts/${ADDRESS}`);
+    await rejection(rl.fetchWithHubRateLimit(f, `${HUB}/v1/indexer/arch/accounts/${ADDRESS}`));
+    await rejection(rl.fetchWithHubRateLimit(f, `${HUB}/v1/indexer/arch/accounts/${ADDRESS}`));
+    expect((await hubFailures()).map((entry) => (entry.extra as { status: number }).status)).toEqual([429]);
+  });
+});
+
+describe("hubRouteLabel", () => {
+  it("keeps route words and masks everything else", () => {
+    const label = (path: string) => rl.hubRouteLabel(`${HUB}${path}`);
+    expect(label("/v1/indexer/btc/fee-estimates")).toBe("/v1/indexer/btc/fee-estimates");
+    expect(label("/v1/indexer/btc/address/bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq/utxo")).toBe(
+      "/v1/indexer/btc/address/:id/utxo",
+    );
+    expect(label(`/v1/indexer/arch/transactions/${"ab".repeat(32)}/execution`)).toBe(
+      "/v1/indexer/arch/transactions/:id/execution",
+    );
+    expect(label("/v1/indexer/btc/block-height/840000")).toBe("/v1/indexer/btc/block-height/:id");
+    expect(label("/v1/indexer/btc/runes/UNCOMMON%E2%80%A2GOODS")).toBe("/v1/indexer/btc/runes/:id");
+    expect(label("/v1/turnkey/wallets/4f2c?network=testnet4&address=tb1qsecret")).toBe("/v1/turnkey/wallets/:id");
+  });
+
+  it("drops a base path in front of /v1", () => {
+    expect(rl.hubRouteLabel("https://example.com/hub/v1/auth/session")).toBe("/v1/auth/session");
+  });
+});
