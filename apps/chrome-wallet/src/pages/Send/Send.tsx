@@ -16,6 +16,12 @@ import {
 import { getIndexer } from "../../utils/indexer";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { isWrongNetworkAddress, detectBtcNetwork } from "../../utils/addressNetwork";
+import {
+  btcAddressReady,
+  checkBtcAddress,
+  INVALID_BTC_ADDRESS_MESSAGE,
+  normalizeBtcAddress,
+} from "../../utils/btc-address";
 import { identityAddress } from "../../state/account-addresses";
 import QrScanner from "../../components/QrScanner";
 import BackBar from "../../components/BackBar";
@@ -395,7 +401,7 @@ export default function Send({ networkStatus }: SendProps) {
       // against schema drift / future asset additions.
       if (f.asset === "btc" || f.asset === "arch" || f.asset === "apl") {
         setAsset(f.asset as AssetType);
-        setRecipient(f.recipient);
+        setRecipient(f.asset === "btc" ? normalizeBtcAddress(f.recipient) : f.recipient);
         setAmount(f.amount);
         // APL token selection is two-phase: stash the mint here,
         // a separate effect (below) resolves it against tokensHeld
@@ -540,6 +546,15 @@ export default function Send({ networkStatus }: SendProps) {
       setError("");
       if (!opts?.keepStep) setBtcPrepare(null);
       try {
+        const checked = checkBtcAddress(recipient, state.network);
+        if (!checked.ok) {
+          throw new Error(
+            checked.reason === "wrong-network"
+              ? `This address is for ${state.network === "mainnet" ? "Testnet" : "Mainnet"}.`
+              : INVALID_BTC_ADDRESS_MESSAGE,
+          );
+        }
+        const toAddress = checked.address;
         const amountSats = Math.round((Number(amount) || 0) * 1e8);
         // Dust threshold depends on the recipient's script type:
         // P2WPKH=294, P2TR/P2WSH=330, P2SH=540, P2PKH=546. The old
@@ -547,7 +562,7 @@ export default function Send({ networkStatus }: SendProps) {
         // to SegWit/Taproot recipients (which most modern wallets
         // are). dustThresholdForAddress() returns the canonical
         // post-segwit value matching Bitcoin Core's policy.
-        const recipientDust = dustThresholdForAddress(recipient.trim());
+        const recipientDust = dustThresholdForAddress(toAddress);
         if (amountSats < recipientDust) {
           throw new Error(`Amount too small (minimum ${recipientDust} sats for this address type)`);
         }
@@ -579,7 +594,7 @@ export default function Send({ networkStatus }: SendProps) {
         const built = await buildUnsignedPsbt({
           indexer,
           fromAddress,
-          toAddress: recipient,
+          toAddress,
           amountSats,
           feeRate,
         });
@@ -661,7 +676,7 @@ export default function Send({ networkStatus }: SendProps) {
       const indexer = await getIndexer();
       const txid = await broadcastOrReconcile(indexer, rawTxHex);
       setTxResult({ txid, rawTxid: txid });
-      void addRecentRecipient({ address: recipient.trim(), asset: "btc", network: state.network });
+      void addRecentRecipient({ address: normalizeBtcAddress(recipient), asset: "btc", network: state.network });
 
       // Fire a system notification so users see the outcome even
       // after closing the popup. Click opens the mempool.space
@@ -933,6 +948,8 @@ export default function Send({ networkStatus }: SendProps) {
   }
 
   // Step 1: Choose asset
+  const btcRecipient = checkBtcAddress(recipient, state.network);
+
   if (step === 1) {
     return (
       <>
@@ -1210,7 +1227,9 @@ export default function Send({ networkStatus }: SendProps) {
               id="send-recipient"
               placeholder={asset === "btc" ? "tb1p…" : "Base58 address"}
               value={recipient}
-              onChange={(e) => setRecipient(e.target.value)}
+              onChange={(e) =>
+                setRecipient(asset === "btc" ? normalizeBtcAddress(e.target.value) : e.target.value)
+              }
               spellCheck={false}
               autoComplete="off"
             />
@@ -1232,7 +1251,7 @@ export default function Send({ networkStatus }: SendProps) {
           {showQrScanner && (
             <QrScanner
               onResult={(text) => {
-                setRecipient(text);
+                setRecipient(asset === "btc" ? normalizeBtcAddress(text) : text);
                 setShowQrScanner(false);
               }}
               onClose={() => setShowQrScanner(false)}
@@ -1241,6 +1260,11 @@ export default function Send({ networkStatus }: SendProps) {
           {asset === "btc" && recipient.trim() && isWrongNetworkAddress(recipient.trim(), state.network) && (
             <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
               This address looks like {detectBtcNetwork(recipient.trim()) === "mainnet" ? "Mainnet" : "Testnet"} but you are on {state.network === "mainnet" ? "Mainnet" : "Testnet"}. Sending will fail or burn funds.
+            </div>
+          )}
+          {asset === "btc" && btcRecipient.reason === "invalid" && btcAddressReady(btcRecipient.address) && (
+            <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+              {INVALID_BTC_ADDRESS_MESSAGE}
             </div>
           )}
           {asset !== "btc" && recipientResolution.status === "resolving" && (
@@ -1382,6 +1406,7 @@ export default function Send({ networkStatus }: SendProps) {
             !recipient ||
             !amount ||
             preparing ||
+            (asset === "btc" && !btcRecipient.ok) ||
             (asset !== "btc" && recipientResolution.status !== "resolved")
           }
           onClick={handleReview}
@@ -1472,7 +1497,7 @@ export default function Send({ networkStatus }: SendProps) {
             <div className="review-row-label">To</div>
             <div className="review-row-value">
               <span className="review-row-mono">
-                {asset === "btc" ? recipient : reviewRecipient}
+                {asset === "btc" ? btcRecipient.address : reviewRecipient}
               </span>
               {asset !== "btc" && recipientResolution.result?.source === "arch-name" && (
                 <span className="review-row-sub">{recipientResolution.result.name}</span>

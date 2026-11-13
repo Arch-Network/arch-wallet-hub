@@ -32,6 +32,7 @@ import * as ecc from "@bitcoinerlab/secp256k1";
 import type { BtcFeeEstimates, IndexerClient } from "./indexer";
 import { bytesToHex, buildRunestoneOpReturn } from "./runestone";
 import { selectUtxosForRuneSend } from "./rune-coin-select";
+import { requireRecipientAddress } from "./btc-address";
 
 const RUNE_OUTPUT_DUST_SATS = 546;
 const CHANGE_DUST_SATS = 546;
@@ -99,7 +100,9 @@ export async function buildUnsignedRunePsbt(
   params: BuildRunePsbtParams
 ): Promise<BuildRunePsbtResult> {
   ensureEccLib();
-  const { indexer, fromAddress, toAddress, runeId, amount } = params;
+  const { indexer, fromAddress, runeId, amount } = params;
+  const network = networkFromAddress(fromAddress);
+  const toAddress = requireRecipientAddress(params.toAddress, network);
 
   if (amount <= 0n) {
     const err = new Error("Amount must be > 0");
@@ -176,7 +179,6 @@ export async function buildUnsignedRunePsbt(
     selection.leftoverRune > 0n ? { pointer: 2 } : {}
   );
 
-  const network = networkFromAddress(fromAddress);
   const psbt = new bitcoin.Psbt({ network });
   const fromScript = bitcoin.address.toOutputScript(fromAddress, network);
 
