@@ -16,6 +16,7 @@ import type { OnboardingPhase, SwapAccountReadiness } from "@arch/swap-engine";
 import { labelForPhase } from "../../../hooks/useArchOnboarding";
 import type { NetworkId } from "../../../state/types";
 import type { SignerInfo } from "../../../wallets/capabilities";
+import ErrorBanner from "../../../components/ErrorBanner";
 
 type Props = {
   status: "unknown" | "probing" | "ready" | "needs-onboarding" | "error";
@@ -161,7 +162,7 @@ export function OnboardingPanel({
       )}
 
       {error && (
-        <div className="error-banner onboarding-panel__error" role="alert">{error}</div>
+        <ErrorBanner message={error} className="onboarding-panel__error" />
       )}
 
       <button

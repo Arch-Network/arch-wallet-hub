@@ -21,6 +21,7 @@ import {
   setThemePreference,
   type ThemePreference,
 } from "../../utils/theme";
+import ErrorBanner from "../../components/ErrorBanner";
 
 const NETWORKS: { id: NetworkId; label: string }[] = [
   { id: "testnet4", label: "Testnet4" },
@@ -294,7 +295,7 @@ export default function Settings() {
           <details style={{ marginBottom: 12 }}>
             <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Change password</summary>
             <div style={{ marginTop: 8 }}>
-              {pwError && <div className="error-banner" role="alert" style={{ marginBottom: 8 }}>{pwError}</div>}
+              {pwError && <ErrorBanner message={pwError} style={{ marginBottom: 8 }} />}
               {pwSaved && (
                 <div style={{ marginBottom: 8, color: "var(--success)", fontSize: 12 }}>Password changed</div>
               )}
@@ -724,7 +725,7 @@ export default function Settings() {
               Turnkey, signing requests, custodial BTC sends, recovery.
             </div>
             <div className="card">
-              {hubError && <div className="error-banner" role="alert" style={{ marginBottom: 8 }}>{hubError}</div>}
+              {hubError && <ErrorBanner message={hubError} style={{ marginBottom: 8 }} />}
               <div style={{ marginBottom: 8 }}>
                 <label
                   className="input-label"

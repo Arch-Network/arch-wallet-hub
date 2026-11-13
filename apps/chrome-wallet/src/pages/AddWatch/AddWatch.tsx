@@ -22,6 +22,7 @@ import {
   InvalidWatchAddressError,
 } from "../../utils/watch-account";
 import { truncateAddress } from "../../utils/format";
+import ErrorBanner from "../../components/ErrorBanner";
 
 export default function AddWatch() {
   const navigate = useNavigate();
@@ -144,9 +145,7 @@ export default function AddWatch() {
       )}
 
       {error && (
-        <div className="error-banner" role="alert" style={{ marginBottom: 12 }}>
-          {error}
-        </div>
+        <ErrorBanner message={error} style={{ marginBottom: 12 }} />
       )}
 
       <div style={{ display: "flex", gap: 10 }}>

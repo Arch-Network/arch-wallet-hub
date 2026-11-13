@@ -15,6 +15,7 @@ contact the Wallet Hub, indexer, or Bitcoin network.
 Covered flows:
 
 - fresh onboarding and locked-keystore password rejection;
+- an error banner's "Copy error details": the report on the clipboard;
 - the passkey window: the wait banner and its Cancel, and a passkey that
   belongs to another wallet being reported at unlock with a retry;
 - recovery checkpoint route restoration;

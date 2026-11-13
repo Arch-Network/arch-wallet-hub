@@ -45,6 +45,7 @@ import {
   type WalletAccount,
 } from "../state/types";
 import { log } from "../utils/log";
+import ErrorBanner from "../components/ErrorBanner";
 
 interface Props {
   account: WalletAccount;
@@ -397,7 +398,7 @@ export default function SessionBootstrapper({
       <h1 className="onboarding-title">Verify by email</h1>
       <p className="onboarding-sub">{subheader}</p>
 
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <ErrorBanner message={error} />}
 
       {stage === "init" && (
         <div style={{ marginTop: 12, width: "100%" }}>
