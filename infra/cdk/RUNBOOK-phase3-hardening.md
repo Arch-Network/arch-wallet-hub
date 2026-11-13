@@ -257,6 +257,15 @@ What the stack adds:
   `deploy/pin-ecs-image.sh` runs as. A `cdk deploy` is not that role, so
   it pages. Leave the flag unset and those rules are not created — arming
   them with no allowlist would page every CI push.
+- Two CloudWatch alarms on the API's own error responses, counted by
+  metric filters on the API log group's `request.completed` lines
+  (namespace `WalletHub/Api`): `ServerErrors`, 5 or more 5xx other than
+  502 in 5 minutes, and `UpstreamErrors`, 25 or more 502s in 5 minutes
+  (a 502 is the API reporting a failed upstream). Both notify the same
+  topic, so they reach the security recipients. The counts are starting
+  values in `lib/api-error-alarms.ts`, set without traffic numbers.
+  Every API response carries an `x-request-id` header equal to `reqId`
+  on its `request.completed` line; a wallet error report quotes it.
 
 IAM changes, new access keys, security-group edits, and RDS snapshot
 copy/share are account-wide and are not in this stack. Neither is the

@@ -13,6 +13,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
+import { ApiErrorAlarms } from "./api-error-alarms";
 
 // Live groups from deploy/README.md. Retention is applied here so it does
 // not require a WalletHubStack deploy. Keep these in sync with that README.
@@ -289,6 +290,11 @@ export class WalletHubMonitoringStack extends cdk.Stack {
           }),
         }),
       ],
+    });
+
+    new ApiErrorAlarms(this, "ApiErrorAlarms", {
+      logGroupName: LIVE_LOG_GROUPS[0],
+      topic,
     });
 
     new cdk.CfnOutput(this, "SecurityAlertTopicArn", {
