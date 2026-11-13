@@ -261,6 +261,27 @@ test.describe("Chrome wallet functional flows", () => {
     await expect(popup).toHaveURL(/#\/recover/);
   });
 
+  test("an error banner copies a report of the error to the clipboard", async () => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await popup.goto(baseUrl);
+    await seedWallet(popup, { unlocked: false });
+    await popup.reload();
+    await popup.getByPlaceholder("Your password").fill("wrong-password");
+    await popup.getByRole("button", { name: /unlock/i }).click();
+    await expect(popup.getByRole("alert")).toHaveText(/incorrect password/i);
+
+    await popup.getByRole("button", { name: "Copy error details" }).click();
+    await expect(popup.getByRole("button", { name: "Copied" })).toBeVisible();
+
+    const report = await popup.evaluate(() => navigator.clipboard.readText());
+    expect(report).toMatch(/^Error: .*incorrect password/im);
+    expect(report).toMatch(/^Version: \d+\.\d+\.\d+$/m);
+    expect(report).toMatch(/^Page: popup\.html/m);
+    expect(report).toMatch(/^Wallet: locked$/m);
+    // Nothing about the wallet behind the lock screen.
+    expect(report).not.toContain(ACCOUNT.btcAddress);
+  });
+
   test("a passkey wait says where to finish and can be cancelled", async () => {
     await stubPasskeyPage(context);
     await popup.goto(baseUrl);

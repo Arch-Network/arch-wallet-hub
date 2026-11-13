@@ -27,6 +27,7 @@ import { BridgeError } from "../../wallets/bridge/errors";
 import { BRIDGE_TIMEOUT_MS } from "../../wallets/bridge/protocol";
 import { connectionAddresses } from "../../wallets/relink";
 import { CreateMethodStep, IntentStep } from "./IntentStep";
+import ErrorBanner from "../../components/ErrorBanner";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -807,7 +808,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
           You'll need it every time you unlock.
         </p>
 
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && <ErrorBanner message={error} />}
 
         <form
           className="onboarding-form"
@@ -890,7 +891,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       <h1 className="onboarding-title">{stepHeading}</h1>
       <p className="onboarding-sub">{stepSubhead}</p>
 
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <ErrorBanner message={error} />}
       {error && installLink && (
         <a className="link-btn onboarding-install-link" href={installLink.url} target="_blank" rel="noreferrer">
           Install {installLink.label}

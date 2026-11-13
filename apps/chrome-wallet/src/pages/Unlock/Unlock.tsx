@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
 import { hasRecoverableAccountHint } from "../../state/wallet-store";
+import ErrorBanner from "../../components/ErrorBanner";
 
 interface UnlockProps {
   /** Called when the user submits a password. Throws on bad password. */
@@ -61,9 +62,7 @@ export default function Unlock({ onUnlock }: UnlockProps) {
       <p className="onboarding-sub">Enter your password to unlock the wallet.</p>
 
       {error && (
-        <div id="unlock-error" className="error-banner" role="alert">
-          {error}
-        </div>
+        <ErrorBanner message={error} id="unlock-error" />
       )}
 
       <form onSubmit={handleSubmit} style={{ width: "100%" }}>

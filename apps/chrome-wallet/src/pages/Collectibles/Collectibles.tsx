@@ -38,6 +38,7 @@ import {
   type EnrichedToken,
 } from "../../utils/enrich-token";
 import { AplCollectibleDetail } from "./AplCollectibleDetail";
+import ErrorBanner from "../../components/ErrorBanner";
 
 function formatBytes(n?: number): string {
   if (n == null || !Number.isFinite(n)) return "\u2014";
@@ -293,7 +294,7 @@ export default function Collectibles() {
         </div>
       )}
 
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <ErrorBanner message={error} />}
 
       {renderBody()}
     </div>
