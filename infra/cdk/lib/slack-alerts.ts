@@ -11,6 +11,42 @@ import { Construct } from "constructs";
 // dimension. Changing it replaces the configuration.
 const CONFIGURATION_NAME = "wallet-hub-alerts";
 
+export interface SlackChannelProps {
+  /** Configuration name. Changing it replaces the configuration. */
+  readonly name: string;
+  /** Slack workspace, authorised once by hand in the console. */
+  readonly workspaceId: string;
+  readonly channelId: string;
+  /** The only topic the channel is subscribed to. */
+  readonly topic: sns.ITopic;
+  /** What channel members may do from Slack. Default: nothing. */
+  readonly role?: iam.IRole;
+}
+
+/**
+ * One Slack channel in Amazon Q Developer in chat applications (AWS
+ * Chatbot), with the settings every wallet-hub channel has.
+ */
+export function slackChannel(
+  scope: Construct,
+  id: string,
+  props: SlackChannelProps
+): chatbot.SlackChannelConfiguration {
+  return new chatbot.SlackChannelConfiguration(scope, id, {
+    slackChannelConfigurationName: props.name,
+    slackWorkspaceId: props.workspaceId,
+    slackChannelId: props.channelId,
+    notificationTopics: [props.topic],
+    role: props.role,
+    // Left unset, the guardrail is AdministratorAccess.
+    guardrailPolicies: [
+      iam.ManagedPolicy.fromAwsManagedPolicyName("CloudWatchReadOnlyAccess"),
+    ],
+    loggingLevel: chatbot.LoggingLevel.ERROR,
+    logRetention: logs.RetentionDays.ONE_YEAR,
+  });
+}
+
 export interface SlackAlertsProps {
   /** Slack workspace, authorised once by hand in the console. */
   readonly workspaceId: string;
@@ -54,18 +90,12 @@ export class SlackAlerts extends Construct {
       })
     );
 
-    const channel = new chatbot.SlackChannelConfiguration(this, "Channel", {
-      slackChannelConfigurationName: CONFIGURATION_NAME,
-      slackWorkspaceId: props.workspaceId,
-      slackChannelId: props.channelId,
-      notificationTopics: [this.topic],
+    const channel = slackChannel(this, "Channel", {
+      name: CONFIGURATION_NAME,
+      workspaceId: props.workspaceId,
+      channelId: props.channelId,
+      topic: this.topic,
       role,
-      // Left unset, the guardrail is AdministratorAccess.
-      guardrailPolicies: [
-        iam.ManagedPolicy.fromAwsManagedPolicyName("CloudWatchReadOnlyAccess"),
-      ],
-      loggingLevel: chatbot.LoggingLevel.ERROR,
-      logRetention: logs.RetentionDays.ONE_YEAR,
     });
 
     // A dropped notification is otherwise visible only in these two
