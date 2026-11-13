@@ -2,6 +2,7 @@
 
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
 const { decide, configFromEnv } = require("./decide");
+const { publishToSlack } = require("./slack");
 
 const sns = new SNSClient({});
 
@@ -31,6 +32,11 @@ exports.handler = async (event) => {
       eventName: decision.message.eventName,
       actor: decision.message.actor,
     })
+  );
+  await publishToSlack(
+    (params, options) => sns.send(new PublishCommand(params), options),
+    process.env.SLACK_TOPIC_ARN,
+    decision.message
   );
   return { paged: true };
 };

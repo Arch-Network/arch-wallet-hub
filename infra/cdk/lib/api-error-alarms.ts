@@ -24,6 +24,8 @@ export interface ApiErrorAlarmsProps {
   readonly logGroupName: string;
   /** Topic the alarms notify. */
   readonly topic: sns.Topic;
+  /** Slack-only topic the alarms also notify, when Slack is configured. */
+  readonly slackTopic?: sns.Topic;
 }
 
 /**
@@ -38,7 +40,8 @@ export class ApiErrorAlarms extends Construct {
     super(scope, id);
 
     const logGroup = logs.LogGroup.fromLogGroupName(this, "ApiLogs", props.logGroupName);
-    const action = new cloudwatchActions.SnsAction(props.topic);
+    const topics = props.slackTopic ? [props.topic, props.slackTopic] : [props.topic];
+    const actions = topics.map((topic) => new cloudwatchActions.SnsAction(topic));
 
     const alarm = (
       name: string,
@@ -61,7 +64,7 @@ export class ApiErrorAlarms extends Construct {
         evaluationPeriods: 1,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
         treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      }).addAlarmAction(action);
+      }).addAlarmAction(...actions);
     };
 
     alarm(
@@ -83,25 +86,27 @@ export class ApiErrorAlarms extends Construct {
       "wallet-hub API 502 responses (an upstream failed)"
     );
 
-    // The topic already has an explicit policy (the GuardDuty rule
+    // Each topic already has an explicit policy (the GuardDuty rule
     // publishes to it), so CloudWatch needs its own statement.
-    props.topic.addToResourcePolicy(
-      new iam.PolicyStatement({
-        sid: "AllowApiErrorAlarms",
-        actions: ["sns:Publish"],
-        principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
-        resources: [props.topic.topicArn],
-        conditions: {
-          ArnLike: {
-            "aws:SourceArn": cdk.Stack.of(this).formatArn({
-              service: "cloudwatch",
-              resource: "alarm",
-              arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
-              resourceName: "*",
-            }),
+    for (const topic of topics) {
+      topic.addToResourcePolicy(
+        new iam.PolicyStatement({
+          sid: "AllowApiErrorAlarms",
+          actions: ["sns:Publish"],
+          principals: [new iam.ServicePrincipal("cloudwatch.amazonaws.com")],
+          resources: [topic.topicArn],
+          conditions: {
+            ArnLike: {
+              "aws:SourceArn": cdk.Stack.of(this).formatArn({
+                service: "cloudwatch",
+                resource: "alarm",
+                arnFormat: cdk.ArnFormat.COLON_RESOURCE_NAME,
+                resourceName: "*",
+              }),
+            },
           },
-        },
-      })
-    );
+        })
+      );
+    }
   }
 }
