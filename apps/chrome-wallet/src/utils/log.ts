@@ -6,6 +6,10 @@
  * sent; we never include addresses, keys, transaction payloads, or
  * raw URLs containing query strings (see `sanitize`).
  *
+ * Separately from that opt-in, the ring buffer below goes into the
+ * error report a user copies or sends from an error banner
+ * (`utils/error-details`). Nothing sends it without that action.
+ *
  * Verbose mode (`debugMode`) is also wired here: when on, info/debug
  * are mirrored to a small ring buffer the Settings Diagnostics view
  * renders, and to `console.*` so the SW DevTools see the same output.
@@ -48,6 +52,13 @@ export function isSentryActive(): boolean {
 export function getRecentLogs(): LogEntry[] {
   return [...ring];
 }
+
+/**
+ * Runtime message a page sends the background for its `getRecentLogs()`
+ * (answered `{ logs }`): each context has its own ring, and an error
+ * report wants both.
+ */
+export const GET_RECENT_LOGS_MESSAGE = "GET_RECENT_LOGS";
 
 export function clearRecentLogs(): void {
   ring.length = 0;

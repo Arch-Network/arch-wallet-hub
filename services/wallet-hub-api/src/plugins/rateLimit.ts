@@ -22,7 +22,7 @@ import rateLimit from "@fastify/rate-limit";
  * via the `trustProxy` option set in `server.ts`.
  */
 
-export type RateLimitGroup = "global" | "auth" | "recovery" | "indexer" | "send";
+export type RateLimitGroup = "global" | "auth" | "recovery" | "indexer" | "send" | "report";
 
 declare module "fastify" {
   interface FastifyContextConfig {
@@ -78,6 +78,9 @@ export const RATE_LIMITS: Record<RateLimitGroup, GroupLimit> = {
   indexer: { max: 600, keyGenerator: installKeyForRequest, ipCeiling: 3000 },
   // Broadcast, UTXOs, fee estimates, signing-request create/submit.
   send: { max: 120, keyGenerator: installKeyForRequest, ipCeiling: 600 },
+  // User error reports. The route has its own hourly cap as well, which
+  // holds in log-only mode (routes/errorReports.ts).
+  report: { max: 5, keyGenerator: routeIpKey },
 };
 
 const TIME_WINDOW = "1 minute";

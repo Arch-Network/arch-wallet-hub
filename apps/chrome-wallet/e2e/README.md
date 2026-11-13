@@ -16,6 +16,9 @@ Covered flows:
 
 - fresh onboarding and locked-keystore password rejection;
 - an error banner's "Copy error details": the report on the clipboard;
+- an error banner's "Send report": the reference shown for a failed Hub
+  request, nothing posted before the confirmation, and the report the mocked
+  Hub receives, including the service worker's log;
 - the passkey window: the wait banner and its Cancel, and a passkey that
   belongs to another wallet being reported at unlock with a retry;
 - recovery checkpoint route restoration;

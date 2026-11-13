@@ -25,10 +25,12 @@ vi.mock("../hub-session-store", () => ({
   readHubToken: vi.fn(),
 }));
 
+import { WalletHubError } from "@arch-network/wallet-hub-sdk";
 import {
   formatWalletHubError,
   isWalletHubAuthError,
   isWalletHubSessionError,
+  isWalletHubUnknownResourceError,
   walletHubErrorStatus,
 } from "../sdk";
 
@@ -128,5 +130,40 @@ describe("walletHubErrorStatus", () => {
     expect(walletHubErrorStatus(new Error("WalletHub error 401 Unauthorized: x"))).toBe(401);
     expect(walletHubErrorStatus(new Error("need 240100 sats"))).toBeNull();
     expect(walletHubErrorStatus(new Error("Indexer GET /x 401 Unauthorized"))).toBeNull();
+  });
+});
+
+describe("a WalletHubError is classified by its status field, not its text", () => {
+  it("reads the status from the field", () => {
+    expect(walletHubErrorStatus(new WalletHubError("Unknown resourceId", 404, undefined))).toBe(404);
+    expect(walletHubErrorStatus(new WalletHubError("WalletHub error 401 Unauthorized: x", 500, undefined))).toBe(500);
+  });
+
+  it("is an unknown-resource error only when the status is 404", () => {
+    const unknown = new WalletHubError("WalletHub error 404 Not Found: Not Found: Unknown resourceId", 404, "req-1");
+    // A 400 about a wallet whose address happens to hold "404".
+    const text = "WalletHub error 400 Bad Request: Bad Request: Unknown resourceId for tb1q404d8h0k5e9u3n7m2c6v4z0y8s5r3j";
+    expect(isWalletHubUnknownResourceError(unknown)).toBe(true);
+    expect(isWalletHubUnknownResourceError(new WalletHubError(text, 400, "req-2"))).toBe(false);
+    // Without the field the text is all there is, and it is misread.
+    expect(isWalletHubUnknownResourceError(new Error(text))).toBe(true);
+  });
+
+  it("keeps the session and API-key classification for typed errors", () => {
+    const session = new WalletHubError("WalletHub error 401 Unauthorized: Unauthorized: Expired session token", 401, "r");
+    const appKey = new WalletHubError("WalletHub error 401 Unauthorized: Unauthorized: Missing API key", 401, "r");
+    expect(isWalletHubSessionError(session)).toBe(true);
+    expect(isWalletHubAuthError(session)).toBe(false);
+    expect(isWalletHubAuthError(appKey)).toBe(true);
+  });
+});
+
+describe("the Hub's request id stays findable when its wording is replaced", () => {
+  it("ties the canned text to the failed request", async () => {
+    const { hubRequestIdFor } = await import("../hub-error");
+    const err = new WalletHubError('WalletHub error 404 Not Found: NotFound: Unknown resourceId', 404, "req-404");
+    const shown = formatWalletHubError(err);
+    expect(shown).toMatch(/^Wallet Hub does not recognize this wallet yet/);
+    expect(hubRequestIdFor(shown)).toBe("req-404");
   });
 });

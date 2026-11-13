@@ -601,3 +601,15 @@ export type RevokeSessionResponse = {
   revoked: boolean;
 };
 
+export type SubmitErrorReportRequest = {
+  /**
+   * The report as plain text. The Hub refuses one whose JSON string
+   * encoding is over 12,000 bytes.
+   */
+  report: string;
+};
+
+export type SubmitErrorReportResponse = {
+  /** The id the Hub logged the report under. */
+  id: string;
+};

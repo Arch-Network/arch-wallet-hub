@@ -14,11 +14,12 @@
  * Every Hub call passes through here, so this is also where a failed
  * one is recorded in the diagnostics log with the Hub's request id.
  *
- * Imports only `log.ts`, which imports nothing, so both the indexer
- * client and the SDK client wiring in `sdk.ts` can import it without a
- * cycle.
+ * Imports only `log.ts` and `hub-error.ts`, which import nothing, so
+ * both the indexer client and the SDK client wiring in `sdk.ts` can
+ * import it without a cycle.
  */
 
+import { hubErrorBodyMessage, rememberHubFailure, upstreamStatusOf } from "./hub-error";
 import { log } from "./log";
 
 /** Cooldown when the 429 carries no usable header; doubles per consecutive 429. */
@@ -45,7 +46,7 @@ interface Cooldown {
 /** Keyed by `hubCooldownKey`. */
 const cooldowns = new Map<string, Cooldown>();
 
-export type HubRouteGroup = "global" | "auth" | "recovery" | "indexer" | "send";
+export type HubRouteGroup = "global" | "auth" | "recovery" | "indexer" | "send" | "report";
 
 // Mirrors the route groups behind `RATE_LIMITS` in the Hub's
 // services/wallet-hub-api/src/plugins/rateLimit.ts; keep the two in sync.
@@ -59,6 +60,7 @@ const ROUTE_GROUPS: ReadonlyArray<[HubRouteGroup, string, RegExp]> = [
   ["indexer", "*", /^\/v1\/indexer\//],
   ["auth", "*", /^\/v1\/auth\/session(\/|$)/],
   ["recovery", "*", /^\/v1\/recovery\//],
+  ["report", "POST", /^\/v1\/error-reports$/],
 ];
 
 function hubPath(url: string): string {
@@ -147,17 +149,32 @@ export function hubRouteLabel(url: string): string {
 }
 
 /**
- * Record a failed Hub response in the diagnostics log. The request id
- * is the one the Hub logged the request under, so a user's error report
- * points at a single server log line. Error messages are left alone:
- * callers match on their text. A 404 is not recorded; reads of accounts
- * the indexer has not seen yet return it routinely.
+ * Record a failed Hub response: in the diagnostics log, and for the
+ * error banner that may show it (`hubRequestIdFor`). The request id is
+ * the one the Hub logged the request under, so a user's error report
+ * points at a single server log line. Error messages are left alone.
+ *
+ * "Not found" is not logged. Reads of accounts the indexer has not seen
+ * yet get it routinely, as a 502 whose body says the indexer answered
+ * 404, so the body is read (from a copy; the caller still gets its own).
  */
-function noteFailedResponse(method: string, url: string, res: Response): void {
-  if (res.ok || res.status === 404) return;
+async function noteFailedResponse(method: string, url: string, res: Response): Promise<void> {
+  if (res.ok) return;
+  let bodyText = "";
+  try {
+    bodyText = await res.clone().text();
+  } catch {
+    // Noting a failure must not turn it into a different one.
+  }
+  const bodyMessage = hubErrorBodyMessage(bodyText);
+  const upstreamStatus = upstreamStatusOf(bodyMessage);
+  const requestId = res.headers.get("x-request-id") ?? undefined;
+  if (requestId) rememberHubFailure({ requestId, bodyMessage });
+  if (res.status === 404 || upstreamStatus === 404) return;
   log.warn("Hub request failed", {
     status: res.status,
-    requestId: res.headers.get("x-request-id") ?? undefined,
+    upstreamStatus,
+    requestId,
     method: method.toUpperCase(),
     route: hubRouteLabel(url),
   });
@@ -178,7 +195,7 @@ export async function fetchWithHubRateLimit(
   const remaining = remainingMs(key, Date.now());
   if (remaining > 0) throw new HubRateLimitError(remaining);
   const res = await fetchImpl(input, init);
-  noteFailedResponse(method, url, res);
+  await noteFailedResponse(method, url, res);
   if (res.status === 429) throw noteRateLimited(key, res.headers);
   if (res.ok && remainingMs(key, Date.now()) === 0) cooldowns.delete(key);
   return res;

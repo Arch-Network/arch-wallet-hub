@@ -5,6 +5,7 @@ import {
   DEFAULT_INDEXER_API_KEY,
   USE_DIRECT_INDEXER
 } from "./explorer-config";
+import { HubIndexerError } from "./hub-error";
 import { ArchHubIndexerClient } from "./hub-indexer";
 import { isHubRateLimitError } from "./hub-rate-limit";
 
@@ -597,23 +598,33 @@ export class IndexerApiKeyRejectedError extends Error {
   }
 }
 
+/**
+ * Whether `err` reports HTTP `status`. A Hub error says so in its
+ * fields, for its own status and for the indexer's behind it. Any other
+ * error (the direct indexer client's, or one that reached this context
+ * as text) can only be searched, which also finds the digits in an
+ * address or a txid.
+ */
+function errorHasStatus(err: unknown, message: string, status: number): boolean {
+  if (err instanceof HubIndexerError) return err.status === status || err.upstreamStatus === status;
+  return message.includes(String(status));
+}
+
 export function isIndexerAuthError(err: unknown): boolean {
   if (err instanceof MissingIndexerApiKeyError || err instanceof IndexerApiKeyRejectedError) return true;
   const message = err instanceof Error ? err.message : String(err ?? "");
   const lower = message.toLowerCase();
-  return message.includes("401") || lower.includes("missing_credentials") || lower.includes("api key");
+  return errorHasStatus(err, message, 401) || lower.includes("missing_credentials") || lower.includes("api key");
 }
 
 export function isIndexerNotFoundError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? "");
-  return message.includes("404") || message.toLowerCase().includes("not found");
+  return errorHasStatus(err, message, 404) || message.toLowerCase().includes("not found");
 }
 
 /**
- * Detect indexer rate-limit responses (HTTP 429). The error strings
- * thrown by getJson / postJson embed the status code, so a substring
- * match is the lowest-noise way to recognize the case across both
- * "Too Many Requests" and the indexer's own free-form bodies.
+ * Detect indexer rate-limit responses (HTTP 429), by status and by the
+ * words "Too Many Requests" and the indexer's own free-form bodies use.
  *
  * Why callers care: rate-limit errors are not failures of the user's
  * setup -- the API key is valid, the network is up, the indexer just
@@ -624,7 +635,7 @@ export function isIndexerRateLimitError(err: unknown): boolean {
   if (isHubRateLimitError(err)) return true;
   const message = err instanceof Error ? err.message : String(err ?? "");
   return (
-    message.includes("429") ||
+    errorHasStatus(err, message, 429) ||
     message.toLowerCase().includes("too many requests") ||
     message.toLowerCase().includes("rate limit")
   );

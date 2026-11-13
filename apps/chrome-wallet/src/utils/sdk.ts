@@ -1,4 +1,4 @@
-import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import { WalletHubClient, WalletHubError } from "@arch-network/wallet-hub-sdk";
 import type { ArchNetwork } from "@arch-network/wallet-hub-sdk";
 import bs58 from "bs58";
 import { walletStore } from "../state/wallet-store";
@@ -6,6 +6,7 @@ import type { NetworkId } from "../state/types";
 import { DEFAULT_HUB_API_KEY, DEFAULT_HUB_BASE_URL } from "../state/types";
 import { invalidateIndexerCache } from "./indexer";
 import { readHubToken } from "./hub-session-store";
+import { rememberShownError } from "./hub-error";
 import { hubRateLimitedFetch, hubRetryAfterMs } from "./hub-rate-limit";
 
 let cachedClient: WalletHubClient | null = null;
@@ -109,13 +110,16 @@ export async function getExternalUserId(): Promise<string> {
 }
 
 /**
- * Extract the HTTP status the SDK embeds in its error message
- * (`WalletHub error <status> <statusText>: <body>`), or null when the
- * error isn't an HTTP one (e.g. a network/timeout error). Threading the
- * real status lets us tell a session 401 apart from an app-key 401
- * instead of blindly matching the substring "401" anywhere in a body.
+ * The HTTP status of a Hub error, or null when the error isn't an HTTP
+ * one (e.g. a network/timeout error). The SDK's `WalletHubError` carries
+ * it. An error that reached this context as text only has the status the
+ * SDK put at the start of its message (`WalletHub error <status>
+ * <statusText>: <body>`). Threading the real status lets us tell a
+ * session 401 apart from an app-key 401 instead of blindly matching the
+ * substring "401" anywhere in a body.
  */
 export function walletHubErrorStatus(err: unknown): number | null {
+  if (err instanceof WalletHubError) return err.status;
   const message = err instanceof Error ? err.message : String(err ?? "");
   const m = message.match(/WalletHub error (\d{3})\b/);
   return m ? Number(m[1]) : null;
@@ -170,7 +174,8 @@ export function isWalletHubAuthError(err: unknown): boolean {
 
 export function isWalletHubUnknownResourceError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? "");
-  return message.includes("404") && message.toLowerCase().includes("unknown resourceid");
+  const is404 = err instanceof WalletHubError ? err.status === 404 : message.includes("404");
+  return is404 && message.toLowerCase().includes("unknown resourceid");
 }
 
 export async function resetHubConfigToDefaults(): Promise<void> {
@@ -179,6 +184,13 @@ export async function resetHubConfigToDefaults(): Promise<void> {
 }
 
 export function formatWalletHubError(err: unknown, fallback = "Wallet Hub request failed"): string {
+  const shown = walletHubErrorText(err, fallback);
+  // The wording below drops the Hub's own; keep its request id findable.
+  rememberShownError(shown, err);
+  return shown;
+}
+
+function walletHubErrorText(err: unknown, fallback: string): string {
   const message = err instanceof Error ? err.message : String(err ?? "");
 
   const retryAfterMs = hubRetryAfterMs(err);

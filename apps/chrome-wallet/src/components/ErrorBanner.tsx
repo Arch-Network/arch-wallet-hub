@@ -1,17 +1,19 @@
 /**
- * An error shown to the user, with a way to copy what a bug report
- * needs. Most failures are caught and shown here rather than thrown, so
- * this is the one place a user can hand us the build, screen and recent
- * log along with the message. The copy stays on the clipboard; see
- * `utils/error-details`.
+ * An error shown to the user, with a way to copy or send what a bug
+ * report needs. Most failures are caught and shown here rather than
+ * thrown, so this is the one place a user can hand us the build, screen
+ * and recent log along with the message, and the one place that sees
+ * every error a user was shown.
  *
  * Only the message is the alert: `id` goes on it too, so a field that
  * points at the banner with `aria-describedby` is described by the
- * error and not by the button.
+ * error and not by the reference or the buttons.
  */
-import { useState, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 
-import { collectErrorDetails, formatErrorDetails } from "../utils/error-details";
+import { hubRequestIdFor } from "../utils/hub-error";
+import { log } from "../utils/log";
+import ErrorReportActions, { shortReference } from "./ErrorReportActions";
 
 type Props = {
   message: string;
@@ -20,37 +22,42 @@ type Props = {
   style?: CSSProperties;
 };
 
-type CopyState = "idle" | "copied" | "failed";
+/** A screen that polls shows the same failure again and again; log each message once in this long. */
+const SHOWN_AGAIN_AFTER_MS = 60_000;
+/** `log` keeps a string whole up to this length. */
+const LOGGED_MESSAGE_MAX = 200;
+const lastShownAt = new Map<string, number>();
 
-const COPY_LABEL: Record<CopyState, string> = {
-  idle: "Copy error details",
-  copied: "Copied",
-  failed: "Couldn't copy",
-};
+/**
+ * Put a shown error in the diagnostics log, so a later report also lists
+ * the errors that came before the one it is about.
+ */
+function noteErrorShown(message: string, requestId: string | undefined): void {
+  const now = Date.now();
+  for (const [shown, at] of lastShownAt) {
+    if (now - at >= SHOWN_AGAIN_AFTER_MS) lastShownAt.delete(shown);
+  }
+  if (lastShownAt.has(message)) return;
+  lastShownAt.set(message, now);
+  log.warn("Error shown", { message: message.slice(0, LOGGED_MESSAGE_MAX), requestId });
+}
 
 export default function ErrorBanner({ message, id, className, style }: Props) {
-  const [copyState, setCopyState] = useState<CopyState>("idle");
+  // Looked up when the message appears: the failure behind it is recent
+  // now, and a later one with the same wording is a different request.
+  const requestId = useMemo(() => hubRequestIdFor(message), [message]);
 
-  const copy = async () => {
-    let next: CopyState = "copied";
-    try {
-      const details = await collectErrorDetails(message);
-      await navigator.clipboard.writeText(formatErrorDetails(details));
-    } catch {
-      next = "failed";
-    }
-    setCopyState(next);
-    setTimeout(() => setCopyState("idle"), 1500);
-  };
+  useEffect(() => {
+    noteErrorShown(message, requestId);
+  }, [message, requestId]);
 
   return (
     <div className={className ? `error-banner ${className}` : "error-banner"} style={style}>
       <span id={id} role="alert">
         {message}
       </span>
-      <button type="button" className="error-banner-copy" onClick={copy}>
-        {COPY_LABEL[copyState]}
-      </button>
+      {requestId ? <span className="error-banner-ref">Ref {shortReference(requestId)}</span> : null}
+      <ErrorReportActions message={message} requestId={requestId} />
     </div>
   );
 }

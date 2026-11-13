@@ -5,6 +5,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "../popup/App";
 import "../../src/styles/global.css";
+import AppErrorBoundary from "../../src/components/AppErrorBoundary";
 import { applySystemThemeImmediately, bootstrapTheme } from "../../src/utils/theme";
 
 // Paint the OS theme before first render (no flash for "system" users),
@@ -36,7 +37,9 @@ if (!rootEl) {
   try {
     ReactDOM.createRoot(rootEl).render(
       <React.StrictMode>
-        <App />
+        <AppErrorBoundary>
+          <App />
+        </AppErrorBoundary>
       </React.StrictMode>
     );
     console.debug("[arch-wallet] sidepanel rendered");

@@ -41,7 +41,9 @@ import type {
   CreateExternalSessionChallengeResponse,
   MintExternalSessionRequest,
   SessionSigner,
-  SessionSignerSource
+  SessionSignerSource,
+  SubmitErrorReportRequest,
+  SubmitErrorReportResponse
 } from "./types.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -85,6 +87,33 @@ function summarizeErrorBody(text: string): string {
     /* fall through to plain truncation */
   }
   return text.length > 240 ? `${text.slice(0, 240)}...` : text;
+}
+
+/**
+ * The Hub answered a request with an error status. `status` and
+ * `requestId` are for code: the message text is for people and can
+ * contain digits that are not the status (an address, an amount).
+ */
+export class WalletHubError extends Error {
+  /** HTTP status of the Hub's response. */
+  readonly status: number;
+  /** The response's `x-request-id`: the id the Hub logged the request under. */
+  readonly requestId: string | undefined;
+
+  constructor(message: string, status: number, requestId: string | undefined) {
+    super(message);
+    this.name = "WalletHubError";
+    this.status = status;
+    this.requestId = requestId;
+  }
+}
+
+function errorFromResponse(res: Response, bodyText: string): WalletHubError {
+  return new WalletHubError(
+    `WalletHub error ${res.status} ${res.statusText}: ${summarizeErrorBody(bodyText)}`,
+    res.status,
+    res.headers.get("x-request-id") ?? undefined,
+  );
 }
 
 /**
@@ -231,10 +260,10 @@ export class WalletHubClient {
 
   /** One network round-trip with auth headers + timeout. Returns the
    *  raw Response (ok or not) so callers can branch on status. */
-  private async fetchOnce(path: string, init: RequestInit): Promise<Response> {
+  private async fetchOnce(path: string, init: RequestInit, withoutSession = false): Promise<Response> {
     const headers = new Headers(init.headers);
     if (this.apiKey) headers.set("x-api-key", this.apiKey);
-    if (this.sessionToken) {
+    if (this.sessionToken && !withoutSession) {
       // Per-user authn. The Hub treats this as an opaque bearer
       // scoped to one externalUserId + a short TTL.
       headers.set("authorization", `Bearer ${this.sessionToken}`);
@@ -274,11 +303,11 @@ export class WalletHubClient {
   private async requestJson<T>(
     path: string,
     init: RequestInit = {},
-    opts: { enforced?: boolean } = {},
+    opts: { enforced?: boolean; withoutSession?: boolean } = {},
   ): Promise<T> {
     if (opts.enforced) await this.ensureSession();
 
-    let res = await this.fetchOnce(path, init);
+    let res = await this.fetchOnce(path, init, opts.withoutSession);
 
     if (!res.ok && opts.enforced && res.status === 401 && this.canRefresh()) {
       const firstBody = await res.text().catch(() => "");
@@ -294,22 +323,16 @@ export class WalletHubClient {
         if (this.sessionToken) {
           res = await this.fetchOnce(path, init);
         } else {
-          throw new Error(
-            `WalletHub error ${res.status} ${res.statusText}: ${summarizeErrorBody(firstBody)}`,
-          );
+          throw errorFromResponse(res, firstBody);
         }
       } else {
-        throw new Error(
-          `WalletHub error ${res.status} ${res.statusText}: ${summarizeErrorBody(firstBody)}`,
-        );
+        throw errorFromResponse(res, firstBody);
       }
     }
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(
-        `WalletHub error ${res.status} ${res.statusText}: ${summarizeErrorBody(text)}`,
-      );
+      throw errorFromResponse(res, text);
     }
     return (await res.json()) as T;
   }
@@ -589,6 +612,21 @@ export class WalletHubClient {
       method: "POST",
       body: JSON.stringify(body)
     });
+  }
+
+  // ── Error reports ────────────────────────────────────────────────────────
+
+  /**
+   * Send a user's error report to the Hub's operators. Call it only
+   * when the user asked to send one. It goes without the session
+   * token, so the Hub is not told whose report it is.
+   */
+  async submitErrorReport(body: SubmitErrorReportRequest): Promise<SubmitErrorReportResponse> {
+    return await this.requestJson(
+      `/error-reports`,
+      { method: "POST", body: JSON.stringify(body) },
+      { withoutSession: true },
+    );
   }
 }
 
