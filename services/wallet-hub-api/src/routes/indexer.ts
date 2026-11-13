@@ -48,7 +48,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Type } from "@sinclair/typebox";
 import { createHash } from "node:crypto";
 import { indexerForRequest, requestNetwork } from "../indexer/forRequest.js";
-import type { IndexerClient } from "../indexer/client.js";
+import { IndexerHttpError, type IndexerClient } from "../indexer/client.js";
 import { isAllowedArchRpcMethod } from "../indexer/archRpcAllowlist.js";
 import {
   InscriptionContentTooLargeError,
@@ -134,6 +134,16 @@ function indexerOr501(
 }
 
 /**
+ * Put the indexer's status on the request, for its `request.completed`
+ * line (plugins/observability.ts). Call it wherever an indexer failure
+ * is answered with a 502: the 502 alarm leaves out an upstream 404,
+ * which is an account or transaction the indexer has not seen.
+ */
+function noteUpstreamFailure(request: FastifyRequest, err: unknown): void {
+  if (err instanceof IndexerHttpError) request.upstreamStatus = err.status;
+}
+
+/**
  * Wrap an `IndexerClient` call: forwards the result as-is when it
  * resolves, maps upstream errors to a stable 502 envelope so the
  * wallet's client adapter has one error shape to reason about.
@@ -153,6 +163,7 @@ async function forward<T>(
   try {
     return await op();
   } catch (err: any) {
+    noteUpstreamFailure(reply.request, err);
     const message = err?.message ? String(err.message) : "Indexer proxy failed";
     reply
       .code(502)
@@ -578,6 +589,7 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
           payloadJson: { address, network, error: err?.message ?? String(err) },
           outcome: "failed",
         });
+        noteUpstreamFailure(request, err);
         reply.code(502).send({
           statusCode: 502,
           error: "BadGateway",
@@ -818,6 +830,7 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
             message: err.message,
           });
         }
+        noteUpstreamFailure(request, err);
         const message = err?.message ? String(err.message) : "Inscription proxy failed";
         return reply
           .code(502)
@@ -1050,6 +1063,7 @@ export const registerIndexerRoutes: FastifyPluginAsync = async (server) => {
           },
           outcome: "failed",
         });
+        noteUpstreamFailure(request, err);
         reply.code(502).send({
           statusCode: 502,
           error: "BadGateway",

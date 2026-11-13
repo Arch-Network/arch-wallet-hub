@@ -125,6 +125,28 @@ export type IndexerClient = {
   archRpc(method: string, params: unknown): Promise<unknown>;
 };
 
+/**
+ * The indexer answered with an error status. The proxy turns every
+ * indexer failure into a 502 (routes/indexer.ts), so `status` is the
+ * only place the indexer's own answer survives as more than text; the
+ * request log records it for the 502 alarm.
+ */
+export class IndexerHttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "IndexerHttpError";
+    this.status = status;
+  }
+}
+
+// The wallet reads the indexer's status from the first words of this
+// message (apps/chrome-wallet/src/utils/hub-error.ts). Keep them.
+function httpError(res: Response, url: string, body: string): IndexerHttpError {
+  return new IndexerHttpError(`Indexer error ${res.status} ${res.statusText} (${url}): ${body}`, res.status);
+}
+
 export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: string): IndexerClient | null {
   const baseUrl = baseUrlOverride ?? server.config.INDEXER_BASE_URL;
   if (!baseUrl) return null;
@@ -167,7 +189,7 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Indexer error ${res.status} ${res.statusText} (${url}): ${text}`);
+      throw httpError(res, url, text);
     }
     return await res.json();
   }
@@ -191,7 +213,7 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
-      throw new Error(`Indexer error ${res.status} ${res.statusText} (${url}): ${text}`);
+      throw httpError(res, url, text);
     }
     return await res.json();
   }
@@ -215,7 +237,7 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
     }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`Indexer error ${res.status} ${res.statusText} (${url}): ${body}`);
+      throw httpError(res, url, body);
     }
     return await res.text();
   }
@@ -313,7 +335,7 @@ export function createIndexerClient(server: FastifyInstance, baseUrlOverride?: s
       }
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        throw new Error(`Indexer error ${res.status} ${res.statusText} (${url}): ${body}`);
+        throw httpError(res, url, body);
       }
       const lengthHeader = res.headers.get("content-length");
       const body = await readResponseBodyCapped(res, MAX_INSCRIPTION_CONTENT_BYTES);

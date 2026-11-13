@@ -19,6 +19,24 @@ const UPSTREAM_ERROR_THRESHOLD = 25;
 // read `msg` and `statusCode` from it.
 const COMPLETED = logs.FilterPattern.stringValue("$.msg", "=", "request.completed");
 
+// The API's indexer proxy answers 502 for any indexer failure, and puts
+// the indexer's own status on the line as `upstreamStatus`. A 404 there
+// is an account or transaction the indexer has not seen, which a wallet
+// with no history produces, so it is not an upstream failure.
+//
+// Most 502 lines have no `upstreamStatus`: timeouts, the routes that do
+// not set it, and every line from an API build older than the field.
+// The documentation describes a comparison as matching lines that
+// contain the property, so `!= 404` alone would stop counting all of
+// those. NOT EXISTS, the documented test for a missing field, keeps
+// them, and the pattern does not depend on how `!=` treats one.
+// https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/FilterAndPatternSyntax.html
+// https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/FilterAndPatternSyntaxForMetricFilters.html
+const NOT_UPSTREAM_NOT_FOUND = logs.FilterPattern.any(
+  logs.FilterPattern.notExists("$.upstreamStatus"),
+  logs.FilterPattern.numberValue("$.upstreamStatus", "!=", 404)
+);
+
 export interface ApiErrorAlarmsProps {
   /** Log group the wallet-hub API container writes to. */
   readonly logGroupName: string;
@@ -34,6 +52,7 @@ export interface ApiErrorAlarmsProps {
  * A 502 is how the API reports a failed upstream (indexer, Bitcoin node,
  * wallet provider), and the indexer throttles in normal operation, so
  * 502s are counted apart from the other 5xx and alarm at a higher count.
+ * A 502 for something the indexer answered 404 to is not counted.
  */
 export class ApiErrorAlarms extends Construct {
   constructor(scope: Construct, id: string, props: ApiErrorAlarmsProps) {
@@ -81,7 +100,11 @@ export class ApiErrorAlarms extends Construct {
     alarm(
       "UpstreamErrors",
       "UpstreamErrors",
-      logs.FilterPattern.all(COMPLETED, logs.FilterPattern.numberValue("$.statusCode", "=", 502)),
+      logs.FilterPattern.all(
+        COMPLETED,
+        logs.FilterPattern.numberValue("$.statusCode", "=", 502),
+        NOT_UPSTREAM_NOT_FOUND
+      ),
       UPSTREAM_ERROR_THRESHOLD,
       "wallet-hub API 502 responses (an upstream failed)"
     );
