@@ -4354,6 +4354,19 @@ button.address-chip-link:hover {
   margin-bottom: 12px;
 }
 
+.error-banner-copy {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .warning-banner {
   padding: 8px 12px;
   background: rgba(230, 168, 23, 0.1);

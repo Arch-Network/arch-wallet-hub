@@ -102,6 +102,7 @@ import {
   type TokenBalanceGate,
   type ArchSpendCapGate,
 } from "../../utils/transfer-gates";
+import ErrorBanner from "../../components/ErrorBanner";
 
 interface RequestDetails {
   type: string;
@@ -1764,7 +1765,7 @@ export default function Approve() {
       />
 
       <div className="approve-body">
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && <ErrorBanner message={error} />}
 
         {originRefusal && (
           <div className="approve-risk approve-risk-danger" style={{ marginBottom: 10 }}>

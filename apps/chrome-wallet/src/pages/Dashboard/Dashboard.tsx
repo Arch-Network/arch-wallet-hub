@@ -38,6 +38,7 @@ import { signerInfo } from "../../wallets/capabilities";
 import { BtcAddressBreakdown } from "./BtcAddressBreakdown";
 import { TokenIcon } from "../../components/TokenIcon";
 import { ActivityRow, type ActivityRowTx } from "../../components/ActivityRow";
+import ErrorBanner from "../../components/ErrorBanner";
 
 interface TokenBalance {
   mint: string;
@@ -703,7 +704,7 @@ export default function Dashboard() {
       )}
 
       <div className="dashboard-shell">
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <ErrorBanner message={error} />}
       {busySeconds !== null && (
         <div className="warning-banner">
           {busySeconds > 0 ? `Busy right now. Retrying in ${busySeconds}s…` : "Busy right now. Retrying…"}

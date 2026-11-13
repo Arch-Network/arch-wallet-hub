@@ -52,6 +52,7 @@ import {
   loadSendForm,
   saveSendForm,
 } from "../../state/send-form-session";
+import ErrorBanner from "../../components/ErrorBanner";
 
 type Step = "form" | "confirm" | "sent";
 
@@ -266,7 +267,7 @@ export default function SendInscription() {
         <div className="page-header">
           <h2 className="page-title">Send Inscription</h2>
         </div>
-        <div className="error-banner" role="alert">{loadError}</div>
+        <ErrorBanner message={loadError} />
         <button className="btn btn-secondary btn-full" onClick={() => navigate("/collectibles")}>
           Back to collectibles
         </button>
@@ -329,7 +330,7 @@ export default function SendInscription() {
           <div className="page-subtitle">Double-check the details before signing this transaction.</div>
         </div>
 
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && <ErrorBanner message={error} />}
 
         <div className="review-card">
           <div className="review-row">
@@ -421,7 +422,7 @@ export default function SendInscription() {
         </div>
       </div>
 
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <ErrorBanner message={error} />}
 
       <div className="form-field">
         <div className="form-field-header">

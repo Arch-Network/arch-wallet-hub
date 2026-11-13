@@ -50,6 +50,7 @@ import {
   loadSendForm,
   saveSendForm,
 } from "../../state/send-form-session";
+import ErrorBanner from "../../components/ErrorBanner";
 
 type Step = "form" | "confirm" | "sent";
 
@@ -298,7 +299,7 @@ export default function SendRune() {
         <div className="page-header">
           <h2 className="page-title">Send {labelForRune({ spaced_name: runeId })}</h2>
         </div>
-        <div className="error-banner" role="alert">{balanceError}</div>
+        <ErrorBanner message={balanceError} />
         <button className="btn btn-secondary btn-full" onClick={() => navigate("/dashboard")}>
           Back to dashboard
         </button>
@@ -366,7 +367,7 @@ export default function SendRune() {
           <div className="page-subtitle">Double-check the details before signing this transaction.</div>
         </div>
 
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && <ErrorBanner message={error} />}
 
         <div className="review-card">
           <div className="review-row">
@@ -483,7 +484,7 @@ export default function SendRune() {
         </div>
       </div>
 
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <ErrorBanner message={error} />}
 
       <div className="form-field">
         <div className="form-field-header">

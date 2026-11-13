@@ -61,6 +61,7 @@ import { SellAmountCard } from "./components/SellAmountCard";
 import { SubmitButton, type SwapValidation } from "./components/SubmitButton";
 import { TokenPicker } from "./components/TokenPicker";
 import { useSwapQuote } from "./useSwapQuote";
+import ErrorBanner from "../../components/ErrorBanner";
 
 const DEFAULT_SLIPPAGE_PCT = 1;
 const SWAP_LABEL = "Swap";
@@ -714,15 +715,11 @@ export default function Swap() {
         )}
 
         {validation.kind === "quote-failed" && (
-          <div className="error-banner" role="alert" style={{ marginTop: 8 }}>
-            Quote failed: {validation.message}
-          </div>
+          <ErrorBanner message={`Quote failed: ${validation.message}`} style={{ marginTop: 8 }} />
         )}
 
         {error && (
-          <div className="error-banner" role="alert" style={{ marginTop: 8 }}>
-            {error}
-          </div>
+          <ErrorBanner message={error} style={{ marginTop: 8 }} />
         )}
 
         {statusMsg && (

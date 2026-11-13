@@ -78,6 +78,7 @@ import {
 import { createArchPasskey } from "../../session/passkey-hosted";
 import { passkeyUserName } from "../../session/passkey-webauthn";
 import { resolveRecoveredHubResourceId } from "../../utils/hub-resource";
+import ErrorBanner from "../../components/ErrorBanner";
 
 type Step = "email" | "otp" | "pick" | "password" | "done";
 
@@ -787,7 +788,7 @@ export default function Recover({ onRecovered }: RecoverProps) {
           : "Enter the email you used at sign-up to find your wallet."}
       </p>
 
-      {error && <div className="error-banner" role="alert">{error}</div>}
+      {error && <ErrorBanner message={error} />}
       {statusMessage && (
         <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>
           {statusMessage}

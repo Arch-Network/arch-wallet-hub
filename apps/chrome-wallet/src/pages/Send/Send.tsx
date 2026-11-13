@@ -71,6 +71,7 @@ import {
 } from "../../utils/send-amounts";
 import { displayAmountUsd, tokenUsdValue, usdPerUnitForMint } from "../../utils/token-usd";
 import { isArchName, isAnsEnabledForNetwork, resolveName, type NameResolution } from "../../utils/name-service";
+import ErrorBanner from "../../components/ErrorBanner";
 
 type AssetType = "btc" | "arch" | "apl";
 type RecipientResolution =
@@ -939,7 +940,7 @@ export default function Send({ networkStatus }: SendProps) {
           <h2 className="page-title">Send</h2>
           <div className="page-subtitle">Choose which asset you want to send.</div>
         </div>
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && <ErrorBanner message={error} />}
         <div className="send-asset-list">
           <button
             className="card send-asset-card"
@@ -1193,7 +1194,7 @@ export default function Send({ networkStatus }: SendProps) {
           </div>
         </div>
 
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && <ErrorBanner message={error} />}
 
         <div className="form-field">
           <div className="form-field-header">
@@ -1436,7 +1437,7 @@ export default function Send({ networkStatus }: SendProps) {
             This {asset === "apl" ? "APL token" : "ARCH"} send uses Wallet Hub for signing orchestration. Check Wallet Hub API in Settings if signing fails.
           </div>
         )}
-        {error && <div className="error-banner" role="alert">{error}</div>}
+        {error && <ErrorBanner message={error} />}
 
         <div className="review-card">
           <div className="review-row">
