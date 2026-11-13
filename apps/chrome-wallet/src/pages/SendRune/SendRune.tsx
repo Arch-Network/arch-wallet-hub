@@ -38,6 +38,12 @@ import { finalizeSignedPsbt } from "../../utils/btc-psbt";
 import { formatRuneAmount, labelForRune, parseRuneAmount } from "../../utils/runes-format";
 import { isExternalAccount } from "../../state/types";
 import { identityAddress } from "../../state/account-addresses";
+import {
+  btcAddressReady,
+  checkBtcAddress,
+  INVALID_BTC_ADDRESS_MESSAGE,
+  normalizeBtcAddress,
+} from "../../utils/btc-address";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import { signerInfo } from "../../wallets/capabilities";
 import { reopenForExternalSigning } from "../../utils/runtime-context";
@@ -129,7 +135,7 @@ export default function SendRune() {
         runeId,
       });
       if (!ck || ck.form.kind !== "rune") return;
-      setRecipient(ck.form.recipient);
+      setRecipient(normalizeBtcAddress(ck.form.recipient));
       setAmountText(ck.form.amount);
     })();
   }, [activeAccount?.id, runeId, state.network]);
@@ -176,9 +182,11 @@ export default function SendRune() {
     }
   }, [amountMinor, balance]);
 
+  const recipientCheck = checkBtcAddress(recipient, state.network);
+
   const canContinue =
     !!balance &&
-    recipient.trim().length > 0 &&
+    recipientCheck.ok &&
     amountMinor !== null &&
     amountMinor > 0n &&
     !amountExceedsBalance;
@@ -186,6 +194,14 @@ export default function SendRune() {
   // ── Step transitions ───────────────────────────────────────────
   const handleContinue = useCallback(async () => {
     if (!fromAddress || !balance || amountMinor === null) return;
+    if (!recipientCheck.ok) {
+      setError(
+        recipientCheck.reason === "wrong-network"
+          ? `This address is for ${state.network === "mainnet" ? "Testnet" : "Mainnet"}.`
+          : INVALID_BTC_ADDRESS_MESSAGE,
+      );
+      return;
+    }
     setPreparing(true);
     setError("");
     try {
@@ -193,7 +209,7 @@ export default function SendRune() {
       const result = await buildUnsignedRunePsbt({
         indexer,
         fromAddress,
-        toAddress: recipient.trim(),
+        toAddress: recipientCheck.address,
         runeId,
         amount: amountMinor,
       });
@@ -210,7 +226,7 @@ export default function SendRune() {
     } finally {
       setPreparing(false);
     }
-  }, [fromAddress, balance, amountMinor, recipient, runeId]);
+  }, [fromAddress, balance, amountMinor, recipientCheck, runeId, state.network]);
 
   const handleSign = useCallback(async () => {
     if (!activeAccount || !prepared) return;
@@ -497,12 +513,22 @@ export default function SendRune() {
             id="send-rune-recipient"
             type="text"
             value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
+            onChange={(e) => setRecipient(normalizeBtcAddress(e.target.value))}
             placeholder={networkPlaceholder}
             spellCheck={false}
             autoComplete="off"
           />
         </div>
+        {recipientCheck.reason === "wrong-network" && (
+          <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+            This address is for {state.network === "mainnet" ? "Testnet" : "Mainnet"}.
+          </div>
+        )}
+        {recipientCheck.reason === "invalid" && btcAddressReady(recipientCheck.address) && (
+          <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+            {INVALID_BTC_ADDRESS_MESSAGE}
+          </div>
+        )}
       </div>
 
       <div className="form-field">

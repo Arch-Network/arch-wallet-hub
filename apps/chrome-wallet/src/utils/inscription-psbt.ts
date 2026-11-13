@@ -27,6 +27,7 @@ import * as ecc from "@bitcoinerlab/secp256k1";
 import type { BtcFeeEstimates, IndexerClient } from "./indexer";
 import { dustThresholdForAddress } from "./btc-dust";
 import { selectUtxosForInscriptionSend } from "./inscription-coin-select";
+import { requireRecipientAddress } from "./btc-address";
 
 const MIN_FALLBACK_FEE_RATE = 5;
 
@@ -84,7 +85,9 @@ export async function buildUnsignedInscriptionPsbt(
   params: BuildInscriptionPsbtParams
 ): Promise<BuildInscriptionPsbtResult> {
   ensureEccLib();
-  const { indexer, fromAddress, toAddress, inscriptionId, satpoint } = params;
+  const { indexer, fromAddress, inscriptionId, satpoint } = params;
+  const network = networkFromAddress(fromAddress);
+  const toAddress = requireRecipientAddress(params.toAddress, network);
 
   const utxos = await indexer.getBtcAddressUtxos(fromAddress);
   if (!Array.isArray(utxos) || utxos.length === 0) {
@@ -131,7 +134,6 @@ export async function buildUnsignedInscriptionPsbt(
   const btcInputSats = selection.totalInputSats - recipientSats;
   let changeSats = btcInputSats - finalFee;
 
-  const network = networkFromAddress(fromAddress);
   const psbt = new bitcoin.Psbt({ network });
   const fromScript = bitcoin.address.toOutputScript(fromAddress, network);
 

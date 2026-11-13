@@ -39,6 +39,12 @@ import {
 import { finalizeSignedPsbt } from "../../utils/btc-psbt";
 import { isExternalAccount } from "../../state/types";
 import { identityAddress } from "../../state/account-addresses";
+import {
+  btcAddressReady,
+  checkBtcAddress,
+  INVALID_BTC_ADDRESS_MESSAGE,
+  normalizeBtcAddress,
+} from "../../utils/btc-address";
 import { getExternalWalletAdapter } from "../../wallets/external-wallets";
 import { signerInfo } from "../../wallets/capabilities";
 import { reopenForExternalSigning } from "../../utils/runtime-context";
@@ -123,7 +129,7 @@ export default function SendInscription() {
         inscriptionId,
       });
       if (!ck || ck.form.kind !== "inscription") return;
-      setRecipient(ck.form.recipient);
+      setRecipient(normalizeBtcAddress(ck.form.recipient));
     })();
   }, [activeAccount?.id, inscriptionId, state.network]);
 
@@ -145,7 +151,8 @@ export default function SendInscription() {
   }, [step]);
 
   // ── Form validation ────────────────────────────────────────────
-  const canContinue = !!summary && recipient.trim().length > 0;
+  const recipientCheck = checkBtcAddress(recipient, state.network);
+  const canContinue = !!summary && recipientCheck.ok;
 
   // ── Step transitions ───────────────────────────────────────────
   const handleContinue = useCallback(async () => {
@@ -156,6 +163,14 @@ export default function SendInscription() {
       setError("This account has no Bitcoin address on this network. Switch networks to send from it.");
       return;
     }
+    if (!recipientCheck.ok) {
+      setError(
+        recipientCheck.reason === "wrong-network"
+          ? `This address is for ${state.network === "mainnet" ? "Testnet" : "Mainnet"}.`
+          : INVALID_BTC_ADDRESS_MESSAGE,
+      );
+      return;
+    }
     setPreparing(true);
     setError("");
     try {
@@ -163,7 +178,7 @@ export default function SendInscription() {
       const result = await buildUnsignedInscriptionPsbt({
         indexer: ix,
         fromAddress,
-        toAddress: recipient.trim(),
+        toAddress: recipientCheck.address,
         inscriptionId,
         satpoint: summary.satpoint,
       });
@@ -180,7 +195,7 @@ export default function SendInscription() {
     } finally {
       setPreparing(false);
     }
-  }, [activeAccount, state.network, summary, recipient, inscriptionId]);
+  }, [activeAccount, state.network, summary, recipientCheck, inscriptionId]);
 
   const handleSign = useCallback(async () => {
     if (!activeAccount || !prepared) return;
@@ -435,12 +450,22 @@ export default function SendInscription() {
             id="send-inscription-recipient"
             type="text"
             value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
+            onChange={(e) => setRecipient(normalizeBtcAddress(e.target.value))}
             placeholder={networkPlaceholder}
             spellCheck={false}
             autoComplete="off"
           />
         </div>
+        {recipientCheck.reason === "wrong-network" && (
+          <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+            This address is for {state.network === "mainnet" ? "Testnet" : "Mainnet"}.
+          </div>
+        )}
+        {recipientCheck.reason === "invalid" && btcAddressReady(recipientCheck.address) && (
+          <div className="approve-risk approve-risk-danger" style={{ marginTop: 6 }}>
+            {INVALID_BTC_ADDRESS_MESSAGE}
+          </div>
+        )}
         <div className="form-field-hint">
           The entire inscribed output is sent to the recipient; the network fee is paid from your plain BTC.
         </div>

@@ -3,6 +3,7 @@ import * as ecc from "@bitcoinerlab/secp256k1";
 import type { BtcUtxo, IndexerClient } from "./indexer";
 import { partitionByProtection } from "./btc-protection";
 import { dustThresholdForAddress } from "./btc-dust";
+import { requireRecipientAddress } from "./btc-address";
 
 // bitcoinjs-lib v6 needs an ECC backend wired in for taproot helpers.
 // `@bitcoinerlab/secp256k1` is a pure-JS implementation that works in
@@ -115,7 +116,9 @@ function networkFromAddress(addr: string): bitcoin.Network {
 export async function buildUnsignedPsbt(params: BuildPsbtParams): Promise<BuildPsbtResult> {
   ensureEccLib();
 
-  const { indexer, fromAddress, toAddress, amountSats } = params;
+  const { indexer, fromAddress, amountSats } = params;
+  const network = networkFromAddress(fromAddress);
+  const toAddress = requireRecipientAddress(params.toAddress, network);
 
   const utxos = await indexer.getBtcAddressUtxos(fromAddress);
   if (!Array.isArray(utxos) || utxos.length === 0) {
@@ -141,7 +144,6 @@ export async function buildUnsignedPsbt(params: BuildPsbtParams): Promise<BuildP
   const actualFee = Math.ceil(actualSize * feeRate);
   const changeSats = totalInput - amountSats - actualFee;
 
-  const network = networkFromAddress(fromAddress);
   const psbt = new bitcoin.Psbt({ network });
 
   for (const utxo of selected) {
