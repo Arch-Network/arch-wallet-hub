@@ -216,6 +216,11 @@ describe("route groups (mirror the Hub's RATE_LIMITS)", () => {
     expect(rl.hubRouteGroup("POST", `${HUB}/v1/recovery/email/start`)).toBe("recovery");
   });
 
+  it("puts sending an error report in report", () => {
+    expect(rl.hubRouteGroup("POST", `${HUB}/v1/error-reports`)).toBe("report");
+    expect(rl.hubRouteGroup("GET", `${HUB}/v1/error-reports`)).toBe("global");
+  });
+
   it("puts unknown routes, and other signing-request routes, in global", () => {
     expect(rl.hubRouteGroup("GET", `${HUB}/v1/turnkey/config`)).toBe("global");
     expect(rl.hubRouteGroup("GET", `${HUB}/v1/signing-requests/abc-123`)).toBe("global");
@@ -318,6 +323,63 @@ describe("failed Hub responses in the diagnostics log", () => {
     await rl.fetchWithHubRateLimit(f, `${HUB}/v1/indexer/btc/fee-estimates`);
     expect((await hubFailures()).map((entry) => entry.extra)).toEqual([
       { status: 502, method: "GET", route: "/v1/indexer/btc/fee-estimates" },
+    ]);
+  });
+
+  // The Hub's proxy answers 502 whenever the indexer fails; its message leads with the indexer's status.
+  function indexerFailed(upstream: string): Response {
+    return new Response(
+      JSON.stringify({
+        statusCode: 502,
+        error: "BadGateway",
+        message: `Indexer error ${upstream} (https://explorer.test/api/v1/testnet/accounts/${ADDRESS}): {}`,
+      }),
+      { status: 502, statusText: "Bad Gateway", headers: { "x-request-id": REQUEST_ID } },
+    );
+  }
+
+  it("does not record an account the indexer has not seen, which arrives as a 502", async () => {
+    const { f } = scriptedFetch([() => indexerFailed("404 Not Found")]);
+    const err = (await rejection(indexerClient(f).getAccountSummary(ADDRESS))) as Error;
+
+    expect(await hubFailures()).toEqual([]);
+    // Reading the body to tell did not take it from the caller.
+    expect(err.message).toContain("Indexer error 404 Not Found");
+    const { isIndexerNotFoundError } = await import("../indexer");
+    expect(isIndexerNotFoundError(err)).toBe(true);
+  });
+
+  it("records the indexer's status when it is the indexer that failed", async () => {
+    const { f } = scriptedFetch([() => indexerFailed("500 Internal Server Error")]);
+    await rejection(indexerClient(f).getAccountSummary(ADDRESS));
+    expect((await hubFailures()).map((entry) => entry.extra)).toEqual([
+      { status: 502, upstreamStatus: 500, requestId: REQUEST_ID, method: "GET", route: "/v1/indexer/arch/accounts/:id" },
+    ]);
+  });
+
+  it("keeps the request id for the banner that shows the error, logged or not", async () => {
+    const { hubRequestIdFor } = await import("../hub-error");
+    const { f } = scriptedFetch([
+      () => indexerFailed("404 Not Found"),
+      () => failed(500, { "x-request-id": "req-500" }),
+      () => failed(500),
+    ]);
+    const notFound = (await rejection(indexerClient(f).getAccountSummary(ADDRESS))) as Error;
+    const broken = (await rejection(indexerClient(f).getBtcFeeEstimates())) as Error;
+    await rejection(indexerClient(f).getBtcFeeEstimates());
+
+    expect(hubRequestIdFor(notFound.message)).toBe(REQUEST_ID);
+    expect(hubRequestIdFor(`Couldn't load fees: ${broken.message}`)).toBe("req-500");
+    expect(hubRequestIdFor("Incorrect password")).toBeUndefined();
+  });
+
+  it("still records and returns a response whose body cannot be copied", async () => {
+    const res = failed(500, { "x-request-id": REQUEST_ID });
+    await res.text();
+    const { f } = scriptedFetch([() => res]);
+    await expect(rl.fetchWithHubRateLimit(f, `${HUB}/v1/indexer/btc/fee-estimates`)).resolves.toBe(res);
+    expect((await hubFailures()).map((entry) => (entry.extra as { requestId: string }).requestId)).toEqual([
+      REQUEST_ID,
     ]);
   });
 

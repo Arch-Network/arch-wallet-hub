@@ -4355,8 +4355,7 @@ button.address-chip-link:hover {
 }
 
 .error-banner-copy {
-  display: block;
-  margin-top: 4px;
+  margin: 4px 12px 0 0;
   padding: 0;
   background: none;
   border: none;
@@ -4365,6 +4364,30 @@ button.address-chip-link:hover {
   font-weight: 600;
   text-decoration: underline;
   cursor: pointer;
+}
+
+.error-banner-ref {
+  margin-left: 6px;
+  font-size: 11px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.error-report-actions,
+.error-report-confirm p {
+  font-size: 11px;
+}
+
+.error-report-confirm p {
+  margin: 6px 0 0;
+}
+
+.crash-screen {
+  padding: 24px 16px;
+}
+
+.crash-screen .error-banner {
+  margin-top: 12px;
 }
 
 .warning-banner {

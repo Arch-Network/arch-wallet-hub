@@ -25,6 +25,7 @@ import { registerSigningRequestRoutes } from "./routes/signingRequests.js";
 import { registerBtcTransactionRoutes } from "./routes/btcTransactions.js";
 import { registerRecoveryRoutes } from "./routes/recovery.js";
 import { registerExtensionRoutes } from "./routes/extension.js";
+import { registerErrorReportRoutes } from "./routes/errorReports.js";
 import { registerIndexerRoutes } from "./routes/indexer.js";
 import { configureAudit } from "./audit/audit.js";
 import { resolveAuditSecret, DEV_AUDIT_SECRET_SENTINEL } from "./audit/chain.js";
@@ -44,26 +45,26 @@ declare module "fastify" {
  */
 export const TRUST_PROXY_HOPS = 1;
 
+/** What the logger strips from every line. Exported so a test can log through it. */
+export const LOG_REDACT = {
+  paths: [
+    "req.headers.authorization",
+    "req.headers.cookie",
+    "req.headers['x-api-key']",
+    "req.headers['x-admin-api-key']",
+    "req.headers['turnkey-api-private-key']",
+    "req.headers['turnkey-api-public-key']",
+    "req.headers['x-turnkey-api-private-key']",
+    "req.headers['x-turnkey-api-public-key']"
+  ],
+  remove: true
+};
+
 export async function createServer() {
   const config = getEnv(process.env);
 
   const server = Fastify({
-    logger: {
-      level: config.LOG_LEVEL,
-      redact: {
-        paths: [
-          "req.headers.authorization",
-          "req.headers.cookie",
-          "req.headers['x-api-key']",
-          "req.headers['x-admin-api-key']",
-          "req.headers['turnkey-api-private-key']",
-          "req.headers['turnkey-api-public-key']",
-          "req.headers['x-turnkey-api-private-key']",
-          "req.headers['x-turnkey-api-public-key']"
-        ],
-        remove: true
-      }
-    },
+    logger: { level: config.LOG_LEVEL, redact: LOG_REDACT },
     // The id comes from genRequestId alone: with a header name here
     // Fastify would take the caller's x-request-id exactly as sent.
     requestIdHeader: false,
@@ -148,6 +149,7 @@ export async function createServer() {
   await server.register(registerBtcTransactionRoutes, { prefix: "/v1" });
   await server.register(registerRecoveryRoutes, { prefix: "/v1" });
   await server.register(registerExtensionRoutes, { prefix: "/v1" });
+  await server.register(registerErrorReportRoutes, { prefix: "/v1" });
   await server.register(registerIndexerRoutes, { prefix: "/v1" });
 
   return server;

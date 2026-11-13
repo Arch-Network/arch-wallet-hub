@@ -18,6 +18,7 @@ import { InscriptionThumb } from "../../components/InscriptionThumb";
 import { fetchWalletOverview } from "../../utils/wallet-overview";
 import { fetchBtcHoldings, type AddressSats } from "../../utils/btc-holdings";
 import { resolveAccountAddresses } from "../../state/account-addresses";
+import { rememberShownError } from "../../utils/hub-error";
 import { hubRetryAfterMs } from "../../utils/hub-rate-limit";
 import { deriveArchAccountAddress } from "../../utils/sdk";
 import { formatBtc, formatBtcAmount, formatArchAmount, timestampToMs, formatBtcUsd, formatUsd } from "../../utils/format";
@@ -444,7 +445,9 @@ export default function Dashboard() {
         overview.arch.recentTransactionsError,
       ].filter(noteRateLimit).length > 0;
       if ((btcUnknown || archUnknown) && !rateLimited) {
-        setError("Couldn't load your balances. Try again in a moment.");
+        const shown = "Couldn't load your balances. Try again in a moment.";
+        rememberShownError(shown, overview.arch.accountError, overview.btc.summaryError);
+        setError(shown);
       }
 
       const lamports = overview?.arch?.account?.lamports_balance ?? 0;

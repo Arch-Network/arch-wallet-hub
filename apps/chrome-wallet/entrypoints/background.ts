@@ -16,6 +16,8 @@ import { identityAddress } from "../src/state/account-addresses";
 import { parseU64DecimalString } from "../src/utils/u64-amount";
 import {
   applyDiagnosticsRuntime,
+  GET_RECENT_LOGS_MESSAGE,
+  getRecentLogs,
   installGlobalErrorHandlers,
 } from "../src/utils/log";
 import { installNotificationClickHandler } from "../src/utils/notifications";
@@ -536,6 +538,12 @@ export default defineBackground(() => {
         }
         pendingRequestsStore.get(message.requestId).then((req) => sendResponse(req ?? null));
         return true;
+      }
+
+      // This context's log, for an error report built on a wallet page.
+      if (message?.type === GET_RECENT_LOGS_MESSAGE) {
+        sendResponse({ logs: isInternalUiSender(sender) ? getRecentLogs() : [] });
+        return false;
       }
 
       if (message?.type === "USER_ACTIVE") {

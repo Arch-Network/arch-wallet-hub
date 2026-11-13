@@ -282,6 +282,73 @@ test.describe("Chrome wallet functional flows", () => {
     expect(report).not.toContain(ACCOUNT.btcAddress);
   });
 
+  test("Send report posts the report to the Hub only once confirmed, and shows its reference", async () => {
+    const failedRequestId = "e2e0fa11-0000-4000-8000-000000000001";
+    const reportId = "e2e0cafe-0000-4000-8000-000000000002";
+    // The Hub answers 502 whenever the indexer behind it fails.
+    await context.route("https://e2e.arch.network/v1/indexer/**", (route) =>
+      route.fulfill({
+        status: 502,
+        contentType: "application/json",
+        headers: { "x-request-id": failedRequestId },
+        body: JSON.stringify({
+          statusCode: 502,
+          error: "BadGateway",
+          message: "Indexer error 500 Internal Server Error (https://indexer.invalid/v1): upstream exploded",
+        }),
+      }),
+    );
+    const posted: Array<{ method: string; headers: Record<string, string>; body: string | null }> = [];
+    await context.route("https://e2e.arch.network/v1/error-reports", (route) => {
+      const request = route.request();
+      posted.push({ method: request.method(), headers: request.headers(), body: request.postData() });
+      return route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        headers: { "x-request-id": reportId },
+        body: JSON.stringify({ id: reportId }),
+      });
+    });
+    // An error in the service worker, for the report to carry.
+    await context.serviceWorkers()[0].evaluate(() => {
+      setTimeout(() => {
+        throw new Error("e2e background failure");
+      }, 0);
+    });
+
+    await openUnlockedWallet(popup, baseUrl);
+    const banner = popup.locator(".error-banner").first();
+    await expect(banner.getByRole("alert")).toHaveText(/couldn't load your balances/i, { timeout: 20_000 });
+    // The id of the failed request, short on screen and whole in the report.
+    await expect(banner.locator(".error-banner-ref")).toHaveText("Ref e2e0fa11");
+
+    await banner.getByRole("button", { name: "Send report" }).click();
+    await expect(banner.getByText(/to the Wallet Hub at e2e\.arch\.network, where its operators can read it/)).toBeVisible();
+    expect(posted).toEqual([]);
+
+    await banner.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(banner.getByRole("status")).toHaveText("Report sent. Reference e2e0cafe");
+
+    expect(posted).toHaveLength(1);
+    expect(posted[0].method).toBe("POST");
+    expect(posted[0].headers["x-api-key"]).toBe("e2e-key");
+    expect(posted[0].headers["authorization"]).toBeUndefined();
+    const body = JSON.parse(posted[0].body!);
+    expect(Object.keys(body)).toEqual(["report"]);
+    const report: string = body.report;
+    expect(report).toMatch(/^Error: Couldn't load your balances/m);
+    expect(report).toMatch(new RegExp(`^Hub request: ${failedRequestId}$`, "m"));
+    expect(report).toMatch(/^Version: \d+\.\d+\.\d+$/m);
+    expect(report).toMatch(/^Page: popup\.html#\/dashboard$/m);
+    expect(report).toMatch(/^Wallet: testnet4, /m);
+    expect(report).toMatch(/ popup WARN Hub request failed /);
+    expect(report).toMatch(/ background ERROR uncaught error .*e2e background failure/);
+    // Nothing that says whose wallet it is.
+    for (const secret of [ACCOUNT.btcAddress, ACCOUNT.archAddress, ACCOUNT.publicKeyHex, ACCOUNT.id, ACCOUNT.label]) {
+      expect(report).not.toContain(secret);
+    }
+  });
+
   test("a passkey wait says where to finish and can be cancelled", async () => {
     await stubPasskeyPage(context);
     await popup.goto(baseUrl);

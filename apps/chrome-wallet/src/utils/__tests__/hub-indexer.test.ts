@@ -17,6 +17,7 @@
  *     for the configured cooldown window.
  */
 import { describe, it, expect, beforeEach } from "vitest";
+import { HubIndexerError } from "../hub-error";
 import { ArchHubIndexerClient } from "../hub-indexer";
 import {
   isIndexerAuthError,
@@ -221,6 +222,71 @@ describe("ArchHubIndexerClient — error mapping", () => {
     } catch (err) {
       expect(isIndexerNotFoundError(err)).toBe(true);
     }
+  });
+
+  // What the Hub's proxy really sends when the indexer fails: a 502
+  // whose message starts with the indexer's status and names its URL.
+  function indexerFailure(upstream: string, address: string, requestId = "4b1f6d0e-8a55-4c0e-9c1b-2f7f3a401e29") {
+    return new Response(
+      JSON.stringify({
+        statusCode: 502,
+        error: "BadGateway",
+        message: `Indexer error ${upstream} (https://explorer.test/api/v1/testnet/accounts/${address}): {"detail":"x"}`,
+      }),
+      { status: 502, statusText: "Bad Gateway", headers: { "x-request-id": requestId } },
+    );
+  }
+
+  async function failure(c: ArchHubIndexerClient, address: string): Promise<HubIndexerError> {
+    try {
+      await c.getAccountSummary(address);
+    } catch (err) {
+      return err as HubIndexerError;
+    }
+    throw new Error("expected throw");
+  }
+
+  it("throws a HubIndexerError with the Hub's status, the indexer's, and the request id", async () => {
+    const { fetch: f } = mockFetch(() => indexerFailure("404 Not Found", "abc"));
+    const err = await failure(makeClient({ fetchImpl: f }), "abc");
+    expect(err).toBeInstanceOf(HubIndexerError);
+    expect(err).toMatchObject({
+      name: "HubIndexerError",
+      status: 502,
+      upstreamStatus: 404,
+      requestId: "4b1f6d0e-8a55-4c0e-9c1b-2f7f3a401e29",
+      // The text is what it was before the error was typed.
+      message:
+        'Hub indexer GET /arch/accounts/abc 502 Bad Gateway: Indexer error 404 Not Found (https://explorer.test/api/v1/testnet/accounts/abc): {"detail":"x"}',
+    });
+    expect(isIndexerNotFoundError(err)).toBe(true);
+    expect(isIndexerRateLimitError(err)).toBe(false);
+    expect(isIndexerAuthError(err)).toBe(false);
+  });
+
+  it("classifies by the indexer's status when its response had no status text", async () => {
+    const throttled = mockFetch(() => indexerFailure("429 ", "abc"));
+    const rejected = mockFetch(() => indexerFailure("401 ", "abc"));
+    expect(isIndexerRateLimitError(await failure(makeClient({ fetchImpl: throttled.fetch }), "abc"))).toBe(true);
+    expect(isIndexerAuthError(await failure(makeClient({ fetchImpl: rejected.fetch }), "abc"))).toBe(true);
+  });
+
+  it("is not misled by a status that only appears inside an address", async () => {
+    // Bech32 addresses hold digits; this one spells all three statuses.
+    const address = "tb1q429w401x404d8h0k5e9u3n7m2c6v4z0y8s5r3j";
+    const { fetch: f } = mockFetch(() => indexerFailure("500 Internal Server Error", address));
+    const err = await failure(makeClient({ fetchImpl: f }), address);
+
+    expect(err.message).toContain(address);
+    expect(isIndexerRateLimitError(err)).toBe(false);
+    expect(isIndexerAuthError(err)).toBe(false);
+    expect(isIndexerNotFoundError(err)).toBe(false);
+
+    // The same text without the fields can only be searched, and is misread.
+    const asText = new Error(err.message);
+    expect(isIndexerRateLimitError(asText)).toBe(true);
+    expect(isIndexerAuthError(asText)).toBe(true);
+    expect(isIndexerNotFoundError(asText)).toBe(true);
   });
 
   it("falls back to raw body text when 502 envelope has no message field", async () => {

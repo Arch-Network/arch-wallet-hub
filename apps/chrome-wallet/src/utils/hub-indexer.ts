@@ -45,6 +45,7 @@ import type {
   IndexerNetwork
 } from "./indexer";
 import { IndexerApiKeyRejectedError } from "./indexer";
+import { HubIndexerError, hubErrorBodyMessage, upstreamStatusOf } from "./hub-error";
 import { fetchWithHubRateLimit } from "./hub-rate-limit";
 
 export interface ArchHubIndexerClientOptions {
@@ -113,33 +114,28 @@ export class ArchHubIndexerClient {
   }
 
   /**
-   * Convert a non-2xx Hub response into a thrown Error whose message
-   * remains compatible with `isIndexerRateLimitError`,
-   * `isIndexerAuthError`, and `isIndexerNotFoundError` in indexer.ts.
+   * Convert a non-2xx Hub response into a thrown `HubIndexerError`,
+   * which `isIndexerRateLimitError`, `isIndexerAuthError`, and
+   * `isIndexerNotFoundError` in indexer.ts read the statuses from.
    *
-   * The Hub maps upstream throttles (429s, "rate limit" bodies) to a
-   * 502 BadGateway envelope on purpose -- the wallet itself ISN'T
-   * being throttled, the Hub upstream is. We surface the original
-   * message text so the existing detector functions still match
-   * (they search for "429" / "rate limit" / "too many requests" /
-   * "401" substrings).
+   * The Hub maps upstream failures (a 404 for an unseen account, a 429
+   * throttle) to a 502 BadGateway envelope on purpose -- the wallet
+   * itself ISN'T being throttled, the Hub upstream is. The upstream
+   * status is taken from that envelope's message, and the message text
+   * is kept in ours for the words those detectors also look for
+   * ("rate limit", "too many requests", "not found", "api key").
    */
   private async raiseForStatus(path: string, res: Response, method: string): Promise<never> {
     const text = await res.text().catch(() => "");
     if (res.status === 401 || res.status === 403) this.rememberAuthFailure();
-    // 502 envelope from the Hub: try to surface upstream message text
-    // so callers can still detect rate-limit / not-found semantics.
-    let upstreamMsg = text;
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed?.message && typeof parsed.message === "string") {
-        upstreamMsg = parsed.message;
-      }
-    } catch {
-      // Body wasn't JSON; keep raw text.
-    }
-    throw new Error(
-      `Hub indexer ${method} ${path} ${res.status} ${res.statusText}: ${upstreamMsg}`
+    const upstreamMsg = hubErrorBodyMessage(text);
+    throw new HubIndexerError(
+      `Hub indexer ${method} ${path} ${res.status} ${res.statusText}: ${upstreamMsg}`,
+      {
+        status: res.status,
+        upstreamStatus: upstreamStatusOf(upstreamMsg),
+        requestId: res.headers.get("x-request-id") ?? undefined,
+      },
     );
   }
 

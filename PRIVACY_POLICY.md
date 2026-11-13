@@ -1,6 +1,6 @@
 # Arch Wallet — Privacy Policy
 
-**Last Updated:** March 24, 2026
+**Last Updated:** November 13, 2026
 
 ## Overview
 
@@ -8,7 +8,7 @@ Arch Wallet is a non-custodial cryptocurrency wallet browser extension for the A
 
 ## Data Collection
 
-**Arch Wallet does not collect, store, or transmit any personally identifiable information (PII).**
+**Arch Wallet does not collect, store, or transmit any personally identifiable information (PII).** An error report is sent only if you choose to send one, and is built to leave such information out. What it contains, and where that falls short of a guarantee, is described under "Error reports you send" below.
 
 ### What the extension stores locally
 
@@ -25,10 +25,11 @@ Private keys are never stored in the extension. Key management is handled by [Tu
 - **Blockchain queries**: The extension communicates with the Arch Wallet Hub API to fetch public blockchain data such as account balances, transaction history, and network status. These requests include only public blockchain addresses — no PII.
 - **Transaction signing**: When you sign a transaction, the signing request is routed through Turnkey's infrastructure using your device-bound passkey. The extension never sees or transmits your private key.
 - **Faucet requests**: On testnet, the extension can request test tokens from a faucet using your public Arch address.
+- **Error reports you send**: When the extension shows an error, you can press "Send report". Nothing is sent unless you press it and then confirm. The report goes to the Arch Wallet Hub API and contains the error message, the Wallet Hub's reference id for the request that failed (when there is one), the extension version, the time, the screen you were on, the selected network, the type of wallet (for example passkey or email), your browser's user-agent string (browser and operating system version), and the extension's recent diagnostic log (failed requests, errors, and sign-in and session steps). Before it is sent, account ids are removed from the log, and anything that looks like a blockchain address, a transaction id, a public key, or an email address is replaced with a placeholder. Both steps work by recognising patterns and are not a guarantee: an identifier in a form or place they do not recognise would be sent as it is. The reference id lets the team that operates the Wallet Hub find the failed request in the Wallet Hub's own logs, and that request can include your public blockchain address. "Copy error details" puts the same text on your clipboard without sending it, so you can read it first (the sent copy may leave out the oldest log lines to fit a size limit).
 
 ### What the extension does NOT do
 
-- Does not collect analytics or telemetry
+- Does not collect analytics or telemetry; an error report is sent only when you choose to send one
 - Does not use cookies or tracking pixels
 - Does not transmit browsing history, form data, or personal information
 - Does not share any data with third parties for advertising or marketing
@@ -53,7 +54,7 @@ The extension requests the following browser permissions:
 
 ## Data Retention
 
-All locally stored data can be cleared at any time by removing the extension from Chrome. No data is retained on any server operated by Arch Wallet.
+All locally stored data can be cleared at any time by removing the extension from Chrome. No data is retained on any server operated by Arch Wallet, except error reports you choose to send. These are written to the Wallet Hub's server logs, where the team that operates the Wallet Hub can read them. The logs are kept for up to 365 days, after which the logging service removes them, usually within a few days.
 
 ## Changes to This Policy
 
