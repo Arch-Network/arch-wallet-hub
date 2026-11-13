@@ -268,6 +268,25 @@ What the stack adds:
   values in `lib/api-error-alarms.ts`, set without traffic numbers.
   Every API response carries an `x-request-id` header equal to `reqId`
   on its `request.completed` line; a wallet error report quotes it.
+  `UpstreamErrors` leaves out a 502 whose line has `upstreamStatus` 404:
+  the indexer proxy answers 502 for an account or transaction the
+  indexer has not seen, which is routine. A 502 line with any other
+  `upstreamStatus`, or with none (other routes, timeouts, an API build
+  older than the field), is counted. The pattern has not been run
+  against CloudWatch. This checks it without deploying; it reads and
+  changes nothing in the account. Expect `matches` to hold the second
+  and third events and not the first.
+
+  ```bash
+  aws logs test-metric-filter --region us-east-1 --cli-input-json '{
+    "filterPattern": "{ ($.msg = \"request.completed\") && ($.statusCode = 502) && (($.upstreamStatus NOT EXISTS) || ($.upstreamStatus != 404)) }",
+    "logEventMessages": [
+      "{\"msg\":\"request.completed\",\"statusCode\":502,\"upstreamStatus\":404}",
+      "{\"msg\":\"request.completed\",\"statusCode\":502,\"upstreamStatus\":429}",
+      "{\"msg\":\"request.completed\",\"statusCode\":502}"
+    ]
+  }'
+  ```
 - When `-c slackWorkspaceId` and `-c slackAlertsChannelId` are both
   set: a second SNS topic and a Slack channel configuration,
   `wallet-hub-alerts`, in Amazon Q Developer in chat applications (the

@@ -82,6 +82,14 @@ describe("request ids", () => {
       sibling.get("/v1/signing-requests/boom", async () => {
         throw new Error("database is down");
       });
+      // As routes/indexer.ts answers when the indexer fails.
+      sibling.get("/v1/indexer/missing", async (request, reply) => {
+        request.upstreamStatus = 404;
+        return reply.code(502).send({ statusCode: 502, error: "BadGateway", message: "Indexer error 404" });
+      });
+      sibling.get("/v1/indexer/unreachable", async (_request, reply) =>
+        reply.code(502).send({ statusCode: 502, error: "BadGateway", message: "fetch failed" }),
+      );
     });
     await app.ready();
     const completed = () => logged.filter((l) => l.msg === "request.completed");
@@ -149,6 +157,22 @@ describe("request ids", () => {
     const { app, completed } = await buildApp();
     await app.inject({ method: "GET", url: "/v1/signing-requests/boom" });
     expect(completed()[0]).toMatchObject({ msg: "request.completed", statusCode: 500 });
+    await app.close();
+  });
+
+  it("logs the upstream's status for the 502 alarm, and no such field when there is none", async () => {
+    // The UpstreamErrors filter in infra/cdk/lib/api-error-alarms.ts leaves
+    // out a 502 whose numeric upstreamStatus is 404, and counts a 502 line
+    // that has no upstreamStatus field. A null would be neither.
+    const { app, completed } = await buildApp();
+    await app.inject({ method: "GET", url: "/v1/indexer/missing" });
+    await app.inject({ method: "GET", url: "/v1/indexer/unreachable" });
+    await app.inject({ method: "GET", url: "/ping" });
+    const [missing, unreachable, ok] = completed();
+    expect(missing).toMatchObject({ msg: "request.completed", statusCode: 502, upstreamStatus: 404 });
+    expect(unreachable).toMatchObject({ msg: "request.completed", statusCode: 502 });
+    expect(unreachable).not.toHaveProperty("upstreamStatus");
+    expect(ok).not.toHaveProperty("upstreamStatus");
     await app.close();
   });
 });

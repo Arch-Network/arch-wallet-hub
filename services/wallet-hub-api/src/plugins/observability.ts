@@ -5,6 +5,17 @@ import fp from "fastify-plugin";
 
 export const REQUEST_ID_HEADER = "x-request-id";
 
+declare module "fastify" {
+  interface FastifyRequest {
+    /**
+     * The error status an upstream answered with, when this request is
+     * answered 502 because of it. Set by the code that makes the 502
+     * (routes/indexer.ts) and logged on the `request.completed` line.
+     */
+    upstreamStatus?: number;
+  }
+}
+
 // A caller's id is written to the logs and the audit rows and sent back
 // as a response header, so it is taken only when it is a plain token.
 const CALLER_REQUEST_ID = /^[A-Za-z0-9._-]{1,64}$/;
@@ -32,12 +43,16 @@ const observabilityPlugin: FastifyPluginAsync = async (server) => {
     // that is easy to aggregate (and ensures requestId is always included).
     // The API error alarms in infra/cdk/lib/api-error-alarms.ts count
     // these lines by `msg` and `statusCode`; renaming either silences them.
+    // The 502 alarm also reads `upstreamStatus`, to leave out an upstream
+    // 404. It counts a 502 line without the field, so the field is left
+    // off, never written as null, when no upstream status is known.
     request.log.info(
       {
         reqId: request.id,
         method: request.method,
         url: request.url,
         statusCode: reply.statusCode,
+        ...(request.upstreamStatus !== undefined && { upstreamStatus: request.upstreamStatus }),
         responseTimeMs: reply.getResponseTime()
       },
       "request.completed"
