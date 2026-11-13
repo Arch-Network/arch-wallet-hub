@@ -363,11 +363,27 @@ AI triage layer. Both stay in issue #140.
 
 ### Before deploying
 
-1. `aws cloudtrail describe-trails --region us-east-1`. A second trail
-   duplicates management-event cost. Stop if a trail named `wallet-hub`
-   already exists.
-2. `aws guardduty list-detectors --region us-east-1`. If a detector id is
-   returned, pass `-c createGuardDutyDetector=false`.
+Steps 1 and 2 are for a first deploy only. To tell, run
+`aws cloudformation describe-stacks --stack-name WalletHubMonitoringStack --region us-east-1`.
+"Does not exist", or a `StackStatus` of `ROLLBACK_COMPLETE`, is a first
+deploy. Any other status is a stack that is already deployed: skip
+steps 1 and 2. The trail named `wallet-hub` is then the stack's own,
+and so is the detector unless the first deploy passed
+`-c createGuardDutyDetector=false`.
+
+**On a stack that is already deployed, do not add
+`-c createGuardDutyDetector=false` because `list-detectors` returns an
+id.** That id is the stack's own detector. The flag takes it out of the
+template, and CloudFormation deletes it. On such a stack pass the flag
+only if the first deploy did, and the diff in step 6 must neither add
+nor remove `Detector`.
+
+1. First deploy only. `aws cloudtrail describe-trails --region us-east-1`.
+   A second trail duplicates management-event cost. Stop if a trail
+   named `wallet-hub` already exists.
+2. First deploy only. `aws guardduty list-detectors --region us-east-1`.
+   If a detector id is returned, pass
+   `-c createGuardDutyDetector=false`.
 3. Read the live execution role (the CDK role is not the one in service):
 
    ```bash
