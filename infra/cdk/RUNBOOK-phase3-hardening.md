@@ -207,6 +207,8 @@ passed (creating a second 443 listener would conflict with the live one).
 **Goal:** a read of `WalletHub/AppSecrets` by anyone other than ECS task
 startup, and a deploy that is not the GitHub OIDC role, pages within a
 few minutes. GuardDuty findings above low severity page on the same topic.
+With the two Slack flags set, every alert is also posted to a Slack
+channel.
 
 This is a **separate stack**, `WalletHubMonitoringStack`. Deploying it
 does not update RDS, `AppSecrets`, task definitions, or
@@ -266,6 +268,32 @@ What the stack adds:
   values in `lib/api-error-alarms.ts`, set without traffic numbers.
   Every API response carries an `x-request-id` header equal to `reqId`
   on its `request.completed` line; a wallet error report quotes it.
+- When `-c slackWorkspaceId` and `-c slackAlertsChannelId` are both
+  set: a second SNS topic and a Slack channel configuration,
+  `wallet-hub-alerts`, in Amazon Q Developer in chat applications (the
+  service that was AWS Chatbot), subscribed to that topic only. The
+  service posts AWS service events it recognises and its own
+  custom-notification format, and drops anything else without telling
+  the channel. The JSON the email recipients get is one of the things
+  it drops, so each alert is sent twice: to the security topic exactly
+  as before, and to the Slack topic in a form the service posts.
+  - The filter function publishes a second, formatted copy of each
+    page. If that publish fails the function logs
+    `"slackPublished":false` and still succeeds, so the email page is
+    not sent again by a retry.
+  - The GuardDuty rule gets a second target with no input transformer.
+  - The two API error alarms get a second action.
+  - The channel's role can read CloudWatch, which is what draws the
+    graph on an alarm, and nothing else. The guardrail is
+    `CloudWatchReadOnlyAccess`. Errors are logged to
+    `/aws/chatbot/wallet-hub-alerts` in `us-east-1`, kept 365 days.
+  - Two alarms on the service's own `AWS/Chatbot` metrics for that
+    configuration, `UnsupportedEvents` and `MessageDeliveryFailure`,
+    notify the security topic when a message did not reach the
+    channel. Without them a dropped alert is silent.
+
+  Set one flag without the other and synth fails. Set neither and none
+  of this is created.
 
 IAM changes, new access keys, security-group edits, and RDS snapshot
 copy/share are account-wide and are not in this stack. Neither is the
@@ -287,7 +315,28 @@ AI triage layer. Both stay in issue #140.
      --query 'taskDefinition.executionRoleArn' --output text --region us-east-1
    ```
 
-4. Diff **only** the monitoring stack. The diff is a new stack. It must
+4. For Slack, once per workspace and channel. These steps cannot be done
+   by the stack. Skip them, and the two Slack flags, to deploy without
+   Slack.
+   - In Slack, add the app **Amazon Q Developer in chat applications**
+     to the workspace (Automations → browse the app directory). A
+     workspace admin may have to approve it.
+   - Open <https://console.aws.amazon.com/chatbot/>. Under *Configure a
+     chat client* choose Slack, then Configure. Pick the workspace and
+     choose Allow. Copy the workspace ID from *Workspace details* into
+     `SLACK_WORKSPACE_ID`. Do not configure a channel in the console;
+     the stack creates the configuration.
+   - In the alerts channel, run `/invite @Amazon Q`. A private channel
+     gets nothing without it.
+   - Right-click the channel name and choose Copy link. The channel ID
+     is the last segment of the link. Put it in
+     `SLACK_ALERTS_CHANNEL_ID`. The flag takes the ID, not the name.
+5. Diff **only** the monitoring stack. On a first deploy the diff is a
+   new stack. On a stack that is already deployed, adding the Slack
+   flags shows the resources in the Slack bullet above, the
+   `SLACK_TOPIC_ARN` variable and a publish permission on the filter
+   function, and a function that sets the log retention. The filter
+   function's code changes with or without the flags. The diff must
    not mention `Postgres`, `AppSecrets`, or `MasterUserPassword`.
 
    ```bash
@@ -297,10 +346,12 @@ AI triage layer. Both stay in issue #140.
      -c deployRoleArn="$AWS_DEPLOY_ROLE_ARN" \
      -c securityAlertEmail="brian@arch.network,amine@arch.network" \
      -c ecsExecutionRoleArns="$API_EXEC_ROLE" \
-     -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE"
+     -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE" \
+     -c slackWorkspaceId="$SLACK_WORKSPACE_ID" \
+     -c slackAlertsChannelId="$SLACK_ALERTS_CHANNEL_ID"
    ```
 
-5. `cdk diff WalletHubStack` may show pre-existing drift plus
+6. `cdk diff WalletHubStack` may show pre-existing drift plus
    `RetentionInDays` 14 → 365. Do not deploy `WalletHubStack`.
 
 ### Deploy
@@ -312,12 +363,17 @@ npx cdk deploy WalletHubMonitoringStack \
   -c deployRoleArn="$AWS_DEPLOY_ROLE_ARN" \
   -c securityAlertEmail="brian@arch.network,amine@arch.network" \
   -c ecsExecutionRoleArns="$API_EXEC_ROLE" \
-  -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE"
+  -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE" \
+  -c slackWorkspaceId="$SLACK_WORKSPACE_ID" \
+  -c slackAlertsChannelId="$SLACK_ALERTS_CHANNEL_ID"
 ```
 
 CDK prompts for IAM changes. Do not pass `--require-approval never`.
 Confirm the email subscription before the test below. For PagerDuty, add
 `-c securityAlertHttpsEndpoint=https://events.pagerduty.com/integration/<key>/enqueue`.
+The flags are not remembered between deploys. A later deploy that
+leaves out the two Slack flags deletes the Slack topic and the channel
+configuration.
 
 ### Acceptance test
 
@@ -336,15 +392,64 @@ aws secretsmanager get-secret-value \
 Expect a page within 5 minutes. If it does not arrive, read the
 `AlertFilter` log group and the `AlertFilterDlqUrl` output.
 
+### Acceptance test for Slack
+
+Only with the two Slack flags set. Delivery to Slack has not been
+exercised before this test; the design follows the service's
+documentation. Steps 2 to 4 also page the email recipients, so tell
+them first.
+
+1. In the Amazon Q Developer in chat applications console, open the
+   Slack workspace, select `wallet-hub-alerts`, and choose **Send test
+   message**. The message appears in the channel. This checks the
+   workspace, the channel ID and the invite. It does not check the
+   three alert formats.
+2. Repeat the secret read above. Expect the email page and, in the
+   channel, `Security alert: GetSecretValue` with the target, actor,
+   source IP, user agent and time.
+3. Put one API alarm into `ALARM` by hand. It goes back to `OK` at its
+   next evaluation.
+
+   ```bash
+   alarm=$(aws cloudwatch describe-alarms \
+     --alarm-name-prefix WalletHubMonitoringStack-ApiErrorAlarmsServerErrors \
+     --query 'MetricAlarms[0].AlarmName' --output text --region us-east-1)
+   aws cloudwatch set-alarm-state --alarm-name "$alarm" \
+     --state-value ALARM --state-reason "Slack delivery test" \
+     --region us-east-1
+   ```
+
+   Expect the alarm in the channel, with its graph.
+4. Generate one GuardDuty sample finding of high severity. Expect the
+   finding in the channel within a few minutes, titled `[SAMPLE]`.
+
+   ```bash
+   detector=$(aws guardduty list-detectors --query 'DetectorIds[0]' \
+     --output text --region us-east-1)
+   aws guardduty create-sample-findings --detector-id "$detector" \
+     --finding-types Backdoor:EC2/DenialOfService.Tcp --region us-east-1
+   ```
+
+If a message is missing from the channel, read log group
+`/aws/chatbot/wallet-hub-alerts` in `us-east-1`, then the `AlertFilter`
+log group for `"slackPublished":false`. The `UnsupportedEvents` and
+`MessageDeliveryFailure` alarms email the security recipients; neither
+has been seen firing.
+
 - **Rollback:** `npx cdk destroy WalletHubMonitoringStack` with the same
   `-c` flags. The trail bucket is retained. Log-group retention stays at
   365 days. GuardDuty is removed only if this stack created the detector.
+  To turn off Slack alone, deploy again without the two Slack flags;
+  email and HTTPS delivery do not change.
 - **Risk callouts:** a wrong `deployRoleArn` pages every CI deploy, or
   suppresses a real one if it names a role an attacker can assume. A
   wrong log-group name fails `putRetentionPolicy` and rolls the stack
   back; the names are the two `aws logs tail` targets in `deploy/README.md`.
   The first trail delivery can lag; EventBridge is the paging path and is
-  usually under a minute, not the S3 log-file delay.
+  usually under a minute, not the S3 log-file delay. Synth cannot tell
+  whether a Slack channel ID is the right channel or whether the app was
+  invited to it; only the Slack acceptance test can. Changing
+  `slackWorkspaceId` replaces the channel configuration.
 
 ---
 
