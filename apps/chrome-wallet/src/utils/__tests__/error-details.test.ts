@@ -119,6 +119,35 @@ describe("formatErrorDetails", () => {
   });
 });
 
+describe("formatErrorDetails: ids in the log", () => {
+  // The session code logs which account it worked on. That id is the
+  // Hub's own id for the wallet, and a UUID, which no pattern masks.
+  const logged = (extra: unknown): ReportLogEntry => ({ ts: 0, level: "info", msg: "hub-session.minted", extra, context: "popup" });
+  const ACCOUNT_ID = "0b9f4d1c-7a3e-4f55-9d0a-6c2e8b1f4a77";
+  const ORG_ID = "5e1d2c3b-4a59-4687-b7c6-d5e4f3a2b1c0";
+
+  it("leaves out every id but the Hub request id", () => {
+    const text = formatErrorDetails({
+      ...base,
+      logs: [
+        logged({ accountId: ACCOUNT_ID, organizationId: ORG_ID, kind: "turnkey" }),
+        logged({ id: ACCOUNT_ID, challengeId: "ch-1", nested: [{ externalUserId: "user-1", org_id: ORG_ID, ok: true }] }),
+        logged({ status: 502, requestId: "4b1f6d0e-8a55-4c0e-9c1b-2f7f3a401e29" }),
+      ],
+    });
+    expect(text.split("\n").slice(-3)).toEqual([
+      '[1970-01-01T00:00:00.000Z] popup INFO hub-session.minted {"accountId":"[id]","organizationId":"[id]","kind":"turnkey"}',
+      '[1970-01-01T00:00:00.000Z] popup INFO hub-session.minted {"id":"[id]","challengeId":"[id]","nested":[{"externalUserId":"[id]","org_id":"[id]","ok":true}]}',
+      '[1970-01-01T00:00:00.000Z] popup INFO hub-session.minted {"status":502,"requestId":"4b1f6d0e-8a55-4c0e-9c1b-2f7f3a401e29"}',
+    ]);
+  });
+
+  it("does not take a key that merely ends in the letters for an id", () => {
+    const text = formatErrorDetails({ ...base, logs: [logged({ valid: true, paid: 3, android: "14" })] });
+    expect(text).toContain('{"valid":true,"paid":3,"android":"14"}');
+  });
+});
+
 describe("maskIdentifiers", () => {
   it("masks Bitcoin and Arch addresses, txids, inscription ids and emails", () => {
     expect(maskIdentifiers("to bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq now")).toBe("to [address] now");

@@ -215,6 +215,8 @@ describe("ErrorBanner", () => {
   });
 
   it("leaves out everything that identifies the wallet or the transfer", async () => {
+    // What the session code logs once the wallet is unlocked.
+    h.pageLogs = [PAGE_LOG, { ts: PAGE_LOG.ts, level: "info", msg: "hub-session.minted", extra: { accountId: ACCOUNT.id } }];
     const el = mount({ message: "Wallet Hub error 503" });
     await clickCopy(el);
 
@@ -313,6 +315,8 @@ describe("Send report", () => {
     for (const part of ["app version", "screen", "network", "wallet type", "browser", "recent diagnostic log"]) {
       expect(statement).toContain(part);
     }
+    // This error did not come from a Hub response, so there is no reference to send.
+    expect(statement).not.toContain("reference");
 
     await click(el, "Cancel");
     expect(h.sent).toEqual([]);
@@ -322,9 +326,13 @@ describe("Send report", () => {
 
   it("sends the same report it would copy, and shows the reference the Hub answered with", async () => {
     rememberHubFailure({ requestId: REQUEST_ID, bodyMessage: "Signing service is unavailable" });
+    h.pageLogs = [PAGE_LOG, { ts: PAGE_LOG.ts, level: "info", msg: "hub-session.minted", extra: { accountId: ACCOUNT.id } }];
     window.location.hash = "#/send?to=tb1precipient";
     const el = mount({ message: "WalletHub error 503 : Signing service is unavailable" });
     await click(el, "Send report");
+    expect(el.querySelector(".error-report-confirm p")!.textContent).toContain(
+      "Sends this error and the reference of the failed request, with the app version,",
+    );
     await click(el, "Send");
 
     expect(h.sent).toHaveLength(1);

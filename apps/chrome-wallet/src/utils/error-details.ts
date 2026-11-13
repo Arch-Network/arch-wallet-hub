@@ -5,11 +5,17 @@
  * only by one of those two actions.
  *
  * It carries what a report usually lacks (the build, the screen, who
- * signs, the Hub's id for the failed request) and nothing that
- * identifies the wallet: no account ids or labels, and addresses, txids
- * and emails inside an error message or a log line are masked. Log lines
- * come from the `utils/log` rings of this page and of the background,
- * which also sanitize them when they are written.
+ * signs, the Hub's id for the failed request) and is built to leave out
+ * what identifies the wallet: no account label, ids in a log line are
+ * dropped by their key (`withoutIds`), and addresses, txids and emails
+ * in an error message or a log line are masked by their shape
+ * (`maskIdentifiers`). Both go by pattern, so neither is a guarantee.
+ * Log lines come from the `utils/log` rings of this page and of the
+ * background, which also sanitize them when they are written.
+ *
+ * The Hub request id is kept on purpose. It points at a line in the
+ * Hub's own log, and for a read of an account that line names the
+ * address: whoever has the report and the Hub's log can join the two.
  */
 import { walletStore } from "../state/wallet-store";
 import { signerInfo } from "../wallets/capabilities";
@@ -119,11 +125,28 @@ export function maskIdentifiers(text: string): string {
     .replace(/[1-9A-HJ-NP-Za-km-z]{26,}/g, "[id]");
 }
 
+/**
+ * A log entry's payload without the ids in it. The session code logs
+ * which account it worked on, and that id is the Hub's own id for the
+ * wallet. It is a UUID, like the request id that has to stay, so it is
+ * told apart by its key: `id`, or a name ending in `Id`, `ID` or `_id`.
+ */
+function withoutIds(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutIds);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, inner]) => [
+      key,
+      key !== "requestId" && /^id$|(Id|ID|_id)$/.test(key) ? "[id]" : withoutIds(inner),
+    ]),
+  );
+}
+
 function formatLogEntry(entry: ReportLogEntry): string {
   let extra = "";
   if (entry.extra !== undefined) {
     try {
-      extra = ` ${JSON.stringify(entry.extra)}`;
+      extra = ` ${JSON.stringify(withoutIds(entry.extra))}`;
     } catch {
       extra = " [unserializable]";
     }

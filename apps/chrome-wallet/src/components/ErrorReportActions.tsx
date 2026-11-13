@@ -88,9 +88,9 @@ export default function ErrorReportActions({ message, requestId }: Props) {
       {send.step === "confirm" ? (
         <div className="error-report-confirm">
           <p>
-            Sends this error with the app version, screen, network, wallet type, browser and recent diagnostic log
-            to the Wallet Hub at {send.host}, where its operators can read it. Addresses, transaction ids and emails
-            are masked.
+            Sends this error{requestId ? " and the reference of the failed request," : ""} with the app version,
+            screen, network, wallet type, browser and recent diagnostic log to the Wallet Hub at {send.host}, where
+            its operators can read it. Addresses, transaction ids and emails are masked.
           </p>
           <button type="button" className="error-banner-copy" onClick={sendNow}>
             Send
