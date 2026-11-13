@@ -15,6 +15,7 @@ import * as sqs from "aws-cdk-lib/aws-sqs";
 import { Construct } from "constructs";
 import { ApiErrorAlarms } from "./api-error-alarms";
 import { SlackAlerts } from "./slack-alerts";
+import { UserReports } from "./user-reports";
 
 // Live groups from deploy/README.md. Retention is applied here so it does
 // not require a WalletHubStack deploy. Keep these in sync with that README.
@@ -100,16 +101,28 @@ export class WalletHubMonitoringStack extends cdk.Stack {
     const createGuardDutyDetector = contextFlag(this, "createGuardDutyDetector", true);
     const slackWorkspaceId = contextString(this, "slackWorkspaceId");
     const slackAlertsChannelId = contextString(this, "slackAlertsChannelId");
+    const slackReportsChannelId = contextString(this, "slackReportsChannelId");
 
     if (deployRoleArn) parseRoleArn(deployRoleArn, "deployRoleArn");
-    if (Boolean(slackWorkspaceId) !== Boolean(slackAlertsChannelId)) {
+    // Each Slack channel is optional and needs the workspace. Alerts
+    // only, reports only, both and neither are the valid combinations.
+    if (slackWorkspaceId) parseSlackId(slackWorkspaceId, "slackWorkspaceId");
+    if (slackAlertsChannelId) parseSlackId(slackAlertsChannelId, "slackAlertsChannelId");
+    if (slackReportsChannelId) parseSlackId(slackReportsChannelId, "slackReportsChannelId");
+    if ((slackAlertsChannelId || slackReportsChannelId) && !slackWorkspaceId) {
       throw new Error(
-        "WalletHubMonitoringStack: slackWorkspaceId and slackAlertsChannelId must be set together"
+        "WalletHubMonitoringStack: slackAlertsChannelId and slackReportsChannelId need slackWorkspaceId"
       );
     }
-    if (slackWorkspaceId) {
-      parseSlackId(slackWorkspaceId, "slackWorkspaceId");
-      parseSlackId(slackAlertsChannelId, "slackAlertsChannelId");
+    if (slackWorkspaceId && !slackAlertsChannelId && !slackReportsChannelId) {
+      throw new Error(
+        "WalletHubMonitoringStack: slackWorkspaceId needs slackAlertsChannelId, slackReportsChannelId or both"
+      );
+    }
+    if (slackAlertsChannelId && slackAlertsChannelId === slackReportsChannelId) {
+      throw new Error(
+        "WalletHubMonitoringStack: slackAlertsChannelId and slackReportsChannelId must be different channels"
+      );
     }
     for (const email of alertEmails) {
       if (!email.includes("@") || /\s/.test(email)) {
@@ -138,9 +151,14 @@ export class WalletHubMonitoringStack extends cdk.Stack {
         "deployRoleArn is not set. Image-push and ECS deploy alerts are not armed, because every CI deploy would page. Pass -c deployRoleArn=$AWS_DEPLOY_ROLE_ARN."
       );
     }
-    if (!slackWorkspaceId) {
+    if (!slackAlertsChannelId) {
       cdk.Annotations.of(this).addWarning(
-        "slackWorkspaceId and slackAlertsChannelId are not set. No Slack resources are created and alerts are not posted to Slack."
+        "slackAlertsChannelId is not set. Alerts are not posted to Slack."
+      );
+    }
+    if (!slackReportsChannelId) {
+      cdk.Annotations.of(this).addWarning(
+        "slackReportsChannelId is not set. Wallet user reports are not posted to Slack."
       );
     }
 
@@ -155,7 +173,7 @@ export class WalletHubMonitoringStack extends cdk.Stack {
     }
 
     // Slack gets its own copy of every alert on a topic of its own.
-    const slack = slackWorkspaceId
+    const slack = slackAlertsChannelId
       ? new SlackAlerts(this, "SlackAlerts", {
           workspaceId: slackWorkspaceId,
           channelId: slackAlertsChannelId,
@@ -341,6 +359,15 @@ export class WalletHubMonitoringStack extends cdk.Stack {
       topic,
       slackTopic: slack?.topic,
     });
+
+    if (slackReportsChannelId) {
+      new UserReports(this, "UserReports", {
+        workspaceId: slackWorkspaceId,
+        channelId: slackReportsChannelId,
+        logGroupName: LIVE_LOG_GROUPS[0],
+        failureTopic: topic,
+      });
+    }
 
     new cdk.CfnOutput(this, "SecurityAlertTopicArn", {
       value: topic.topicArn,

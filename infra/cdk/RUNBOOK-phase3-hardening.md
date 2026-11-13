@@ -207,8 +207,9 @@ passed (creating a second 443 listener would conflict with the live one).
 **Goal:** a read of `WalletHub/AppSecrets` by anyone other than ECS task
 startup, and a deploy that is not the GitHub OIDC role, pages within a
 few minutes. GuardDuty findings above low severity page on the same topic.
-With the two Slack flags set, every alert is also posted to a Slack
-channel.
+With the Slack alerts flags set, every alert is also posted to a Slack
+channel. With the Slack reports flags set, the error reports wallet
+users send are posted to a second one.
 
 This is a **separate stack**, `WalletHubMonitoringStack`. Deploying it
 does not update RDS, `AppSecrets`, task definitions, or
@@ -311,8 +312,50 @@ What the stack adds:
     notify the security topic when a message did not reach the
     channel. Without them a dropped alert is silent.
 
-  Set one flag without the other and synth fails. Set neither and none
-  of this is created.
+- When `-c slackWorkspaceId` and `-c slackReportsChannelId` are both
+  set: the error reports wallet users send are posted to a second Slack
+  channel. `POST /v1/error-reports` on the API (PR #173) writes one log
+  line per report, `"msg":"user.report"`, and holds no Slack
+  credential. Until that endpoint is deployed the filter matches
+  nothing and the channel stays empty.
+  - A subscription filter on the API log group,
+    `{ $.msg = "user.report" }`, hands those lines to a forwarder
+    function. Only CloudWatch Logs, and only for that log group, may
+    invoke it.
+  - The function publishes each report, in the service's
+    custom-notification format, to an SNS topic of its own. It may
+    publish to that topic and to nothing else. A second channel
+    configuration, `wallet-hub-reports`, is subscribed to that topic
+    only. Its role has no permissions. The guardrail and logging are as
+    for the alerts channel; its log group is
+    `/aws/chatbot/wallet-hub-reports`.
+  - A report and its request ID are text a stranger wrote. Both are
+    shown as code with Slack's control characters escaped, so a report
+    cannot notify the channel or draw a link. A report too long for one
+    message keeps its header block and its newest log lines. The
+    message then says it was shortened and names the API log group,
+    where the `user.report` line with that request ID is the whole
+    report.
+  - CloudWatch Logs invokes the function asynchronously and may hand it
+    several reports at once. Each is tried once, with 3 seconds to
+    publish. One that fails is logged as `"forwarded":false` and the
+    others still go. The invocation then fails and is not run again,
+    because a second run would post the others twice. CloudWatch Logs
+    delivers at least once, so a report can still appear twice.
+  - One alarm, on the function's `Errors`, notifies the security topic.
+    Nothing watches this channel's `AWS/Chatbot` metrics: a report the
+    service drops after the topic is found only in
+    `/aws/chatbot/wallet-hub-reports`.
+
+  The stack does not store reports. The API log group keeps them 365
+  days.
+
+The two channels are independent. `slackWorkspaceId` goes with
+`slackAlertsChannelId`, with `slackReportsChannelId`, or with both.
+Synth fails on a channel flag without `slackWorkspaceId`, on
+`slackWorkspaceId` without a channel flag, on the same ID for both
+channels, and on a value that is not a Slack ID. Set none of the three
+and no Slack resource is created.
 
 IAM changes, new access keys, security-group edits, and RDS snapshot
 copy/share are account-wide and are not in this stack. Neither is the
@@ -335,7 +378,7 @@ AI triage layer. Both stay in issue #140.
    ```
 
 4. For Slack, once per workspace and channel. These steps cannot be done
-   by the stack. Skip them, and the two Slack flags, to deploy without
+   by the stack. Skip them, and the Slack flags, to deploy without
    Slack.
    - In Slack, add the app **Amazon Q Developer in chat applications**
      to the workspace (Automations → browse the app directory). A
@@ -350,13 +393,32 @@ AI triage layer. Both stay in issue #140.
    - Right-click the channel name and choose Copy link. The channel ID
      is the last segment of the link. Put it in
      `SLACK_ALERTS_CHANNEL_ID`. The flag takes the ID, not the name.
-5. Diff **only** the monitoring stack. On a first deploy the diff is a
+   - For user reports, do the last two steps again in a second channel
+     and put its ID in `SLACK_REPORTS_CHANNEL_ID`. It cannot be the
+     alerts channel. What appears there is whatever a stranger chose to
+     send, so keep the channel to the team.
+5. For user reports, before the first deploy with
+   `slackReportsChannelId`: check that the API log group has room for
+   another subscription filter. A log group can have five, and that
+   quota cannot be raised. Stop if this prints `5`.
+
+   ```bash
+   aws logs describe-subscription-filters \
+     --log-group-name WalletHubStack-ApiTaskDefapiLogGroup9FDF1262-QSwOGdEbh7LA \
+     --query 'length(subscriptionFilters)' --region us-east-1
+   ```
+
+6. Diff **only** the monitoring stack. On a first deploy the diff is a
    new stack. On a stack that is already deployed, adding the Slack
-   flags shows the resources in the Slack bullet above, the
+   alerts flags shows the resources in the alerts bullet above, the
    `SLACK_TOPIC_ARN` variable and a publish permission on the filter
    function, and a function that sets the log retention. The filter
-   function's code changes with or without the flags. The diff must
-   not mention `Postgres`, `AppSecrets`, or `MasterUserPassword`.
+   function's code changes with or without the flags. Adding
+   `slackReportsChannelId` shows new resources only, all named
+   `UserReports…`, plus the log-retention function if the alerts flags
+   had not already brought it; nothing that exists is modified. The
+   diff must not mention `Postgres`, `AppSecrets`, or
+   `MasterUserPassword`.
 
    ```bash
    cd infra/cdk
@@ -367,10 +429,11 @@ AI triage layer. Both stay in issue #140.
      -c ecsExecutionRoleArns="$API_EXEC_ROLE" \
      -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE" \
      -c slackWorkspaceId="$SLACK_WORKSPACE_ID" \
-     -c slackAlertsChannelId="$SLACK_ALERTS_CHANNEL_ID"
+     -c slackAlertsChannelId="$SLACK_ALERTS_CHANNEL_ID" \
+     -c slackReportsChannelId="$SLACK_REPORTS_CHANNEL_ID"
    ```
 
-6. `cdk diff WalletHubStack` may show pre-existing drift plus
+7. `cdk diff WalletHubStack` may show pre-existing drift plus
    `RetentionInDays` 14 → 365. Do not deploy `WalletHubStack`.
 
 ### Deploy
@@ -384,15 +447,17 @@ npx cdk deploy WalletHubMonitoringStack \
   -c ecsExecutionRoleArns="$API_EXEC_ROLE" \
   -c clammKeeperExecutionRoleArns="$CLAMM_KEEPER_EXEC_ROLE" \
   -c slackWorkspaceId="$SLACK_WORKSPACE_ID" \
-  -c slackAlertsChannelId="$SLACK_ALERTS_CHANNEL_ID"
+  -c slackAlertsChannelId="$SLACK_ALERTS_CHANNEL_ID" \
+  -c slackReportsChannelId="$SLACK_REPORTS_CHANNEL_ID"
 ```
 
 CDK prompts for IAM changes. Do not pass `--require-approval never`.
 Confirm the email subscription before the test below. For PagerDuty, add
 `-c securityAlertHttpsEndpoint=https://events.pagerduty.com/integration/<key>/enqueue`.
 The flags are not remembered between deploys. A later deploy that
-leaves out the two Slack flags deletes the Slack topic and the channel
-configuration.
+leaves out a channel's flag deletes that channel's topic and
+configuration, and for user reports the subscription filter and the
+forwarder too.
 
 ### Acceptance test
 
@@ -413,7 +478,7 @@ Expect a page within 5 minutes. If it does not arrive, read the
 
 ### Acceptance test for Slack
 
-Only with the two Slack flags set. Delivery to Slack has not been
+Only with `slackAlertsChannelId` set. Delivery to Slack has not been
 exercised before this test; the design follows the service's
 documentation. Steps 2 to 4 also page the email recipients, so tell
 them first.
@@ -455,11 +520,77 @@ log group for `"slackPublished":false`. The `UnsupportedEvents` and
 `MessageDeliveryFailure` alarms email the security recipients; neither
 has been seen firing.
 
+### Acceptance test for user reports
+
+Only with `slackReportsChannelId` set. Nothing on this path has been
+run against AWS or Slack before this test; the design follows the
+documentation of CloudWatch Logs, Lambda and the chat service. Steps 2
+to 4 need the API with `POST /v1/error-reports` (PR #173) deployed.
+Until then only step 1 can be done, and the filter matches nothing.
+The wallet is not needed.
+
+1. In the Amazon Q Developer in chat applications console, open the
+   Slack workspace, select `wallet-hub-reports`, and choose **Send test
+   message**. The message appears in the reports channel. This checks
+   the workspace, the channel ID and the invite, and nothing after
+   them.
+2. Send a report by hand. `HUB_API_URL` is the API's base URL and
+   `HUB_APP_KEY` an app key, both as the wallet is built with. The API
+   takes 10 reports an hour from one IP.
+
+   ```bash
+   curl -sS -i -X POST "$HUB_API_URL/v1/error-reports" \
+     -H "x-api-key: $HUB_APP_KEY" -H "content-type: application/json" \
+     --data '{"report":"Arch Wallet error report\nError: forwarder test <!channel> @here <https://example.com|link>\nVersion: test\n\nRecent log (1):\n`one` line"}'
+   ```
+
+   Expect `202` and an `id`. Within a few minutes expect
+   `Wallet error report` in the reports channel, with that `id` as the
+   request ID and the report as a code block. `<!channel>`, `@here`
+   and the link appear as typed: nobody is notified and nothing is a
+   link. Nothing appears in the alerts channel.
+3. Send a report too long for one message.
+
+   ```bash
+   report=$(printf 'Arch Wallet error report\nError: long report test\nVersion: test\n\nRecent log (100):\n'
+     for i in $(seq 1 100); do
+       printf '[2026-01-01T00:00:00.000Z] popup INFO line %s of 100 ........................................\n' "$i"
+     done)
+   jq -n --arg report "$report" '{report: $report}' |
+     curl -sS -i -X POST "$HUB_API_URL/v1/error-reports" \
+       -H "x-api-key: $HUB_APP_KEY" -H "content-type: application/json" \
+       --data @-
+   ```
+
+   Expect the header and the first log lines, a line
+   `[… lines cut here: 23 …]`, the last lines ending with
+   `line 100 of 100`, and under the block a sentence that the report
+   was shortened, naming the API log group.
+4. Read the whole report from the log, with the `id` from step 3.
+
+   ```bash
+   aws logs filter-log-events \
+     --log-group-name WalletHubStack-ApiTaskDefapiLogGroup9FDF1262-QSwOGdEbh7LA \
+     --filter-pattern '{ $.msg = "user.report" && $.reqId = "<id>" }' \
+     --query 'events[].message' --output text --region us-east-1
+   ```
+
+If a report is missing from the channel, read the forwarder's log group
+(`aws logs describe-log-groups --log-group-name-prefix
+WalletHubMonitoringStack-UserReportsForwarderLogs`). A line with
+`"forwarded":false` gives the reason. No line at all for the time of
+the report means the function was not invoked: check that the API wrote
+the `user.report` line, then the subscription filter. A line
+`{"forwarded":1,"failed":0}` means the report reached the topic; read
+`/aws/chatbot/wallet-hub-reports` in `us-east-1`. The `ForwarderErrors`
+alarm emails the security recipients; it has not been seen firing.
+
 - **Rollback:** `npx cdk destroy WalletHubMonitoringStack` with the same
   `-c` flags. The trail bucket is retained. Log-group retention stays at
   365 days. GuardDuty is removed only if this stack created the detector.
-  To turn off Slack alone, deploy again without the two Slack flags;
-  email and HTTPS delivery do not change.
+  To turn off Slack alone, deploy again without the Slack flags, or
+  without one channel's flag to turn off that channel; email and HTTPS
+  delivery do not change.
 - **Risk callouts:** a wrong `deployRoleArn` pages every CI deploy, or
   suppresses a real one if it names a role an attacker can assume. A
   wrong log-group name fails `putRetentionPolicy` and rolls the stack
@@ -467,8 +598,10 @@ has been seen firing.
   The first trail delivery can lag; EventBridge is the paging path and is
   usually under a minute, not the S3 log-file delay. Synth cannot tell
   whether a Slack channel ID is the right channel or whether the app was
-  invited to it; only the Slack acceptance test can. Changing
-  `slackWorkspaceId` replaces the channel configuration.
+  invited to it; only the Slack acceptance tests can. Changing
+  `slackWorkspaceId` replaces the channel configurations. A sixth
+  subscription filter on the API log group fails to create and rolls
+  the deploy back.
 
 ---
 
