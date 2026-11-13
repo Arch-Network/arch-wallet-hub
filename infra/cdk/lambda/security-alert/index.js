@@ -34,7 +34,7 @@ exports.handler = async (event) => {
     })
   );
   await publishToSlack(
-    (params) => sns.send(new PublishCommand(params)),
+    (params, options) => sns.send(new PublishCommand(params), options),
     process.env.SLACK_TOPIC_ARN,
     decision.message
   );

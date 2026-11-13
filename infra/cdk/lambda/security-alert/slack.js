@@ -11,6 +11,12 @@
 const TITLE_MAX = 250;
 const VALUE_MAX = 300;
 
+// The SDK in the nodejs22.x runtime sets no connection, request or
+// socket timeout of its own, so a publish that gets no answer stays
+// pending until the function's 10 seconds run out. The Slack publish
+// gets 3 of them. The page is published first and has the rest.
+const SLACK_PUBLISH_TIMEOUT_MS = 3000;
+
 const FIELDS = [
   ["Target", "target"],
   ["Actor", "actor"],
@@ -73,16 +79,41 @@ function slackNotification(message) {
   };
 }
 
-// Never throws. By the time this runs the page has been published; a
-// failure here would make EventBridge retry the event and send that
-// page again.
-async function publishToSlack(send, topicArn, message) {
+// Never throws, and returns within timeoutMs. By the time this runs the
+// page has been published; a failure or a function timeout here would
+// make EventBridge retry the event and send that page again.
+//
+// `send(params, { abortSignal })` is the SDK client's send. Aborting
+// the signal makes the SDK destroy the request's socket, so nothing is
+// left open when the function returns. The race is what bounds the
+// wait if the SDK is slow to act on the signal.
+async function publishToSlack(
+  send,
+  topicArn,
+  message,
+  timeoutMs = SLACK_PUBLISH_TIMEOUT_MS
+) {
   if (!topicArn) return false;
+  const controller = new AbortController();
+  const timedOut = new Promise((_, reject) => {
+    controller.signal.addEventListener(
+      "abort",
+      () => reject(new Error(`timed out after ${timeoutMs} ms`)),
+      { once: true }
+    );
+  });
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    await send({
-      TopicArn: topicArn,
-      Message: JSON.stringify(slackNotification(message)),
-    });
+    await Promise.race([
+      send(
+        {
+          TopicArn: topicArn,
+          Message: JSON.stringify(slackNotification(message)),
+        },
+        { abortSignal: controller.signal }
+      ),
+      timedOut,
+    ]);
     return true;
   } catch (error) {
     console.error(
@@ -93,6 +124,8 @@ async function publishToSlack(send, topicArn, message) {
       })
     );
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

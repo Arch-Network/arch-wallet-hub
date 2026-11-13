@@ -176,6 +176,47 @@ test("publishToSlack does nothing when no Slack topic is configured", async () =
   assert.equal(calls, 0);
 });
 
+test("a Slack publish that never settles is given up at the bound", async (t) => {
+  const logged = t.mock.method(console, "error", () => {});
+  let signal;
+  const started = Date.now();
+  const published = await publishToSlack(
+    (params, options) => {
+      signal = options.abortSignal;
+      return new Promise(() => {});
+    },
+    TOPIC,
+    pageMessage(),
+    20
+  );
+  assert.equal(published, false);
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+  // The request is cancelled, not only abandoned.
+  assert.equal(signal.aborted, true);
+  assert.equal(logged.mock.callCount(), 1);
+  assert.deepEqual(JSON.parse(logged.mock.calls[0].arguments[0]), {
+    slackPublished: false,
+    eventName: "GetSecretValue",
+    error: "timed out after 20 ms",
+  });
+});
+
+test("a Slack publish inside the bound is not aborted and leaves no timer", async (t) => {
+  const cleared = t.mock.method(globalThis, "clearTimeout");
+  let signal;
+  const published = await publishToSlack(
+    async (params, options) => {
+      signal = options.abortSignal;
+    },
+    TOPIC,
+    pageMessage(),
+    60_000
+  );
+  assert.equal(published, true);
+  assert.equal(signal.aborted, false);
+  assert.equal(cleared.mock.callCount(), 1);
+});
+
 test("a failed Slack publish is logged and does not throw", async (t) => {
   const logged = t.mock.method(console, "error", () => {});
   const published = await publishToSlack(

@@ -278,9 +278,9 @@ What the stack adds:
   it drops, so each alert is sent twice: to the security topic exactly
   as before, and to the Slack topic in a form the service posts.
   - The filter function publishes a second, formatted copy of each
-    page. If that publish fails the function logs
-    `"slackPublished":false` and still succeeds, so the email page is
-    not sent again by a retry.
+    page. If that publish fails, or gets no answer within 3 seconds,
+    the function logs `"slackPublished":false` and still succeeds, so
+    the email page is not sent again by a retry.
   - The GuardDuty rule gets a second target with no input transformer.
   - The two API error alarms get a second action.
   - The channel's role can read CloudWatch, which is what draws the
