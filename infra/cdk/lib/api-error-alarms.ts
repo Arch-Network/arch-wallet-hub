@@ -129,9 +129,15 @@ export class ApiErrorAlarms extends Construct {
         Contribution: {
           Keys: ["$.remoteAddress"],
           Filters: [
-            { Match: "$.msg", EqualTo: "request.completed" },
-            { Match: "$.statusCode", EqualTo: 404 },
-            { Match: "$.remoteAddress", NotIn: [""] },
+            // String comparisons take `In`. `EqualTo` and `NotIn` are
+            // rejected. A numeric `EqualTo` is rejected too; 404 is the
+            // only integer strictly between 403 and 405. `StartsWith` a
+            // digit keeps a missing remoteAddress from becoming one
+            // empty contributor. Client addresses here are IPv4.
+            { Match: "$.msg", In: ["request.completed"] },
+            { Match: "$.statusCode", GreaterThan: 403 },
+            { Match: "$.statusCode", LessThan: 405 },
+            { Match: "$.remoteAddress", StartsWith: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] },
           ],
         },
       }),
