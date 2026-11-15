@@ -58,8 +58,25 @@ export async function submitArchTransaction(params: {
 }
 
 /**
+ * A caller-supplied address that is not base58. `statusCode` makes Fastify
+ * answer 400 instead of letting the decoder's message become a 500.
+ */
+export class InvalidPubkeyError extends Error {
+  statusCode = 400;
+  constructor() {
+    super("Invalid base58 address");
+    this.name = "InvalidPubkeyError";
+  }
+}
+
+/**
  * Parse an Arch account address (base58) into the 32-byte pubkey type expected by arch-sdk.
+ * A string that is not base58 is a client error.
  */
 export function parsePubkey(pubkeyBase58: string): Uint8Array {
-  return new Uint8Array(bs58.decode(pubkeyBase58));
+  try {
+    return new Uint8Array(bs58.decode(pubkeyBase58));
+  } catch {
+    throw new InvalidPubkeyError();
+  }
 }

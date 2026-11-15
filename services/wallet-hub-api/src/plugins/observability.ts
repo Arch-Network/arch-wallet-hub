@@ -53,7 +53,11 @@ const observabilityPlugin: FastifyPluginAsync = async (server) => {
         url: request.url,
         statusCode: reply.statusCode,
         ...(request.upstreamStatus !== undefined && { upstreamStatus: request.upstreamStatus }),
-        responseTimeMs: reply.getResponseTime()
+        responseTimeMs: reply.getResponseTime(),
+        // `request.ip` honors trustProxy, so this is the caller rather than
+        // the load balancer. The ServerErrors alarm counts this line; the
+        // address has to be on it to group a burst by client.
+        remoteAddress: request.ip
       },
       "request.completed"
     );
