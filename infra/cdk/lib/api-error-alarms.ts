@@ -118,7 +118,7 @@ export class ApiErrorAlarms extends Construct {
     // empty contributor. INSIGHT_RULE_METRIC is alarmable only as a
     // math expression, and that expression has to carry its own period.
     const scanRuleName = "wallet-hub-route-scan";
-    new cloudwatch.CfnInsightRule(this, "RouteScanRule", {
+    const scanRule = new cloudwatch.CfnInsightRule(this, "RouteScanRule", {
       ruleName: scanRuleName,
       ruleState: "ENABLED",
       ruleBody: JSON.stringify({
@@ -142,7 +142,7 @@ export class ApiErrorAlarms extends Construct {
         },
       }),
     });
-    new cloudwatch.CfnAlarm(this, "RouteScan", {
+    const scanAlarm = new cloudwatch.CfnAlarm(this, "RouteScan", {
       alarmDescription: `One client IP produced ${ROUTE_SCAN_THRESHOLD} or more wallet-hub 404s in ${WINDOW.toMinutes()} minutes. Find them in log group ${props.logGroupName} with msg "request.completed" and statusCode 404, grouped by remoteAddress.`,
       comparisonOperator: "GreaterThanOrEqualToThreshold",
       evaluationPeriods: 1,
@@ -158,6 +158,9 @@ export class ApiErrorAlarms extends Construct {
       ],
       alarmActions: topics.map((topic) => topic.topicArn),
     });
+    // CloudWatch rejects the math expression until the named rule exists.
+    // The two creates otherwise run together.
+    scanAlarm.addDependency(scanRule);
 
     // Each topic already has an explicit policy (the GuardDuty rule
     // publishes to it), so CloudWatch needs its own statement.
