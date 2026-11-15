@@ -118,7 +118,7 @@ export class ApiErrorAlarms extends Construct {
     // empty contributor. INSIGHT_RULE_METRIC is alarmable only as a
     // math expression, and that expression has to carry its own period.
     const scanRuleName = "wallet-hub-route-scan";
-    new cloudwatch.CfnInsightRule(this, "RouteScanRule", {
+    const scanRule = new cloudwatch.CfnInsightRule(this, "RouteScanRule", {
       ruleName: scanRuleName,
       ruleState: "ENABLED",
       ruleBody: JSON.stringify({
@@ -129,14 +129,20 @@ export class ApiErrorAlarms extends Construct {
         Contribution: {
           Keys: ["$.remoteAddress"],
           Filters: [
-            { Match: "$.msg", EqualTo: "request.completed" },
-            { Match: "$.statusCode", EqualTo: 404 },
-            { Match: "$.remoteAddress", NotIn: [""] },
+            // String comparisons take `In`. `EqualTo` and `NotIn` are
+            // rejected. A numeric `EqualTo` is rejected too; 404 is the
+            // only integer strictly between 403 and 405. `StartsWith` a
+            // digit keeps a missing remoteAddress from becoming one
+            // empty contributor. Client addresses here are IPv4.
+            { Match: "$.msg", In: ["request.completed"] },
+            { Match: "$.statusCode", GreaterThan: 403 },
+            { Match: "$.statusCode", LessThan: 405 },
+            { Match: "$.remoteAddress", StartsWith: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] },
           ],
         },
       }),
     });
-    new cloudwatch.CfnAlarm(this, "RouteScan", {
+    const scanAlarm = new cloudwatch.CfnAlarm(this, "RouteScan", {
       alarmDescription: `One client IP produced ${ROUTE_SCAN_THRESHOLD} or more wallet-hub 404s in ${WINDOW.toMinutes()} minutes. Find them in log group ${props.logGroupName} with msg "request.completed" and statusCode 404, grouped by remoteAddress.`,
       comparisonOperator: "GreaterThanOrEqualToThreshold",
       evaluationPeriods: 1,
@@ -152,6 +158,9 @@ export class ApiErrorAlarms extends Construct {
       ],
       alarmActions: topics.map((topic) => topic.topicArn),
     });
+    // CloudWatch rejects the math expression until the named rule exists.
+    // The two creates otherwise run together.
+    scanAlarm.addDependency(scanRule);
 
     // Each topic already has an explicit policy (the GuardDuty rule
     // publishes to it), so CloudWatch needs its own statement.
