@@ -11,12 +11,12 @@ import { registerBtcTransactionRoutes } from "../btcTransactions.js";
  *   POST /v1/auth/session/challenge { turnkeyResourceId: "not-a-uuid" }
  *     -> 500 {"code":"22P02","message":"invalid input syntax for type uuid"}
  *
- * `turnkey_resources.id` is a Postgres uuid column, so a malformed (non-UUID)
- * value used to reach the DB and throw 22P02, surfacing as a 500. The schemas
- * now constrain the field to `format: "uuid"`, which rejects malformed input
- * with a clean 400 at validation time -- before the handler (and the DB) ever
- * run. These routes are mounted without appAuth so validation is exercised
- * directly (a malformed body 400s before any DB access).
+ * `turnkey_resources.id` and `auth_challenges.id` are Postgres uuid columns, so
+ * a malformed (non-UUID) value used to reach the DB and throw 22P02, surfacing
+ * as a 500. The schemas now constrain those fields to `format: "uuid"`, which
+ * rejects malformed input with a clean 400 at validation time -- before the
+ * handler (and the DB) ever run. These routes are mounted without appAuth so
+ * validation is exercised directly (a malformed body 400s before any DB access).
  */
 async function buildApp() {
   const app = Fastify();
@@ -56,6 +56,19 @@ describe("turnkeyResourceId UUID validation (22P02 500 regression)", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.body).toContain("turnkeyResourceId");
+    expect(res.body).not.toContain("22P02");
+    await app.close();
+  });
+
+  it("400s a non-UUID challengeId on /auth/session", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/auth/session",
+      payload: { challengeId: "x", signatureHex: "aa" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("challengeId");
     expect(res.body).not.toContain("22P02");
     await app.close();
   });

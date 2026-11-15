@@ -21,6 +21,7 @@ import {
 } from "../idempotency/idempotency.js";
 import { auditEvent } from "../audit/audit.js";
 import { findTurnkeyWalletAccount } from "../turnkey/walletAccountVerification.js";
+import { isTurnkeyInvalidRequest } from "../turnkey/clientError.js";
 
 const CreateWalletBody = Type.Object({
   externalUserId: Type.String({ minLength: 1 }),
@@ -444,6 +445,11 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           });
           await markIdempotencyFailed(client, consumed.row.id, { message: String(err?.message ?? err) });
         });
+        // Turnkey code 3 is a rejected request body (bad attestation, unknown
+        // variant, protobuf syntax error). That is the caller's input.
+        if (isTurnkeyInvalidRequest(err)) {
+          return reply.badRequest("The wallet provider rejected this request");
+        }
         throw err;
       }
     }
@@ -689,6 +695,9 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
             message: String(err?.message ?? err),
           });
         });
+        if (isTurnkeyInvalidRequest(err)) {
+          return reply.badRequest("The wallet provider rejected this request");
+        }
         throw err;
       }
     },

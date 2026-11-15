@@ -54,6 +54,7 @@ describe("observability request.completed hook", () => {
     expect(rec.url).toBe("/ping");
     expect(rec.statusCode).toBe(200);
     expect(typeof rec.responseTimeMs).toBe("number");
+    expect(typeof rec.remoteAddress).toBe("string");
 
     await app.close();
   });
@@ -149,6 +150,16 @@ describe("request ids", () => {
     expect(res.headers["access-control-allow-origin"]).toBe("https://app.example");
     expect(res.headers["access-control-expose-headers"]).toBe("x-request-id");
     expect(res.headers["x-request-id"]).toBeTruthy();
+    await app.close();
+  });
+
+  it("logs the caller address on the line the alarms count", async () => {
+    const { app, completed } = await buildApp();
+    await app.inject({ method: "GET", url: "/ping", remoteAddress: "186.244.247.117" });
+    expect(completed()[0]).toMatchObject({
+      msg: "request.completed",
+      remoteAddress: "186.244.247.117",
+    });
     await app.close();
   });
 
