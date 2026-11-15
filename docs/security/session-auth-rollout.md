@@ -143,11 +143,21 @@ btc.estimate-fee
 These are the highest-value IDOR targets (move funds / sign). Un-updated
 (<0.6.1) clients calling them now get a `401` — an accepted tradeoff.
 
-**Deliberately NOT enforced** (would break onboarding — no session can exist
-before the wallet does): `turnkey.passkey-wallets.create`,
-`turnkey.email-wallets.create`, `turnkey.passkey-wallets.import`, and the
-discovery reads `turnkey.wallets.list` / `turnkey.wallets.get` (called during
-recovery/import before a token exists).
+**Deliberately NOT on the allowlist** (no session can exist before the
+wallet does): `turnkey.passkey-wallets.create`,
+`turnkey.email-wallets.create`, `turnkey.passkey-wallets.import`. Those
+routes use `requireSessionForExistingUser` instead, which lets a first
+credential through and requires a matching session once the user owns one.
+
+**Wallet metadata reads require a session once the user owns a credential.**
+`GET /turnkey/wallets` and `GET /turnkey/wallets/:resourceId` return the
+address and public key. They stay open for a user who has no wallet yet,
+and they require a session whose `externalUserId` matches the query once
+`userHasCredentials` is true (`requireSessionForExistingUser`, the same
+split as create/import). Email recovery does not list wallets first:
+`POST /recovery/email/verify` returns `resourceId`, and the client uses
+that. The list fallback in the extension only runs when a hub omits
+`resourceId`.
 
 ### Adjusting enforcement
 

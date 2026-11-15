@@ -13,6 +13,9 @@ const WINDOW = cdk.Duration.minutes(5);
 // without production traffic numbers; tune them against the metrics.
 const SERVER_ERROR_THRESHOLD = 5;
 const UPSTREAM_ERROR_THRESHOLD = 25;
+// 404s from one IP in one window. The 15 Nov probe produced dozens in a
+// couple of minutes. A wallet missing a single path does not.
+const ROUTE_SCAN_THRESHOLD = 25;
 
 // The API writes one `request.completed` line per response
 // (services/wallet-hub-api/src/plugins/observability.ts). Both filters
@@ -108,6 +111,47 @@ export class ApiErrorAlarms extends Construct {
       UPSTREAM_ERROR_THRESHOLD,
       "wallet-hub API 502 responses (an upstream failed)"
     );
+
+    // One IP walking unknown paths. Keyed on remoteAddress, which
+    // request.completed has carried since #181. A line without that
+    // field does not match, so older builds cannot pile up as one
+    // empty contributor. INSIGHT_RULE_METRIC is alarmable only as a
+    // math expression, and that expression has to carry its own period.
+    const scanRuleName = "wallet-hub-route-scan";
+    new cloudwatch.CfnInsightRule(this, "RouteScanRule", {
+      ruleName: scanRuleName,
+      ruleState: "ENABLED",
+      ruleBody: JSON.stringify({
+        Schema: { Name: "CloudWatchLogRule", Version: 1 },
+        LogGroupNames: [props.logGroupName],
+        LogFormat: "JSON",
+        AggregateOn: "Count",
+        Contribution: {
+          Keys: ["$.remoteAddress"],
+          Filters: [
+            { Match: "$.msg", EqualTo: "request.completed" },
+            { Match: "$.statusCode", EqualTo: 404 },
+            { Match: "$.remoteAddress", NotIn: [""] },
+          ],
+        },
+      }),
+    });
+    new cloudwatch.CfnAlarm(this, "RouteScan", {
+      alarmDescription: `One client IP produced ${ROUTE_SCAN_THRESHOLD} or more wallet-hub 404s in ${WINDOW.toMinutes()} minutes. Find them in log group ${props.logGroupName} with msg "request.completed" and statusCode 404, grouped by remoteAddress.`,
+      comparisonOperator: "GreaterThanOrEqualToThreshold",
+      evaluationPeriods: 1,
+      threshold: ROUTE_SCAN_THRESHOLD,
+      treatMissingData: "notBreaching",
+      metrics: [
+        {
+          id: "scan",
+          expression: `INSIGHT_RULE_METRIC("${scanRuleName}", "MaxContributorValue")`,
+          period: WINDOW.toSeconds(),
+          returnData: true,
+        },
+      ],
+      alarmActions: topics.map((topic) => topic.topicArn),
+    });
 
     // Each topic already has an explicit policy (the GuardDuty rule
     // publishes to it), so CloudWatch needs its own statement.

@@ -716,7 +716,14 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.get(
     "/turnkey/wallets",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.wallets.list"),
+      // A user with no credential yet has nothing to disclose, so the
+      // read stays open for onboarding. Once they own a wallet, the
+      // address and public key require a session for that same user.
+      // Recovery does not depend on this: verify returns resourceId.
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.wallets.list"),
+        server.requireSessionForExistingUser,
+      ],
       schema: {
         summary: "List stored Turnkey wallet resources for a user",
         tags: ["turnkey"],
@@ -765,7 +772,10 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
   server.get(
     "/turnkey/wallets/:resourceId",
     {
-      preHandler: server.enforceSessionForRoute("turnkey.wallets.get"),
+      preHandler: [
+        server.enforceSessionForRoute("turnkey.wallets.get"),
+        server.requireSessionForExistingUser,
+      ],
       schema: {
         summary: "Get stored Turnkey wallet resource metadata",
         tags: ["turnkey"],
