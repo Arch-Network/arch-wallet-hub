@@ -154,6 +154,28 @@ describe("passkey wallet import", () => {
     await app.close();
   });
 
+  it("stores an email auth method when the imported wallet is approved by email", async () => {
+    mocks.turnkey.getWalletAccountsForOrganization.mockResolvedValue({
+      accounts: [{ address: "tb1p-victim", publicKey: USER_KEY }],
+    });
+    const app = await buildServer();
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/turnkey/passkey-wallets/import",
+      payload: { ...importPayload(), authMethod: "email", derivationPath: "m/86'/1'/0'/0/0", addressFormat: "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mocks.insertTurnkeyResource).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        authMethod: "email",
+        defaultDerivationPath: "m/86'/1'/0'/0/0",
+        defaultAddressFormat: "ADDRESS_FORMAT_BITCOIN_TESTNET_P2TR",
+      }),
+    );
+    await app.close();
+  });
+
   it("refuses to attach to a user who already has a credential, without that user's session", async () => {
     mocks.userHasCredentials.mockResolvedValue(true);
     const app = await buildServer();

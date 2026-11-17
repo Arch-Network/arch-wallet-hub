@@ -27,6 +27,8 @@ import TokenDetail from "../../src/pages/TokenDetail/TokenDetail";
 import RuneDetail from "../../src/pages/RuneDetail/RuneDetail";
 import Approve from "../../src/pages/Approve/Approve";
 import Settings from "../../src/pages/Settings/Settings";
+import ExportKey from "../../src/pages/ExportKey/ExportKey";
+import ImportWallet from "../../src/pages/ImportWallet/ImportWallet";
 import Recover from "../../src/pages/Recover/Recover";
 import Swap from "../../src/pages/Swap/Swap";
 import { hasActiveRecoveryCheckpoint } from "../../src/state/recovery-session";
@@ -55,6 +57,7 @@ function RouteRestorer() {
     restored.current = true;
     if (location.pathname.startsWith("/approve/")) return;
     if (location.pathname.startsWith("/recover")) return;
+    if (location.pathname === "/export" || location.pathname === "/import") return;
     // The side-panel → popup swap handoff opens this window with the
     // intent encoded as `?...&resume=1`. If we blindly restore the
     // last-visited route here we'd nuke those params and the popup
@@ -182,6 +185,8 @@ function bodyClassForPath(pathname: string): string {
     pathname === "/settings" ||
     pathname === "/add-wallet" ||
     pathname === "/add-watch" ||
+    pathname === "/export" ||
+    pathname === "/import" ||
     pathname === "/tokens"
   ) {
     return "app-body app-body-medium";
@@ -322,6 +327,8 @@ function AppRoutes() {
             <Route path="/swap" element={<Swap />} />
             <Route path="/approve/:requestId" element={<Approve />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/export" element={<ExportKey />} />
+            <Route path="/import" element={<ImportWallet />} />
             <Route path="/add-wallet" element={<Onboarding onComplete={refresh} addMode />} />
             <Route path="/add-watch" element={<AddWatch />} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
