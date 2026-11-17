@@ -5948,3 +5948,73 @@ button.address-chip-link:hover {
   color: var(--text-secondary);
   line-height: 1.4;
 }
+
+.key-material-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.key-material-ack input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.key-material-choice {
+  display: block;
+  width: 100%;
+  padding: 12px 0;
+  border: none;
+  border-bottom: 1px solid var(--border-primary);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.key-material-choice:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.key-material-choice:first-child {
+  padding-top: 0;
+}
+
+.key-material-choice span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.key-material-frame {
+  min-height: 220px;
+  margin-top: 12px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  background: var(--surface-card);
+}
+
+.key-material-frame[hidden] {
+  display: none;
+}
+
+.key-material-frame iframe {
+  display: block;
+  width: 100%;
+  height: 220px;
+  border: 0;
+}
+
+.key-material-frame-import iframe {
+  height: 280px;
+}

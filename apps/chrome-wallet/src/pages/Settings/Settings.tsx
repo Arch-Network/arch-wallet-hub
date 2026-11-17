@@ -11,7 +11,7 @@ import RecoverViaEmailCta from "../../components/RecoverViaEmailCta";
 import TestRecoveryEmailButton from "../../components/TestRecoveryEmailButton";
 import { ConnectedSiteRow } from "../../components/ConnectedSiteRow";
 import type { AccountAddress, ConnectedSite, NetworkId, WalletAccount } from "../../state/types";
-import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount, isWatchAccount } from "../../state/types";
+import { DEFAULT_HUB_BASE_URL, isAllowedHubBaseUrl, isExternalAccount, isTurnkeyAccount, isWatchAccount } from "../../state/types";
 import { APP_VERSION } from "../../utils/version";
 import { isAnsEnabledForNetwork, openAnsManager } from "../../utils/name-service";
 import DiagnosticsLogView from "../../components/DiagnosticsLogView";
@@ -509,6 +509,23 @@ export default function Settings() {
             + Add Wallet
           </button>
           <button
+            onClick={() => navigate("/import")}
+            style={{
+              display: "block",
+              width: "100%",
+              padding: "6px 12px 4px",
+              border: "none",
+              background: "transparent",
+              cursor: "pointer",
+              color: "var(--accent)",
+              fontWeight: 600,
+              fontSize: 13,
+              textAlign: "center",
+            }}
+          >
+            + Import a seed phrase
+          </button>
+          <button
             onClick={() => navigate("/add-watch")}
             style={{
               display: "block",
@@ -578,6 +595,16 @@ export default function Settings() {
                 <CopyButton text={activeAccount.publicKeyHex} />
               </div>
             </div>
+            {isTurnkeyAccount(activeAccount) && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-full"
+                style={{ marginTop: 12 }}
+                onClick={() => navigate("/export")}
+              >
+                Export seed or private key
+              </button>
+            )}
           </div>
         </div>
       )}

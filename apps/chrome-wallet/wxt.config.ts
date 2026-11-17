@@ -89,7 +89,7 @@ export default defineConfig({
     // injected if any future bundler/plugin tries.
     content_security_policy: {
       extension_pages:
-        "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none';",
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; frame-src https://export.turnkey.com https://import.turnkey.com;",
     },
     side_panel: {
       default_path: "sidepanel.html",

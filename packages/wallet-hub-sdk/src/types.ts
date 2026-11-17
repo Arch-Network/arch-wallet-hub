@@ -351,6 +351,10 @@ export type RegisterExistingPasskeyWalletRequest = {
   defaultAddress: string;
   defaultPublicKeyHex: string;
   label?: string;
+  /** Omitted requests stay "passkey", which is what this route originally stored. */
+  authMethod?: "passkey" | "email";
+  derivationPath?: string;
+  addressFormat?: string;
 };
 
 export type RegisterExistingPasskeyWalletResponse = {

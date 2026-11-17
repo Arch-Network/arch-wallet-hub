@@ -65,7 +65,10 @@ const ImportPasskeyWalletBody = Type.Object({
   organizationId: Type.String({ minLength: 1 }),
   defaultAddress: Type.String({ minLength: 1 }),
   defaultPublicKeyHex: Type.String({ minLength: 64 }),
-  label: Type.Optional(Type.String({ minLength: 1 }))
+  label: Type.Optional(Type.String({ minLength: 1 })),
+  authMethod: Type.Optional(Type.Union([Type.Literal("passkey"), Type.Literal("email")])),
+  derivationPath: Type.Optional(Type.String({ minLength: 1 })),
+  addressFormat: Type.Optional(Type.String({ minLength: 1 }))
 });
 
 const CreateWalletResponse = Type.Object({
@@ -184,6 +187,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
         );
       }
 
+      const authMethod = body.authMethod === "email" ? "email" : "passkey";
       const response = await withDbTransaction(db, async (client) => {
         const user = await getOrCreateUserByExternalId(client, { appId, externalUserId });
         const resource = await insertTurnkeyResource(client, {
@@ -197,11 +201,9 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           policyId: null,
           defaultAddress,
           defaultPublicKeyHex,
-          defaultAddressFormat: null,
-          defaultDerivationPath: null,
-          // Import path is only reachable for sub-org passkey wallets
-          // (custodial parent-org "imports" were never supported).
-          authMethod: "passkey",
+          defaultAddressFormat: typeof body.addressFormat === "string" ? body.addressFormat : null,
+          defaultDerivationPath: typeof body.derivationPath === "string" ? body.derivationPath : null,
+          authMethod,
           keyVerified: true
         });
 
@@ -216,7 +218,7 @@ export const registerTurnkeyRoutes: FastifyPluginAsync = async (server) => {
           turnkeyActivityId: null,
           turnkeyRequestId: null,
           payloadJson: {
-            mode: "passkey_metadata_import",
+            mode: authMethod === "email" ? "email_metadata_import" : "passkey_metadata_import",
             organizationId,
             defaultAddress,
             label: body.label ?? null

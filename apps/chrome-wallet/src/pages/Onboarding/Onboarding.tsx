@@ -977,8 +977,8 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       {wizardStep === 0 && (
         <p className="onboarding-fineprint">
-          Arch Wallet never asks for a seed phrase. Arch's servers hold
-          no signing keys.
+          A new wallet is created with a passkey or email. Arch's servers
+          hold no signing keys.
         </p>
       )}
 
