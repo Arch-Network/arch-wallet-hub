@@ -13,7 +13,10 @@ export async function handleBridgeRequest(req: BridgeRequest): Promise<BridgeRes
     if (req.provider === "xverse") {
       data = req.method === "connect" ? await xverseConnect(req.args.network) : await xverseSign(req);
     } else if (req.provider === "unisat") {
-      data = req.method === "connect" ? await unisatConnect(req.args.network) : await unisatSign(req);
+      data =
+        req.method === "connect"
+          ? await unisatConnect(req.args.network, req.args.followWallet)
+          : await unisatSign(req);
     } else {
       return { success: false, code: "UNSUPPORTED", error: `Unsupported wallet: ${String((req as any).provider)}` };
     }

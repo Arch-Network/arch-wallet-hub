@@ -28,6 +28,7 @@ function connected(identity: string, chainVerified = true): BridgeConnectResult 
     provider: "xverse",
     address: identity,
     publicKeyHex: "ab",
+    network: "testnet4",
     chainVerified,
     addresses: [
       { address: TB_NESTED_SEGWIT, publicKeyHex: "02cd", purposes: ["payment"], addressType: "p2sh" },
