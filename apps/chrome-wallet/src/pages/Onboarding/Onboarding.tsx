@@ -282,11 +282,6 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     return client;
   }, [addMode]);
 
-  const networkForHub = useCallback(async () => {
-    const state = await walletStore.getState().catch(() => null);
-    return state?.network === "mainnet" ? "mainnet" : "testnet";
-  }, []);
-
   const finishOnboarding = useCallback(() => {
     onComplete();
     if (addMode) {
@@ -570,19 +565,20 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       console.log("[ArchWallet] external onboarding:", phase);
       const client = await buildClient();
       const state = await walletStore.getState().catch(() => null);
-      const network = state?.network ?? "testnet4";
-      const hubNetwork = await networkForHub();
       const externalUserId = await getExternalUserId();
       const adapter = getExternalWalletAdapter(externalProvider);
 
       phase = "adapter.connect";
       console.log("[ArchWallet] external onboarding:", phase);
       // The bridge reports its own typed timeout first; this only catches a dead background.
+      // A first setup has no chosen network yet, so it takes the wallet's.
       const connected = await withTimeout(
-        adapter.connect(network),
+        adapter.connect(state?.network ?? "testnet4", !addMode),
         BRIDGE_TIMEOUT_MS.connect + 15_000,
         `Connecting ${adapter.label}`,
       );
+      const network = connected.network;
+      const hubNetwork = network === "mainnet" ? "mainnet" : "testnet";
 
       setStatusMessage("Preparing ownership challenge...");
       phase = "createWalletLinkChallenge";
@@ -664,7 +660,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       if (addMode) {
         await walletStore.addAccount(account);
       } else {
-        await walletStore.completeOnboarding(password, account);
+        await walletStore.completeOnboarding(password, account, network);
       }
       finishOnboarding();
     } catch (e: any) {
@@ -695,7 +691,6 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     externalProvider,
     finishOnboarding,
     lastWizardStep,
-    networkForHub,
     password,
     validatePassword,
     walletName,

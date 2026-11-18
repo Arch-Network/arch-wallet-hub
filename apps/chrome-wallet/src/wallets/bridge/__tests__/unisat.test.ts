@@ -24,8 +24,8 @@ function install(p: UnisatProvider | undefined) {
   (globalThis as any).window = { unisat: p };
 }
 
-const connect = (network: "testnet4" | "mainnet" = "testnet4") =>
-  handleBridgeRequest({ provider: "unisat", method: "connect", args: { network } });
+const connect = (network: "testnet4" | "mainnet" = "testnet4", followWallet?: boolean) =>
+  handleBridgeRequest({ provider: "unisat", method: "connect", args: { network, followWallet } });
 
 beforeEach(() => install(undefined));
 afterEach(() => {
@@ -43,6 +43,7 @@ describe("UniSat connect", () => {
         address: TAPROOT,
         publicKeyHex: "02ab",
         addresses: [{ address: TAPROOT, publicKeyHex: "02ab", purposes: ["payment", "ordinals"], addressType: "p2tr" }],
+        network: "testnet4",
         chainVerified: true,
       },
     });
@@ -61,6 +62,36 @@ describe("UniSat connect", () => {
     const res = await connect();
     expect(res).toMatchObject({ success: false, code: "WRONG_NETWORK" });
     expect(!res.success && res.error).toMatch(/UniSat is on Bitcoin Mainnet/);
+    expect(p.requestAccounts).not.toHaveBeenCalled();
+  });
+
+  it("names Mainnet as Bitcoin Mainnet when UniSat calls it just Bitcoin", async () => {
+    install(unisat({ getChain: vi.fn(async () => ({ enum: "BITCOIN_MAINNET", name: "Bitcoin" })) }));
+    const res = await connect();
+    expect(!res.success && res.error).toBe(
+      "UniSat is on Bitcoin Mainnet. Switch UniSat to Bitcoin Testnet4 and try again.",
+    );
+  });
+
+  it("follows UniSat to Mainnet on request and reports the network it checked", async () => {
+    install(unisat({ getChain: vi.fn(async () => ({ enum: "BITCOIN_MAINNET", name: "Bitcoin" })) }));
+    expect(await connect("testnet4", true)).toMatchObject({
+      success: true,
+      data: { network: "mainnet", chainVerified: true },
+    });
+  });
+
+  it("follows a legacy livenet report to Mainnet", async () => {
+    install(unisat({ getChain: undefined, getNetwork: vi.fn(async () => "livenet") }));
+    expect(await connect("testnet4", true)).toMatchObject({ success: true, data: { network: "mainnet" } });
+  });
+
+  it("still refuses a chain Arch doesn't support when following", async () => {
+    const p = unisat({ getChain: vi.fn(async () => ({ enum: "BITCOIN_SIGNET", name: "Bitcoin Signet" })) });
+    install(p);
+    const res = await connect("testnet4", true);
+    expect(res).toMatchObject({ success: false, code: "WRONG_NETWORK" });
+    expect(!res.success && res.error).toMatch(/Switch UniSat to Bitcoin Testnet4/);
     expect(p.requestAccounts).not.toHaveBeenCalled();
   });
 

@@ -118,6 +118,7 @@ export async function xverseConnect(network: BridgeNetwork): Promise<BridgeConne
     address: identity.address,
     publicKeyHex: identity.publicKeyHex,
     addresses,
+    network,
     chainVerified,
   };
 }

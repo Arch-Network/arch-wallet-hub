@@ -9,7 +9,12 @@ import type { AddressPurpose, BtcAddressType, ExternalWalletProvider } from "../
 export type BridgeNetwork = "testnet4" | "mainnet";
 
 export type BridgeRequest =
-  | { provider: ExternalWalletProvider; method: "connect"; args: { network: BridgeNetwork } }
+  | {
+      provider: ExternalWalletProvider;
+      method: "connect";
+      /** `followWallet`: use the wallet's own network instead when it reports a supported one. */
+      args: { network: BridgeNetwork; followWallet?: boolean };
+    }
   | {
       provider: ExternalWalletProvider;
       method: "signMessage";
@@ -42,6 +47,8 @@ export interface BridgeConnectResult {
   address: string;
   publicKeyHex: string;
   addresses: BridgeAddress[];
+  /** The network the connection was checked against. */
+  network: BridgeNetwork;
   /** The provider reported the exact requested chain (not inferred from an address prefix). */
   chainVerified: boolean;
 }

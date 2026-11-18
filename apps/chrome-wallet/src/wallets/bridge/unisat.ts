@@ -42,11 +42,25 @@ async function provider(): Promise<UnisatProvider> {
   return p;
 }
 
+function networkOfChain(chainEnum: string | undefined): BridgeNetwork | null {
+  return (Object.keys(CHAIN_ENUM) as BridgeNetwork[]).find((n) => CHAIN_ENUM[n] === chainEnum) ?? null;
+}
+
+/** UniSat's current network, or null when it's on a chain Arch doesn't support. */
+async function unisatNetwork(p: UnisatProvider): Promise<BridgeNetwork | null> {
+  if (typeof p.getChain === "function") return networkOfChain((await p.getChain())?.enum);
+  // The legacy "testnet" can't tell Testnet4 apart, so only "livenet" maps.
+  return (await p.getNetwork?.()) === "livenet" ? "mainnet" : null;
+}
+
 export async function assertUnisatChain(p: UnisatProvider, network: BridgeNetwork): Promise<void> {
   if (typeof p.getChain === "function") {
     const chain = await p.getChain();
     if (chain?.enum !== CHAIN_ENUM[network]) {
-      throw bridgeErrors.wrongNetwork(LABEL, network, chain?.name || chain?.enum || "another network");
+      // UniSat names Mainnet just "Bitcoin", so supported chains use our names.
+      const known = networkOfChain(chain?.enum);
+      const actual = known ? networkName(known) : chain?.name || chain?.enum || "another network";
+      throw bridgeErrors.wrongNetwork(LABEL, network, actual);
     }
     return;
   }
@@ -71,8 +85,9 @@ function base64ToHex(base64: string): string {
   return Array.from(atob(base64), (c) => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
 }
 
-export async function unisatConnect(network: BridgeNetwork): Promise<BridgeConnectResult> {
+export async function unisatConnect(network: BridgeNetwork, followWallet = false): Promise<BridgeConnectResult> {
   const p = await provider();
+  if (followWallet) network = (await unisatNetwork(p)) ?? network;
   await assertUnisatChain(p, network);
   const [address] = await p.requestAccounts();
   if (!address) throw new BridgeError("PROVIDER_ERROR", "UniSat didn't return an account.");
@@ -83,6 +98,7 @@ export async function unisatConnect(network: BridgeNetwork): Promise<BridgeConne
     address,
     publicKeyHex,
     addresses: [{ address, publicKeyHex, purposes: ["payment", "ordinals"], addressType: "p2tr" }],
+    network,
     chainVerified: true,
   };
 }

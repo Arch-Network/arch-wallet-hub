@@ -17,9 +17,10 @@ export interface ExternalWalletAdapter {
   installUrl: string;
   /**
    * Connect and return every payment/ordinals address the wallet gave,
-   * after the bridge checked the provider is present and on `network`.
+   * after the bridge checked the provider is present and on `network`
+   * (or, with `followWallet`, on its own network if supported; UniSat only).
    */
-  connect(network: NetworkId): Promise<ExternalWalletConnection>;
+  connect(network: NetworkId, followWallet?: boolean): Promise<ExternalWalletConnection>;
   signMessage(args: {
     address: string;
     message: string;
@@ -93,7 +94,8 @@ function makeAdapter(
     provider,
     label,
     installUrl,
-    connect: (network) => requestExternalWallet({ provider, method: "connect", args: { network } }),
+    connect: (network, followWallet) =>
+      requestExternalWallet({ provider, method: "connect", args: { network, followWallet } }),
     signMessage: (args) => requestExternalWallet({ provider, method: "signMessage", args }),
     signPsbt: async (args) => {
       const signed = signedPsbt(await requestExternalWallet({ provider, method: "signPsbt", args }));

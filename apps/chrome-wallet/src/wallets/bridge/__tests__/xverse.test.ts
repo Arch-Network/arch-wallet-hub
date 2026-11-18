@@ -69,6 +69,7 @@ describe("Xverse connect", () => {
           { address: PAYMENT, publicKeyHex: "02cd", purposes: ["payment"], addressType: "p2sh" },
           { address: ORDINALS, publicKeyHex: "ab", purposes: ["ordinals"], addressType: "p2tr" },
         ],
+        network: "testnet4",
         chainVerified: true,
       },
     });

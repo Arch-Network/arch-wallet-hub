@@ -462,9 +462,14 @@ export const walletStore = {
    * Initial seal during onboarding. Encrypts the provided account into a
    * fresh keystore using the user's password. Returns the unlocked state.
    */
-  async completeOnboarding(password: string, account: WalletAccount): Promise<AppState> {
+  async completeOnboarding(
+    password: string,
+    account: WalletAccount,
+    network: NetworkId = DEFAULT_STATE.network,
+  ): Promise<AppState> {
     const initial: AppState = {
       ...DEFAULT_STATE,
+      network,
       initialized: true,
       locked: false,
       accounts: [account],
