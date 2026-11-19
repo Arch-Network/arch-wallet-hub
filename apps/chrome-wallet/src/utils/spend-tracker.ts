@@ -22,10 +22,13 @@
  *     re-expose the tracker as a leakable wallet history.
  *
  * Failure modes:
- *   - Storage read/write failures swallow silently. The cap then
- *     fails OPEN (no enforcement) rather than FAIL CLOSED (block
- *     every dapp transfer); the latter would let a single corrupted
- *     storage blob nuke the wallet's ability to transact.
+ *   - `getRecentSpend` / `recordSpend` swallow storage errors and
+ *     fail OPEN. The Approve popup uses that path so a transient
+ *     storage glitch doesn't brick every dapp transfer for the user.
+ *   - The service worker uses `getRecentSpendStrict` instead: when a
+ *     site has a configured daily cap, a ledger read failure refuses
+ *     the request (fail closed) so a future popup-skip path can't
+ *     treat "ledger unavailable" as "zero spent so far".
  */
 
 const STORAGE_KEY = "arch_wallet_spend_log";
@@ -63,16 +66,46 @@ function getStorageLocal(): ChromeStorageAreaLike | null {
   return (globalThis as any).chrome?.storage?.local ?? null;
 }
 
+export class SpendLedgerUnavailableError extends Error {
+  constructor(message = "Spend ledger unavailable") {
+    super(message);
+    this.name = "SpendLedgerUnavailableError";
+  }
+}
+
 async function readLog(): Promise<SpendRecord[]> {
   const storage = getStorageLocal();
   if (!storage) return [];
   try {
     const res = (await storage.get(STORAGE_KEY)) as Record<string, unknown>;
     const raw = res?.[STORAGE_KEY];
+    if (raw === undefined) return [];
     if (!Array.isArray(raw)) return [];
     return raw.filter(isSpendRecord);
   } catch {
     return [];
+  }
+}
+
+/** Same as `readLog`, but refuses to invent an empty ledger on failure. */
+async function readLogStrict(): Promise<SpendRecord[]> {
+  const storage = getStorageLocal();
+  if (!storage) {
+    throw new SpendLedgerUnavailableError("chrome.storage.local unavailable");
+  }
+  try {
+    const res = (await storage.get(STORAGE_KEY)) as Record<string, unknown>;
+    const raw = res?.[STORAGE_KEY];
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) {
+      throw new SpendLedgerUnavailableError("Spend ledger corrupted");
+    }
+    return raw.filter(isSpendRecord);
+  } catch (err) {
+    if (err instanceof SpendLedgerUnavailableError) throw err;
+    throw new SpendLedgerUnavailableError(
+      err instanceof Error ? err.message : "Spend ledger read failed",
+    );
   }
 }
 
@@ -145,15 +178,13 @@ export async function recordSpend(opts: {
  * loss. Falls back to `0n` on any read or parse failure -- callers
  * MUST treat that as "no enforcement", not "zero spent so far".
  */
-export async function getRecentSpend(opts: {
+function sumRecent(records: SpendRecord[], opts: {
   origin: string;
   asset: SpendAsset;
   network: string;
-  now?: number;
-}): Promise<bigint> {
-  const now = opts.now ?? Date.now();
-  const cutoff = now - WINDOW_MS;
-  const records = await readLog();
+  now: number;
+}): bigint {
+  const cutoff = opts.now - WINDOW_MS;
   let total = 0n;
   for (const r of records) {
     if (r.origin !== opts.origin) continue;
@@ -167,6 +198,41 @@ export async function getRecentSpend(opts: {
     }
   }
   return total;
+}
+
+export async function getRecentSpend(opts: {
+  origin: string;
+  asset: SpendAsset;
+  network: string;
+  now?: number;
+}): Promise<bigint> {
+  const records = await readLog();
+  return sumRecent(records, {
+    origin: opts.origin,
+    asset: opts.asset,
+    network: opts.network,
+    now: opts.now ?? Date.now(),
+  });
+}
+
+/**
+ * Fail-closed variant for the service worker spend-cap gate. Throws
+ * `SpendLedgerUnavailableError` when storage is missing or unreadable
+ * so callers refuse the request instead of treating the miss as 0.
+ */
+export async function getRecentSpendStrict(opts: {
+  origin: string;
+  asset: SpendAsset;
+  network: string;
+  now?: number;
+}): Promise<bigint> {
+  const records = await readLogStrict();
+  return sumRecent(records, {
+    origin: opts.origin,
+    asset: opts.asset,
+    network: opts.network,
+    now: opts.now ?? Date.now(),
+  });
 }
 
 /**

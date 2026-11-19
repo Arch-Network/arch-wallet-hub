@@ -28,6 +28,7 @@ import { BRIDGE_TIMEOUT_MS } from "../../wallets/bridge/protocol";
 import { connectionAddresses } from "../../wallets/relink";
 import { CreateMethodStep, IntentStep } from "./IntentStep";
 import ErrorBanner from "../../components/ErrorBanner";
+import { log } from "../../utils/log";
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -562,14 +563,14 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     let phase: string = "init";
     try {
       phase = "buildClient";
-      console.log("[ArchWallet] external onboarding:", phase);
+      log.debug("external onboarding", { phase });
       const client = await buildClient();
       const state = await walletStore.getState().catch(() => null);
       const externalUserId = await getExternalUserId();
       const adapter = getExternalWalletAdapter(externalProvider);
 
       phase = "adapter.connect";
-      console.log("[ArchWallet] external onboarding:", phase);
+      log.debug("external onboarding", { phase });
       // The bridge reports its own typed timeout first; this only catches a dead background.
       // A first setup has no chosen network yet, so it takes the wallet's.
       const connected = await withTimeout(
@@ -582,7 +583,8 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       setStatusMessage("Preparing ownership challenge...");
       phase = "createWalletLinkChallenge";
-      console.log("[ArchWallet] external onboarding:", phase, {
+      log.debug("external onboarding", {
+        phase,
         externalUserId,
         walletProvider: connected.provider,
         address: connected.address,
@@ -605,7 +607,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       setStatusMessage(`Confirm ownership in ${adapter.label}...`);
       phase = "adapter.signMessage";
-      console.log("[ArchWallet] external onboarding:", phase);
+      log.debug("external onboarding", { phase });
       const signed = await withTimeout(
         adapter.signMessage({
           address: connected.address,
@@ -618,7 +620,8 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
       setStatusMessage("Verifying linked wallet...");
       phase = "verifyWalletLinkChallenge";
-      console.log("[ArchWallet] external onboarding:", phase, {
+      log.debug("external onboarding", {
+        phase,
         challengeId: challenge.challengeId,
         schemeHint: signed.schemeHint,
       });
@@ -656,7 +659,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       };
 
       phase = addMode ? "walletStore.addAccount" : "walletStore.completeOnboarding";
-      console.log("[ArchWallet] external onboarding:", phase);
+      log.debug("external onboarding", { phase });
       if (addMode) {
         await walletStore.addAccount(account);
       } else {
@@ -664,7 +667,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       }
       finishOnboarding();
     } catch (e: any) {
-      console.error("[ArchWallet] external onboarding failed at phase:", phase, e);
+      log.error(`external onboarding failed at phase: ${phase}`, e);
       if (e instanceof BridgeError && e.code === "PROVIDER_MISSING") {
         const missing = getExternalWalletAdapter(externalProvider);
         setInstallLink({ label: missing.label, url: missing.installUrl });

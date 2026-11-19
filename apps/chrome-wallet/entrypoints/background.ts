@@ -14,6 +14,7 @@ import { relinkedAddresses } from "../src/wallets/relink";
 import { DEFAULT_HUB_BASE_URL, DEFAULT_SITE_PERMISSIONS } from "../src/state/types";
 import { identityAddress } from "../src/state/account-addresses";
 import { parseU64DecimalString } from "../src/utils/u64-amount";
+import { assertBackgroundSpendCap } from "../src/utils/spend-cap-guard";
 import {
   applyDiagnosticsRuntime,
   GET_RECENT_LOGS_MESSAGE,
@@ -698,6 +699,20 @@ export default defineBackground(() => {
             sendResponse({ ok: false, error: "No matching pending request" });
             return;
           }
+          // Issue #46: re-check the per-origin daily spend cap in the
+          // SW (fail closed) so a future popup-skip path can't deliver
+          // a signed/broadcast result the UI gate would have refused.
+          const spendCap = await assertBackgroundSpendCap(pending);
+          if (!spendCap.allowed) {
+            await pendingRequestsStore.remove(message.requestId);
+            deliverResponseToTab(pending.sourceTabId, message.requestId, {
+              success: false,
+              error: spendCap.error,
+            });
+            closeOwnedWindow(pending.windowId, APPROVAL_DISMISS_MS);
+            sendResponse({ ok: false, error: spendCap.error });
+            return;
+          }
           await pendingRequestsStore.remove(message.requestId);
           deliverResponseToTab(pending.sourceTabId, message.requestId, {
             success: true,
@@ -878,6 +893,21 @@ export default defineBackground(() => {
             success: false,
             error: "SEND_TOKEN_TRANSFER requires payload.amount = decimal digit string between 0 and 2^64-1",
           };
+        }
+
+        // Issue #46: enforce the per-origin daily spend cap in the SW
+        // before opening Approve, fail closed when a configured cap
+        // can't be evaluated. Mirrors the popup gate so intake can't
+        // start a transfer/sign the user already exhausted quota for.
+        if (msg.type === "SEND_TRANSFER" || msg.type === "SIGN_PSBT") {
+          const spendCap = await assertBackgroundSpendCap({
+            type: msg.type,
+            origin,
+            payload: msg.payload,
+          });
+          if (!spendCap.allowed) {
+            return { id: msg.id, success: false, error: spendCap.error };
+          }
         }
 
         // Per-origin permissions.

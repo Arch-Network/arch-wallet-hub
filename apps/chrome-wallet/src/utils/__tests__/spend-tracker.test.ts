@@ -3,7 +3,9 @@ import {
   __resetSpendLogForTests,
   exceedsCap,
   getRecentSpend,
+  getRecentSpendStrict,
   recordSpend,
+  SpendLedgerUnavailableError,
 } from "../spend-tracker";
 
 interface FakeStorage {
@@ -143,6 +145,30 @@ describe("spend-tracker", () => {
         network: "mainnet",
       });
       expect(total).toBe(0n);
+    });
+  });
+
+  describe("getRecentSpendStrict", () => {
+    it("returns the same total as getRecentSpend when the ledger is healthy", async () => {
+      await recordSpend({ origin: ORIGIN_A, asset: "arch", network: "mainnet", amount: 42n });
+      await expect(
+        getRecentSpendStrict({ origin: ORIGIN_A, asset: "arch", network: "mainnet" }),
+      ).resolves.toBe(42n);
+    });
+
+    it("throws when chrome.storage.local is unavailable", async () => {
+      delete (globalThis as any).chrome;
+      await expect(
+        getRecentSpendStrict({ origin: ORIGIN_A, asset: "arch", network: "mainnet" }),
+      ).rejects.toBeInstanceOf(SpendLedgerUnavailableError);
+    });
+
+    it("throws when the ledger blob is corrupted", async () => {
+      const chromeApi = (globalThis as any).chrome;
+      chromeApi.storage.local.data.arch_wallet_spend_log = { not: "an-array" };
+      await expect(
+        getRecentSpendStrict({ origin: ORIGIN_A, asset: "arch", network: "mainnet" }),
+      ).rejects.toBeInstanceOf(SpendLedgerUnavailableError);
     });
   });
 
