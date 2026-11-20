@@ -201,9 +201,16 @@ export interface SitePermissions {
   sendTransfer: boolean;
   /** Auto-approve PSBT signing. */
   signPsbt: boolean;
-  /** Optional daily spending cap (lamports / sats), enforced by background. */
+  /**
+   * Optional daily ARCH spending cap in lamports. Enforced in the
+   * Approve UI and again in the background service worker (fail closed).
+   */
   spendingLimitSatsPerDay?: number;
-  /** Optional daily Bitcoin spending cap in satoshis, enforced for safe PSBT outflows. */
+  /**
+   * Optional daily Bitcoin spending cap in satoshis for deterministic
+   * PSBT outflows. Enforced in the Approve UI and again in the
+   * background service worker (fail closed).
+   */
   btcSpendingLimitSatsPerDay?: number;
 }
 
