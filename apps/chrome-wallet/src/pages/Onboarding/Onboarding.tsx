@@ -1,9 +1,13 @@
 import { useState, useCallback, useEffect, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { WalletHubClient } from "@arch-network/wallet-hub-sdk";
+import { encryptOtpCodeToBundle } from "@turnkey/crypto";
 import { walletStore } from "../../state/wallet-store";
 import { keystore, scorePasswordStrength } from "../../crypto/keystore";
 import { getExternalUserId, invalidateClientCache, deriveArchAccountAddress } from "../../utils/sdk";
+import { emailWalletResourceId } from "../../utils/email-wallet";
+import { writeHubToken } from "../../utils/hub-session-store";
+import { generateRecoveryKeypair } from "../../crypto/turnkey-bundle";
 import {
   isInSidePanel,
   isInStandalonePopupWindow,
@@ -41,7 +45,7 @@ interface OnboardingProps {
   secureLegacyState?: unknown;
 }
 
-type Step = "welcome" | "secure" | "creating";
+type Step = "welcome" | "secure" | "creating" | "email-code";
 
 /**
  * The welcome flow is split into a wizard. Each value here maps
@@ -197,6 +201,12 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [statusMessage, setStatusMessage] = useState("Setting up your wallet...");
+  const [emailCode, setEmailCode] = useState("");
+  const [emailChallenge, setEmailChallenge] = useState<{
+    challengeId: string;
+    otpEncryptionTargetBundle: string;
+    emailMasked: string;
+  } | null>(null);
 
   // Wizard substate. `wizardStep` is the current screen index;
   // `wizardMethod` is the auth-method selected on step 0. Both
@@ -437,12 +447,12 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
   }, [finishOnboarding, buildClient, addMode, walletName, email, password, validatePassword]);
 
   /**
-   * Create an email-only sub-org wallet. The Hub returns a sub-org
-   * with no authenticators or API keys; the user bootstraps a
-   * session credential later via OTP_AUTH. The recovery email is
-   * non-optional in this path.
+   * Email wallets are created by proving the inbox. `POST /turnkey/email-wallets`
+   * is closed; the Hub creates the wallet inside `POST /recovery/email/signin/verify`
+   * after the code checks out. Signing still opens later through the
+   * recovery OTP, which finds this wallet by the recovery email verify stored.
    */
-  const createEmailWallet = useCallback(async () => {
+  const sendEmailCode = useCallback(async () => {
     const err = validatePassword();
     if (err) {
       setError(err);
@@ -455,41 +465,99 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     }
     setStep("creating");
     setError(null);
-    setStatusMessage("Creating email wallet on the server...");
+    setStatusMessage("Sending a code to your email...");
     try {
       const client = await buildClient();
-      const externalUserId = await getExternalUserId();
-      const idempotencyKey =
-        self.crypto?.randomUUID?.() ??
-        `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const started = await withTimeout(
+        client.startEmailSignIn({ email: trimmedEmail }),
+        45_000,
+        "Sending a code to your email",
+      );
+      setEmailChallenge({
+        challengeId: started.challengeId,
+        otpEncryptionTargetBundle: started.otpEncryptionTargetBundle,
+        emailMasked: started.emailMasked,
+      });
+      setEmailCode("");
+      setStep("email-code");
+    } catch (e: any) {
+      setError(e?.message || "Failed to send a code");
+      setStep("welcome");
+    }
+  }, [buildClient, email, validatePassword]);
 
-      const result = await withTimeout(
-        client.createTurnkeyEmailWallet({
-          idempotencyKey,
-          body: {
-            externalUserId,
-            userEmail: trimmedEmail,
-          },
+  const verifyEmailCode = useCallback(async () => {
+    if (!emailChallenge) return;
+    const code = emailCode.trim();
+    if (!/^\d{6}$/.test(code)) {
+      setError("Enter the 6-digit code from the email");
+      return;
+    }
+    const trimmedEmail = email.trim();
+    setStep("creating");
+    setError(null);
+    setStatusMessage("Checking the code...");
+    try {
+      const client = await buildClient();
+      const keypair = await generateRecoveryKeypair();
+      const encryptedOtpBundle = await encryptOtpCodeToBundle(
+        code,
+        emailChallenge.otpEncryptionTargetBundle,
+        keypair.publicKeyHex,
+      );
+      const verified = await withTimeout(
+        client.verifyEmailSignIn({
+          challengeId: emailChallenge.challengeId,
+          encryptedOtpBundle,
         }),
         45_000,
-        "Creating email wallet on the server",
+        "Checking the code",
+      );
+      if (!verified.externalUserId) {
+        throw new Error("The code was accepted, but no account came back");
+      }
+      const installId = await getExternalUserId();
+      if (addMode && verified.externalUserId !== installId) {
+        setEmailChallenge(null);
+        setError(
+          "That email belongs to a different Arch account. Recover it from a browser that doesn't already have a wallet.",
+        );
+        setStep("welcome");
+        return;
+      }
+      client.setSessionToken(verified.sessionToken);
+      const listed = verified.resourceId
+        ? []
+        : (await client.listTurnkeyWallets(verified.externalUserId)).wallets;
+      const resourceId = emailWalletResourceId(verified, listed);
+      if (!resourceId) {
+        throw new Error("The code was accepted, but the wallet record did not come back. Request a new code.");
+      }
+      if (!addMode) await walletStore.setInstallId(verified.externalUserId);
+      const expiresAtMs = Date.parse(verified.sessionExpiresAt);
+      await writeHubToken(
+        verified.externalUserId,
+        resourceId,
+        verified.sessionToken,
+        Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() + 23 * 60 * 60 * 1000,
       );
 
       const account: WalletAccount = {
-        id: result.resourceId,
+        id: resourceId,
         label: walletName.trim() || "Email Wallet",
-        btcAddress: result.defaultAddress ?? "",
-        publicKeyHex: result.defaultPublicKeyHex ?? "",
-        archAddress: result.defaultPublicKeyHex
-          ? deriveArchAccountAddress(result.defaultPublicKeyHex)
+        btcAddress: verified.defaultAddress ?? "",
+        publicKeyHex: verified.defaultPublicKeyHex ?? "",
+        archAddress: verified.defaultPublicKeyHex
+          ? deriveArchAccountAddress(verified.defaultPublicKeyHex)
           : undefined,
         kind: "turnkey",
-        turnkeyResourceId: result.resourceId,
-        organizationId: result.organizationId,
+        turnkeyResourceId: resourceId,
+        organizationId: verified.organizationId,
         authMethod: "email",
         recoveryEmail: trimmedEmail,
-        // Email wallets recover by re-running OTP verification to
-        // bootstrap a fresh local signing session.
+        // The first signature still opens an IndexedDB session through
+        // the recovery OTP. This code only proved the inbox and created
+        // the wallet.
         createdAt: Date.now(),
       };
 
@@ -501,9 +569,18 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
       finishOnboarding();
     } catch (e: any) {
       setError(e?.message || "Failed to create email wallet");
-      setStep("welcome");
+      setStep(emailChallenge ? "email-code" : "welcome");
     }
-  }, [finishOnboarding, buildClient, addMode, walletName, email, password, validatePassword]);
+  }, [
+    addMode,
+    buildClient,
+    email,
+    emailChallenge,
+    emailCode,
+    finishOnboarding,
+    password,
+    walletName,
+  ]);
 
   const connectExternalWallet = useCallback(async () => {
     const err = validatePassword();
@@ -727,9 +804,9 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
 
   const submitWizard = useCallback(() => {
     if (wizardMethod === "passkey") void createNonCustodialWallet();
-    else if (wizardMethod === "email") void createEmailWallet();
+    else if (wizardMethod === "email") void sendEmailCode();
     else if (wizardMethod === "external") void connectExternalWallet();
-  }, [wizardMethod, createNonCustodialWallet, createEmailWallet, connectExternalWallet]);
+  }, [wizardMethod, createNonCustodialWallet, sendEmailCode, connectExternalWallet]);
 
   // Per-step validity drives the Next button's disabled state.
   const detailsValid =
@@ -761,6 +838,77 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
     },
     [nextDisabled, handlePrimary],
   );
+
+  if (step === "email-code") {
+    return (
+      <div className="onboarding">
+        <div className="onboarding-logo">
+          <ArchLogoAnimated />
+        </div>
+        <h1 className="onboarding-title">Check your email</h1>
+        <p className="onboarding-sub">
+          {emailChallenge?.emailMasked
+            ? `Enter the 6-digit code sent to ${emailChallenge.emailMasked}.`
+            : "Enter the 6-digit code from the email."}{" "}
+          This creates the wallet. You'll get another code the first time you sign.
+        </p>
+        {error && <ErrorBanner message={error} />}
+        <form
+          className="onboarding-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void verifyEmailCode();
+          }}
+          noValidate
+        >
+          <div className="onboarding-card">
+            <div className="onboarding-field">
+              <label className="onboarding-field-label" htmlFor="onboarding-email-code">
+                Code
+              </label>
+              <input
+                id="onboarding-email-code"
+                className="input"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={emailCode}
+                onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                placeholder="123456"
+                autoFocus
+              />
+            </div>
+          </div>
+          <div className="onboarding-actions">
+            <button
+              type="submit"
+              className="btn btn-primary btn-full"
+              disabled={emailCode.length !== 6}
+            >
+              Create wallet
+            </button>
+            <button
+              type="button"
+              className="btn btn-link"
+              onClick={() => void sendEmailCode()}
+            >
+              Resend code
+            </button>
+            <button
+              type="button"
+              className="btn btn-link"
+              onClick={() => {
+                setError(null);
+                setStep("welcome");
+              }}
+            >
+              Back
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
 
   if (step === "creating") {
     return (
@@ -962,7 +1110,7 @@ export default function Onboarding({ onComplete, addMode, secureLegacyState }: O
                 ? wizardMethod === "passkey"
                   ? "Create with passkey"
                   : wizardMethod === "email"
-                    ? "Create with email"
+                    ? "Email me a code"
                     : "Connect wallet"
                 : "Continue"}
             </button>

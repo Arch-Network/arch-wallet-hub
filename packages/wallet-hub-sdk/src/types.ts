@@ -162,11 +162,56 @@ export type CreateTurnkeyPasskeyWalletRequest = CreateTurnkeyWalletRequest & {
 };
 
 /**
- * Email-only sub-org wallet request. `userEmail` is REQUIRED here --
- * email is the only auth factor at creation time, so we can't omit
- * it the way the passkey request does. The Hub creates a sub-org
- * with `authenticators: []` and `apiKeys: []`; the client
- * bootstraps a permanent session credential later via OTP_AUTH.
+ * `POST /recovery/email/signin`. Sends a code. The answer is the same
+ * whether or not a wallet already exists for the email.
+ */
+export type StartEmailSignInRequest = {
+  email: string;
+};
+
+export type StartEmailSignInResponse = {
+  challengeId: string;
+  /** Turnkey target the client encrypts the code and its public key to. */
+  otpEncryptionTargetBundle: string;
+  emailMasked: string;
+  expiresAt: string;
+};
+
+/**
+ * `POST /recovery/email/signin/verify`. Creates the email's wallet when
+ * the code is the first proof of that inbox.
+ */
+export type VerifyEmailSignInRequest = {
+  challengeId: string;
+  encryptedOtpBundle: string;
+};
+
+export type VerifyEmailSignInResponse = {
+  verificationToken: string;
+  organizationId: string;
+  rootUserId: string | null;
+  walletId: string | null;
+  defaultAddress: string | null;
+  defaultPublicKeyHex: string | null;
+  externalUserId: string | null;
+  authMethod: "email";
+  /**
+   * Hub `turnkey_resources.id`. Absent on a Hub that predates the field;
+   * callers then look the wallet up with the returned session token.
+   */
+  resourceId?: string;
+  sessionToken: string;
+  sessionExpiresAt: string;
+  idToken: string;
+  idTokenExpiresAt: string;
+  email: string | null;
+  emailVerified: boolean;
+};
+
+/**
+ * Email-only sub-org wallet request. Closed on the Hub unless
+ * `EMAIL_WALLET_CREATE_ENABLED` is set. Email onboarding uses
+ * {@link StartEmailSignInRequest} instead, which proves the inbox first.
  */
 export type CreateTurnkeyEmailWalletRequest = {
   externalUserId: string;

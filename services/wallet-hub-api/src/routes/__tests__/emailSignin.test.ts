@@ -323,6 +323,7 @@ describe("email sign-in", () => {
       walletId: "new-wallet",
       defaultAddress: "tb1p-new-address",
       authMethod: "email",
+      resourceId: "new-resource",
     });
     expect(res.json().externalUserId).toMatch(/^usr_[0-9a-f]{32}$/);
     expect(mocks.createPerson).toHaveBeenCalledWith(expect.anything(), { appId: "app", email: EMAIL, emailVerified: true });
