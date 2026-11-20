@@ -12,12 +12,24 @@
  *     a pending request. If the SW restarted and forgot the request,
  *     the heartbeat surfaces the failure within one cycle instead of
  *     after the 120s blanket timeout.
+ *
+ * An update, a reload or a disable of the extension leaves this script
+ * running in every open tab with no extension behind it: `chrome.runtime`
+ * loses its `id`, then its methods. The service worker injects a new
+ * bridge into open tabs when it installs (background.ts); that bridge
+ * announces itself and the orphan stops listening, since the page takes
+ * the first answer to a request and the orphan's would be a failure. An
+ * orphan with no successor names what happened instead of relaying a
+ * TypeError.
  */
 
+import { BRIDGE_ORPHANED_ERROR, BRIDGE_REPLACED_ERROR } from "../src/provider/bridge-errors";
 import { BRIDGE_CHANNEL, BRIDGE_TIMEOUT_MS, type BridgeResponse } from "../src/wallets/bridge/protocol";
 
 const CHANNEL = "arch-wallet-provider";
 const HEARTBEAT_MS = 15_000;
+/** Crosses isolated worlds: a bridge left by the extension's previous context hears its successor's. */
+const BRIDGE_REPLACED_EVENT = "arch-wallet#bridge-replaced";
 
 export default defineContentScript({
   matches: ["<all_urls>"],
@@ -28,6 +40,8 @@ export default defineContentScript({
     (globalThis as any).__ARCH_WALLET_CONTENT_BRIDGE_INSTALLED = true;
 
     const pageOrigin = window.location.origin;
+
+    window.dispatchEvent(new CustomEvent(BRIDGE_REPLACED_EVENT));
 
     const injectedReady = new Promise<void>((resolve, reject) => {
       const script = document.createElement("script");
@@ -51,7 +65,27 @@ export default defineContentScript({
       window.postMessage({ channel: CHANNEL, direction: "to-page", ...payload }, pageOrigin);
     }
 
+    function contextAlive(): boolean {
+      try {
+        return Boolean(chrome.runtime?.id);
+      } catch {
+        return false;
+      }
+    }
+
+    // The approval a pending request was waiting on went with the old service worker.
+    function failPending(error: string) {
+      for (const msgId of pendingByRequestId.values()) {
+        postToPage({ id: msgId, response: { success: false, error } });
+      }
+      pendingByRequestId.clear();
+    }
+
     function sendToBackground(payload: any, msgId: string) {
+      if (!contextAlive()) {
+        postToPage({ id: msgId, response: { success: false, error: BRIDGE_ORPHANED_ERROR } });
+        return;
+      }
       try {
         chrome.runtime.sendMessage(payload, (response) => {
           if (chrome.runtime.lastError) {
@@ -69,7 +103,19 @@ export default defineContentScript({
       }
     }
 
-    window.addEventListener("message", (event) => {
+    window.addEventListener("message", onPageMessage);
+    window.addEventListener(BRIDGE_REPLACED_EVENT, onBridgeReplaced);
+
+    // A page can dispatch this event too, so a bridge whose extension is still there ignores it.
+    function onBridgeReplaced() {
+      if (contextAlive()) return;
+      window.removeEventListener("message", onPageMessage);
+      window.removeEventListener(BRIDGE_REPLACED_EVENT, onBridgeReplaced);
+      clearInterval(heartbeat);
+      failPending(BRIDGE_REPLACED_ERROR);
+    }
+
+    function onPageMessage(event: MessageEvent) {
       if (event.source !== window) return;
       if (event.origin !== pageOrigin) return;
       if (event.data?.channel === BRIDGE_CHANNEL) {
@@ -88,7 +134,7 @@ export default defineContentScript({
       if (!msgId) return;
 
       sendToBackground(payload, msgId);
-    });
+    }
 
     chrome.runtime.onMessage.addListener((message) => {
       if (message?.type === "EXTERNAL_WALLET_PAGE_REQUEST") {
@@ -149,7 +195,11 @@ export default defineContentScript({
 
     // Heartbeat: ping the SW while we have outstanding requests so a
     // restart-induced drop is surfaced quickly.
-    setInterval(() => {
+    const heartbeat = setInterval(() => {
+      if (!contextAlive()) {
+        failPending(BRIDGE_ORPHANED_ERROR);
+        return;
+      }
       if (pendingByRequestId.size === 0) return;
       try {
         chrome.runtime.sendMessage({ type: "PING", id: `heartbeat-${Date.now()}` });

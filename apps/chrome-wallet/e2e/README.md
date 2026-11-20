@@ -24,7 +24,10 @@ Covered flows:
 - recovery checkpoint route restoration;
 - Bitcoin send review / PSBT preparation from fixture UTXOs and fee tiers;
 - a real content-script/injected-provider dapp connect approval and a signing
-  request rejection.
+  request rejection;
+- a page left open while the extension reloads: its waiting request is failed
+  by name and its next one is answered without a page reload; and a page whose
+  extension was turned off, which is told to reload.
 
 A passkey sign-in that succeeds, email OTP, and transaction broadcast are
 deliberately outside this suite: they require a live credential or

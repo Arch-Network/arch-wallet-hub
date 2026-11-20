@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { BRIDGE_ORPHANED_ERROR, BRIDGE_REPLACED_ERROR } from "../src/provider/bridge-errors";
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.join(HERE, "..");
 const EXTENSION_DIR = path.join(APP_ROOT, ".output", "chrome-mv3");
@@ -32,6 +34,55 @@ async function extensionId(context: BrowserContext): Promise<string> {
   let [worker] = context.serviceWorkers();
   if (!worker) worker = await context.waitForEvent("serviceworker");
   return new URL(worker.url()).host;
+}
+
+/**
+ * The extension's own management page, which may reload or disable it. Developer mode is switched on
+ * first: without it Chrome disables an unpacked extension the moment it reloads.
+ */
+async function openExtensionsPage(context: BrowserContext): Promise<Page> {
+  const page = await context.newPage();
+  await page.goto("chrome://extensions");
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        (chrome as any).developerPrivate.updateProfileConfiguration({ inDeveloperMode: true }, resolve),
+      ),
+  );
+  return page;
+}
+
+/** What an update does to an open tab: the service worker restarts and the tab's content script is orphaned. */
+async function reloadExtension(context: BrowserContext): Promise<void> {
+  const id = await extensionId(context);
+  const extensions = await openExtensionsPage(context);
+  const restarted = context.waitForEvent("serviceworker");
+  await extensions.evaluate(
+    (id) =>
+      new Promise<void>((resolve) => (chrome as any).developerPrivate.reload(id, { failQuietly: true }, resolve)),
+    id,
+  );
+  await restarted;
+}
+
+async function disableExtension(context: BrowserContext): Promise<void> {
+  const id = await extensionId(context);
+  const extensions = await openExtensionsPage(context);
+  await extensions.evaluate((id) => (chrome as any).management.setEnabled(id, false), id);
+}
+
+async function openDapp(context: BrowserContext): Promise<Page> {
+  const dapp = await context.newPage();
+  await dapp.route("https://e2e-dapp.test/", (route) =>
+    route.fulfill({ contentType: "text/html", body: "<!doctype html><title>E2E dapp</title>" }),
+  );
+  await dapp.goto("https://e2e-dapp.test/");
+  await expect.poll(() => dapp.evaluate(() => Boolean((window as any).arch))).toBe(true);
+  return dapp;
+}
+
+function accountOrError(dapp: Page): Promise<unknown> {
+  return dapp.evaluate(() => (window as any).arch.getAccount().catch((error: Error) => error.message));
 }
 
 async function seedWallet(page: Page, options: SeedOptions = {}): Promise<void> {
@@ -453,12 +504,7 @@ test.describe("Chrome wallet functional flows", () => {
     await popup.goto(baseUrl);
     await seedWallet(popup);
 
-    const dapp = await context.newPage();
-    await dapp.route("https://e2e-dapp.test/", (route) =>
-      route.fulfill({ contentType: "text/html", body: "<!doctype html><title>E2E dapp</title>" }),
-    );
-    await dapp.goto("https://e2e-dapp.test/");
-    await expect.poll(() => dapp.evaluate(() => Boolean((window as any).arch))).toBe(true);
+    const dapp = await openDapp(context);
 
     const approvalOpened = context.waitForEvent("page");
     await dapp.evaluate(() => {
@@ -486,5 +532,35 @@ test.describe("Chrome wallet functional flows", () => {
     await expect(rejectApproval.getByText(/sign message/i)).toBeVisible();
     await rejectApproval.getByRole("button", { name: "Reject" }).click();
     await expect.poll(() => dapp.evaluate(() => (window as any).__sign)).toMatch(/user rejected/i);
+  });
+
+  test("a page open across an extension update keeps its wallet bridge", async () => {
+    await popup.goto(baseUrl);
+    await seedWallet(popup);
+    const dapp = await openDapp(context);
+
+    const approvalOpened = context.waitForEvent("page");
+    await dapp.evaluate(() => {
+      (window as any).__connect = (window as any).arch.connect().catch((error: Error) => error.message);
+    });
+    await (await approvalOpened).waitForLoadState("domcontentloaded");
+
+    await reloadExtension(context);
+
+    // The approval window went with the old service worker.
+    await expect.poll(() => dapp.evaluate(() => (window as any).__connect)).toBe(BRIDGE_REPLACED_ERROR);
+    // The restarted service worker holds no session key, so "Wallet locked"
+    // is its own answer: the request crossed a bridge without a page reload.
+    await expect.poll(() => accountOrError(dapp)).toBe("Wallet locked");
+  });
+
+  test("a page whose extension was turned off is told to reload", async () => {
+    await popup.goto(baseUrl);
+    await seedWallet(popup);
+    const dapp = await openDapp(context);
+
+    await disableExtension(context);
+
+    await expect.poll(() => accountOrError(dapp)).toBe(BRIDGE_ORPHANED_ERROR);
   });
 });
