@@ -43,6 +43,13 @@ interface ActivityResponse {
   activity: TurnkeyActivity;
 }
 
+/**
+ * Waits for the page's MessageChannel handshake. The export page answers
+ * with its embedded public key. The import page answers with an empty
+ * string by design: it holds no key, because the import encryption target
+ * arrives later inside the Turnkey-signed import bundle. So an empty
+ * answer still means the page loaded; only silence means it didn't.
+ */
 async function initFrame(frame: { init(): Promise<string> }): Promise<string> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -52,12 +59,19 @@ async function initFrame(frame: { init(): Promise<string> }): Promise<string> {
     );
   });
   try {
-    const publicKey = await Promise.race([frame.init(), timeout]);
-    if (!publicKey) throw new Error("Turnkey's secure page didn't load. Try again.");
-    return publicKey;
+    return await Promise.race([frame.init(), timeout]);
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/** Export encrypts to the page's embedded key, so here it must exist. */
+async function initExportFrame(frame: ExportFrame): Promise<string> {
+  const publicKey = await initFrame(frame);
+  if (!publicKey) {
+    throw new Error("Turnkey's secure page didn't send its key. Try again.");
+  }
+  return publicKey;
 }
 
 async function settle(
@@ -114,7 +128,7 @@ export async function revealSeedPhrase(
   frame: ExportFrame,
   args: { organizationId: string; address: string },
 ): Promise<void> {
-  const targetPublicKey = await initFrame(frame);
+  const targetPublicKey = await initExportFrame(frame);
   const walletId = await findWalletId(client, args.organizationId, args.address);
   const response = await client.exportWallet({
     type: "ACTIVITY_TYPE_EXPORT_WALLET",
@@ -136,7 +150,7 @@ export async function revealAccountKey(
   frame: ExportFrame,
   args: { organizationId: string; address: string; network: NetworkId },
 ): Promise<void> {
-  const targetPublicKey = await initFrame(frame);
+  const targetPublicKey = await initExportFrame(frame);
   const response = await client.exportWalletAccount({
     type: "ACTIVITY_TYPE_EXPORT_WALLET_ACCOUNT",
     timestampMs: Date.now().toString(),
