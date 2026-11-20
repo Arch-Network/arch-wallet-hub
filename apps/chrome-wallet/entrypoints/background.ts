@@ -314,6 +314,25 @@ function failConnectorInFlight(response: BridgeResponse): void {
   connectorInFlight.clear();
 }
 
+const CONTENT_SCRIPT_FILE = "content-scripts/content.js";
+
+/**
+ * Chrome injects a manifest content script at navigation only, so a tab
+ * open before an install has no bridge, and one open across an update
+ * keeps a bridge whose extension context is gone. Both get one here.
+ */
+async function injectBridgeIntoOpenTabs(): Promise<void> {
+  const tabs = await chrome.tabs.query({ discarded: false });
+  await Promise.allSettled(
+    tabs.map((tab) =>
+      tab.id === undefined
+        ? undefined
+        : // Rejects for pages no extension may script (chrome://, the Web Store).
+          chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [CONTENT_SCRIPT_FILE] }),
+    ),
+  );
+}
+
 async function sendToConnector(target: ConnectorTab, payload: unknown): Promise<BridgeResponse> {
   try {
     return await chrome.tabs.sendMessage(target.tabId, payload);
@@ -325,7 +344,7 @@ async function sendToConnector(target: ConnectorTab, payload: unknown): Promise<
     // chrome.scripting bound our matches). Force-inject and retry.
     await chrome.scripting.executeScript({
       target: { tabId: target.tabId },
-      files: ["content-scripts/content.js"],
+      files: [CONTENT_SCRIPT_FILE],
     });
     return await chrome.tabs.sendMessage(target.tabId, payload);
   }
@@ -738,8 +757,11 @@ export default defineBackground(() => {
     },
   );
 
-  chrome.runtime.onInstalled.addListener(() => {
+  chrome.runtime.onInstalled.addListener((details) => {
     syncOpenAsFromStorage();
+    if (details.reason === "install" || details.reason === "update") {
+      injectBridgeIntoOpenTabs().catch(() => undefined);
+    }
   });
 
   async function openApprovalPopup(req: PendingRequest): Promise<number | undefined> {
