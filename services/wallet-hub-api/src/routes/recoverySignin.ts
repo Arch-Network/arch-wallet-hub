@@ -104,6 +104,8 @@ const VerifyResponse = Type.Object({
   defaultPublicKeyHex: Type.Union([Type.String(), Type.Null()]),
   externalUserId: Type.Union([Type.String(), Type.Null()]),
   authMethod: Type.Literal("email"),
+  /** Hub `turnkey_resources.id`. The extension stores this as the account id. */
+  resourceId: Type.String(),
   /** The person the code attested: a Hub session (whs_v1_, 24 h) and an Arch ID token (15 min, amr ["email"]). */
   sessionToken: Type.String(),
   sessionExpiresAt: Type.String(),
@@ -623,6 +625,7 @@ export function registerEmailSigninRoutes(server: FastifyInstance, options: Sign
         defaultAddress: wallet.default_address,
         defaultPublicKeyHex: wallet.default_public_key_hex,
         externalUserId: wallet.external_user_id,
+        resourceId: wallet.id,
         // Always email: the client finishes with /signin/session even when the
         // wallet was first opened with Google. authMethod here is the bootstrap,
         // not the sub-org's original method.

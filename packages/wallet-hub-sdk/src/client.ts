@@ -7,6 +7,10 @@ import type {
   CreateTurnkeyWalletResponse,
   CreateTurnkeyPasskeyWalletRequest,
   CreateTurnkeyEmailWalletRequest,
+  StartEmailSignInRequest,
+  StartEmailSignInResponse,
+  VerifyEmailSignInRequest,
+  VerifyEmailSignInResponse,
   RegisterExistingPasskeyWalletRequest,
   RegisterExistingPasskeyWalletResponse,
   GetTurnkeyWalletResponse,
@@ -461,6 +465,30 @@ export class WalletHubClient {
       method: "POST",
       headers: { "idempotency-key": params.idempotencyKey },
       body: JSON.stringify(params.body),
+    });
+  }
+
+  /**
+   * Email sign-in, step 1. The Hub emails a code and does not look up
+   * or create a wallet. The extension creates an email wallet here
+   * because `POST /turnkey/email-wallets` is closed.
+   */
+  async startEmailSignIn(body: StartEmailSignInRequest): Promise<StartEmailSignInResponse> {
+    return await this.requestJson(`/recovery/email/signin`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  /**
+   * Email sign-in, step 2. `encryptedOtpBundle` is the code and the
+   * client's public key encrypted to the target from {@link startEmailSignIn}.
+   * The Hub creates the email's wallet when the code is valid and none exists.
+   */
+  async verifyEmailSignIn(body: VerifyEmailSignInRequest): Promise<VerifyEmailSignInResponse> {
+    return await this.requestJson(`/recovery/email/signin/verify`, {
+      method: "POST",
+      body: JSON.stringify(body),
     });
   }
 
