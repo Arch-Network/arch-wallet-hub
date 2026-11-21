@@ -178,6 +178,38 @@ describe("Turnkey key operations", () => {
     expect(frame.injectWalletExportBundle).toHaveBeenCalledWith("later", "org");
   });
 
+  it("accepts the import page's empty ready answer (it holds no key)", async () => {
+    const client = {
+      getWhoami: async () => ({ userId: "user-1" }),
+      initImportWallet: async () =>
+        completed({ initImportWalletResult: { importBundle: "init-bundle" } }),
+    };
+    const frame = {
+      init: async () => "",
+      applySettings: vi.fn(async () => true),
+      injectImportBundle: vi.fn(async () => true),
+      extractWalletEncryptedBundle: async () => "encrypted-seed",
+    };
+
+    const userId = await prepareSeedImport(client as never, frame, { organizationId: "org" });
+    expect(userId).toBe("user-1");
+    expect(frame.injectImportBundle).toHaveBeenCalledWith("init-bundle", "org", "user-1");
+  });
+
+  it("refuses to export when the page sends no key to encrypt to", async () => {
+    const client = { exportWallet: vi.fn(), getWallets: vi.fn(), getActivity: vi.fn() };
+    const frame = {
+      init: async () => "",
+      injectWalletExportBundle: vi.fn(),
+      injectKeyExportBundle: vi.fn(),
+    };
+
+    await expect(
+      revealSeedPhrase(client as never, frame, { organizationId: "org", address: "tb1p-mine" }),
+    ).rejects.toThrow("didn't send its key");
+    expect(client.exportWallet).not.toHaveBeenCalled();
+  });
+
   it("prepares a seed import and finishes it at the BIP86 path", async () => {
     const importWallet = vi.fn(async () =>
       completed({ importWalletResult: { walletId: "imported", addresses: ["tb1p-new"] } }),
