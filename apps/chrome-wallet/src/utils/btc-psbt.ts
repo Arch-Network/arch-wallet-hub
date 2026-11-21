@@ -137,12 +137,25 @@ export async function buildUnsignedPsbt(params: BuildPsbtParams): Promise<BuildP
     }
   }
 
-  const estimatedFee = Math.ceil(estimateTxSize(1, 2) * feeRate);
-  const { selected, totalInput } = selectUtxos(utxos, amountSats, estimatedFee);
+  // Select until the inputs cover the amount plus the fee for that many
+  // inputs. A single 1-input estimate let a send that needs more inputs
+  // through with too little left for their fee, so change went negative,
+  // was dropped, and the tx paid less than the rate and the reported fee.
+  // Selection is a largest-first prefix: a higher fee only adds inputs.
+  const feeFor = (inputs: number, outputs: number) => Math.ceil(estimateTxSize(inputs, outputs) * feeRate);
+  let inputCount = 1;
+  let { selected, totalInput } = selectUtxos(utxos, amountSats, feeFor(inputCount, 1));
+  while (selected.length > inputCount) {
+    inputCount = selected.length;
+    ({ selected, totalInput } = selectUtxos(utxos, amountSats, feeFor(inputCount, 1)));
+  }
 
-  const actualSize = estimateTxSize(selected.length, 2);
-  const actualFee = Math.ceil(actualSize * feeRate);
-  const changeSats = totalInput - amountSats - actualFee;
+  // A change output must also pay for itself. Without one, everything
+  // above the amount is the fee, and that is what we report.
+  const changeDust = dustThresholdForAddress(fromAddress);
+  const changeSats = totalInput - amountSats - feeFor(selected.length, 2);
+  const hasChange = changeSats > changeDust;
+  const actualFee = hasChange ? feeFor(selected.length, 2) : totalInput - amountSats;
 
   const psbt = new bitcoin.Psbt({ network });
 
@@ -162,8 +175,7 @@ export async function buildUnsignedPsbt(params: BuildPsbtParams): Promise<BuildP
   // sender's address script type (we own that). Anything below
   // this is non-standard and would prevent the tx from relaying,
   // so we drop the change output and fold it into the fee.
-  const changeDust = dustThresholdForAddress(fromAddress);
-  if (changeSats > changeDust) {
+  if (hasChange) {
     psbt.addOutput({ address: fromAddress, value: BigInt(changeSats) });
   }
 
@@ -175,7 +187,7 @@ export async function buildUnsignedPsbt(params: BuildPsbtParams): Promise<BuildP
     amountSats,
     feeSats: actualFee,
     feeRate,
-    changeSats: changeSats > changeDust ? changeSats : 0,
+    changeSats: hasChange ? changeSats : 0,
     inputCount: selected.length
   };
 }

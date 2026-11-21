@@ -12,8 +12,8 @@
  * on it to render different copy.
  */
 import { describe, it, expect } from "vitest";
-import { selectUtxos } from "../btc-psbt";
-import type { BtcUtxo } from "../indexer";
+import { buildUnsignedPsbt, selectUtxos } from "../btc-psbt";
+import type { BtcUtxo, IndexerClient } from "../indexer";
 
 const FEE = 1000;
 
@@ -135,5 +135,78 @@ describe("selectUtxos — protection-aware behavior", () => {
     const utxos = [plain(16_000, "plain-tight"), inscribed(80_000, "ordinal")];
     const r = selectUtxos(utxos, 15_000, FEE);
     expect(r.selected.map((u) => u.txid)).toEqual(["plain-tight"]);
+  });
+});
+
+describe("buildUnsignedPsbt — fee covers every selected input", () => {
+  // BIP-350 testnet P2TR vector, used as both sender and recipient.
+  const ADDR = "tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c";
+
+  function indexerWith(utxos: BtcUtxo[]): IndexerClient {
+    return {
+      getBtcAddressUtxos: async () => utxos,
+      getBtcFeeEstimates: async () => ({})
+    } as unknown as IndexerClient;
+  }
+
+  /**
+   * Either the build is refused for lack of funds, or the PSBT it
+   * returns pays (inputs - outputs) at least `feeRate` x its own size
+   * and at least the `feeSats` it reports to the Send review screen.
+   */
+  async function expectFeeHonoured(utxos: BtcUtxo[], amountSats: number, feeRate: number) {
+    let built;
+    try {
+      built = await buildUnsignedPsbt({ indexer: indexerWith(utxos), fromAddress: ADDR, toAddress: ADDR, amountSats, feeRate });
+    } catch (err: any) {
+      expect(err.code).toBe("INSUFFICIENT_BALANCE");
+      return;
+    }
+    const inputs = built.psbt.data.inputs.reduce((s, i) => s + i.witnessUtxo!.value, 0n);
+    const outputs = built.psbt.txOutputs.reduce((s, o) => s + o.value, 0n);
+    const paid = Number(inputs - outputs);
+    const vsize = 10.5 + built.inputCount * 57.5 + built.psbt.txOutputs.length * 43;
+    expect(paid).toBeGreaterThanOrEqual(Math.ceil(vsize * feeRate));
+    expect(paid).toBeGreaterThanOrEqual(built.feeSats);
+  }
+
+  it("does not underpay when selection needs three inputs", async () => {
+    // At 10 sat/vB the old 1-input estimate was 1,540 sats, so 6,000 + 5,000
+    // + 1,000 passed selection for a 10,000-sat send. Three inputs with
+    // change cost 2,690, so change went to -690 and was dropped: the tx paid
+    // 2,000 where three inputs and one output need 2,260.
+    await expectFeeHonoured(
+      [plain(6_000, "a".repeat(64)), plain(5_000, "b".repeat(64)), plain(1_000, "c".repeat(64))],
+      10_000,
+      10
+    );
+  });
+
+  it("does not underpay when selection needs two inputs", async () => {
+    // At 1 sat/vB the old 1-input estimate was 154 sats, so 10,100 + 60
+    // passed for a 10,000-sat send; the 2-input, 1-output tx needs 169.
+    await expectFeeHonoured([plain(10_100, "a".repeat(64)), plain(60, "b".repeat(64))], 10_000, 1);
+  });
+
+  async function build(utxos: BtcUtxo[], amountSats: number, feeRate: number) {
+    return buildUnsignedPsbt({ indexer: indexerWith(utxos), fromAddress: ADDR, toAddress: ADDR, amountSats, feeRate });
+  }
+
+  it("adds an input when the 1-input estimate under-selects", async () => {
+    // At 10 sat/vB, 6,000 + 5,800 covers 10,000 + the old 1,540-sat estimate
+    // but not 10,000 + the 2,115-sat fee of the 2-input tx with change, so
+    // the old builder dropped the -315 change and paid 1,800 while
+    // reporting 2,115. With no room for change, 1,800 is the fee.
+    const utxos = [plain(6_000, "a".repeat(64)), plain(5_800, "b".repeat(64)), plain(3_000, "c".repeat(64))];
+    await expectFeeHonoured(utxos, 10_000, 10);
+    expect(await build(utxos, 10_000, 10)).toMatchObject({ inputCount: 2, feeSats: 1_800, changeSats: 0 });
+  });
+
+  it("still builds a send whose inputs cover the fee without change", async () => {
+    // 2 inputs, 1 output at 25 sat/vB need 4,213 sats; 16,233 - 11,462
+    // leaves 4,771. Too little for change, enough for the fee.
+    const utxos = [plain(11_049, "a".repeat(64)), plain(5_184, "b".repeat(64))];
+    await expectFeeHonoured(utxos, 11_462, 25);
+    expect(await build(utxos, 11_462, 25)).toMatchObject({ inputCount: 2, feeSats: 4_771, changeSats: 0 });
   });
 });
