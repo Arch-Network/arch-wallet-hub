@@ -207,9 +207,10 @@ passed (creating a second 443 listener would conflict with the live one).
 **Goal:** a read of `WalletHub/AppSecrets` by anyone other than ECS task
 startup, and a deploy that is not the GitHub OIDC role, pages within a
 few minutes. GuardDuty findings above low severity page on the same topic.
-With the Slack alerts flags set, every alert is also posted to a Slack
-channel. With the Slack reports flags set, the error reports wallet
-users send are posted to a second one.
+With the Slack alerts flags set, WalletHub security and API alerts also
+post to `#wallet-hub-alerts`. Arch routes GuardDuty findings to
+`#aws-security-alerts`. With the Slack reports flags set, user-submitted
+error reports go to `#wallet-hub-reports`.
 
 This is a **separate stack**, `WalletHubMonitoringStack`. Deploying it
 does not update RDS, `AppSecrets`, task definitions, or
@@ -219,12 +220,11 @@ constructs both stacks.
 
 What the stack adds:
 
-- CloudTrail trail `wallet-hub` (multi-region management events except
-  `kms.amazonaws.com`) to a retained S3 bucket. Objects expire after 365
-  days. Log-file validation is on. `GetSecretValue` is a management
-  event. CloudTrail does not accept `AWS::SecretsManager::Secret` as a
-  data-event `resources.type`, so the trail does not use a data
-  selector. The filter pages on `WalletHub/AppSecrets`,
+- The paused `wallet-hub` CloudTrail trail and its retained S3 bucket.
+  Existing logs expire under the bucket's 365-day lifecycle policy.
+  `arch-org-cloudtrail` records arch-dev management events. The
+  EventBridge rules still receive CloudTrail management events in
+  arch-dev. The filter pages on `WalletHub/AppSecrets`,
   `clamm/keeper/mainnet/authority-key`, `program-deploy/internal-a`,
   `program-deploy/internal-b`, `program-deploy/testnet`, and
   `arch-agent-launchpad/runtime`.
@@ -295,13 +295,12 @@ What the stack adds:
   service posts AWS service events it recognises and its own
   custom-notification format, and drops anything else without telling
   the channel. The JSON the email recipients get is one of the things
-  it drops, so each alert is sent twice: to the security topic exactly
-  as before, and to the Slack topic in a form the service posts.
+  it drops. WalletHub Slack notifications are published to the Slack
+  topic in a format the service accepts.
   - The filter function publishes a second, formatted copy of each
     page. If that publish fails, or gets no answer within 3 seconds,
     the function logs `"slackPublished":false` and still succeeds, so
     the email page is not sent again by a retry.
-  - The GuardDuty rule gets a second target with no input transformer.
   - The two API error alarms get a second action.
   - The channel's role can read CloudWatch, which is what draws the
     graph on an alarm, and nothing else. The guardrail is
@@ -362,6 +361,8 @@ copy/share are account-wide and are not in this stack. Neither is the
 AI triage layer. Both stay in issue #140.
 
 ### Before deploying
+
+Confirm `arch-org-cloudtrail` is logging arch-dev management events.
 
 Steps 1 and 2 are for a first deploy only. To tell, run
 `aws cloudformation describe-stacks --stack-name WalletHubMonitoringStack --region us-east-1`.
@@ -434,7 +435,9 @@ nor remove `Detector`.
    `UserReports…`, plus the log-retention function if the alerts flags
    had not already brought it; nothing that exists is modified. The
    diff must not mention `Postgres`, `AppSecrets`, or
-   `MasterUserPassword`.
+   `MasterUserPassword`. For the alert routing and trail change, verify
+   `GuardDutyFindings` has only the security SNS target, `Trail` has
+   `IsLogging: false`, and the detector, trail, and trail bucket are retained.
 
    ```bash
    cd infra/cdk
@@ -494,16 +497,13 @@ Expect a page within 5 minutes. If it does not arrive, read the
 
 ### Acceptance test for Slack
 
-Only with `slackAlertsChannelId` set. Delivery to Slack has not been
-exercised before this test; the design follows the service's
-documentation. Steps 2 to 4 also page the email recipients, so tell
-them first.
+Steps 1 to 3 apply when `slackAlertsChannelId` is set. Steps 2 to 4 also
+page the email recipients. Notify them before testing.
 
 1. In the Amazon Q Developer in chat applications console, open the
    Slack workspace, select `wallet-hub-alerts`, and choose **Send test
    message**. The message appears in the channel. This checks the
-   workspace, the channel ID and the invite. It does not check the
-   three alert formats.
+   workspace, the channel ID and the invite.
 2. Repeat the secret read above. Expect the email page and, in the
    channel, `Security alert: GetSecretValue` with the target, actor,
    source IP, user agent and time.
@@ -520,8 +520,9 @@ them first.
    ```
 
    Expect the alarm in the channel, with its graph.
-4. Generate one GuardDuty sample finding of high severity. Expect the
-   finding in the channel within a few minutes, titled `[SAMPLE]`.
+4. Generate one GuardDuty sample finding of high severity. Expect it in
+   `#aws-security-alerts` and in the security email within a few minutes.
+   Check that `#wallet-hub-alerts` receives no copy.
 
    ```bash
    detector=$(aws guardduty list-detectors --query 'DetectorIds[0]' \
@@ -611,8 +612,7 @@ alarm emails the security recipients; it has not been seen firing.
   suppresses a real one if it names a role an attacker can assume. A
   wrong log-group name fails `putRetentionPolicy` and rolls the stack
   back; the names are the two `aws logs tail` targets in `deploy/README.md`.
-  The first trail delivery can lag; EventBridge is the paging path and is
-  usually under a minute, not the S3 log-file delay. Synth cannot tell
+  CloudTrail-based pages use EventBridge delivery. Synth cannot tell
   whether a Slack channel ID is the right channel or whether the app was
   invited to it; only the Slack acceptance tests can. Changing
   `slackWorkspaceId` replaces the channel configurations. A sixth

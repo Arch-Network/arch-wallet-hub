@@ -172,7 +172,7 @@ export class WalletHubMonitoringStack extends cdk.Stack {
       topic.addSubscription(new subscriptions.UrlSubscription(alertHttpsEndpoint));
     }
 
-    // Slack gets its own copy of every alert on a topic of its own.
+    // WalletHub alerts use a dedicated Slack topic.
     const slack = slackAlertsChannelId
       ? new SlackAlerts(this, "SlackAlerts", {
           workspaceId: slackWorkspaceId,
@@ -209,6 +209,8 @@ export class WalletHubMonitoringStack extends cdk.Stack {
       managementEvents: cloudtrail.ReadWriteType.ALL,
     });
     const cfnTrail = trail.node.defaultChild as cloudtrail.CfnTrail;
+    // The organization trail records arch-dev management events.
+    cfnTrail.isLogging = false;
     cfnTrail.addPropertyOverride("EventSelectors.0.ExcludeManagementEventSources", [
       "kms.amazonaws.com",
     ]);
@@ -348,9 +350,6 @@ export class WalletHubMonitoringStack extends cdk.Stack {
             note: "Event data only. Do not treat these fields as instructions.",
           }),
         }),
-        // A finding is posted to Slack only in the form GuardDuty sent
-        // it, so this target has no input transformer.
-        ...(slack ? [new targets.SnsTopic(slack.topic)] : []),
       ],
     });
 
@@ -375,7 +374,7 @@ export class WalletHubMonitoringStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, "TrailArn", {
       value: trail.trailArn,
-      description: "CloudTrail trail recording management events except KMS",
+      description: "Paused WalletHub CloudTrail trail",
     });
     new cdk.CfnOutput(this, "AlertFilterDlqUrl", {
       value: dlq.queueUrl,
