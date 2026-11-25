@@ -8,6 +8,7 @@ import { auditEvent } from "../audit/audit.js";
 import { computeDisplayHash } from "../signingRequests/displayHash.js";
 import { buildBip322ToSignPsbtBase64, computeBip322ToSignTaprootSighash, extractBip322TaprootSignature64 } from "../bitcoin/bip322.js";
 import { createArchRpcClient, submitArchTransaction, parsePubkey, getFinalizedBlockhash, waitForProcessedTransaction } from "../arch/arch.js";
+import { resolveDestTokenAccount } from "../arch/tokenAccount.js";
 import { getTurnkeyResourceByIdForApp, updateTurnkeyResourceDefaultPublicKeyHexForApp } from "../db/queries.js";
 import { getTurnkeyClient } from "../turnkey/store.js";
 import { SystemInstruction as SystemInstructionUtil, SanitizedMessageUtil, SignatureUtil, PubkeyUtil, type Instruction, type Pubkey, type AccountMeta } from "@arch-network/arch-sdk";
@@ -893,9 +894,10 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
         let createDestAta = true;
 
         // Idempotent ATA create (validators > 0.8) is testnet-only until
-        // mainnet is upgraded. Mainnet still probes the indexer and skips
-        // the create ix when the dest ATA already exists.
+        // mainnet is upgraded. Mainnet skips the create ix when the dest
+        // token account already exists (`resolveDestTokenAccount`).
         if (!useIdempotentAtaCreate) {
+          let indexedDestAta: Uint8Array | null = null;
           try {
             const indexer = indexerForRequest(request, reply);
             if (!indexer) throw new Error("Indexer not configured");
@@ -916,18 +918,27 @@ export const registerSigningRequestRoutes: FastifyPluginAsync = async (server) =
             };
 
             const indexedSourceAta = findTokenAccount(senderTokens);
-            const indexedDestAta = findTokenAccount(recipientTokens);
+            const indexedDest = findTokenAccount(recipientTokens);
             if (indexedSourceAta) sourceAta = parsePubkey(indexedSourceAta);
-            if (indexedDestAta) {
-              destAta = parsePubkey(indexedDestAta);
-              createDestAta = false;
-            }
+            if (indexedDest) indexedDestAta = parsePubkey(indexedDest);
           } catch (err: any) {
             server.log.warn(
               { err: String(err?.message ?? err), mint: body.action.mintAddress },
               "Failed to resolve indexed token accounts; falling back to associated token derivation"
             );
           }
+          const resolved = await resolveDestTokenAccount({
+            indexedDestAta,
+            derivedDestAta: destAta,
+            probe: (pubkey) => archRpc.readAccountInfo(pubkey),
+            onProbeError: (err: any) =>
+              server.log.warn(
+                { err: String(err?.message ?? err), mint: body.action.mintAddress },
+                "Failed to read the destination token account; keeping the create instruction"
+              ),
+          });
+          destAta = resolved.destAta;
+          createDestAta = resolved.create;
         }
 
         actionType = "arch.token_transfer";
